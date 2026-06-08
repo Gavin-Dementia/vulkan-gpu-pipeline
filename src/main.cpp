@@ -14,6 +14,7 @@ int main() {
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        vk.drawFrame();
     }
 
     vk.cleanup();

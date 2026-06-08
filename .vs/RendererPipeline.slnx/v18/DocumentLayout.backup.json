@@ -7,16 +7,16 @@
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:CMakeLists.txt||{8B382828-6202-11D1-8870-0000F87579D2}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\RendererPipeline\\src\\vulkan\\swapchain\\VulkanSwapchain.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
-      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\vulkan\\swapchain\\VulkanSwapchain.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\RendererPipeline\\include\\vulkan\\sync\\SyncSystem.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:include\\vulkan\\sync\\SyncSystem.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\RendererPipeline\\src\\vulkan\\VulkanContext.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\vulkan\\VulkanContext.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\RendererPipeline\\src\\main.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
-      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\main.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\RendererPipeline\\src\\vulkan\\sync\\SyncSystem.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\vulkan\\sync\\SyncSystem.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     }
   ],
   "DocumentGroupContainers": [
@@ -34,28 +34,15 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 3,
-              "Title": "main.cpp",
-              "DocumentMoniker": "D:\\RendererPipeline\\src\\main.cpp",
-              "RelativeDocumentMoniker": "src\\main.cpp",
-              "ToolTip": "D:\\RendererPipeline\\src\\main.cpp",
-              "RelativeToolTip": "src\\main.cpp",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAA0AAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
-              "WhenOpened": "2026-06-08T10:35:46.751Z",
-              "EditorCaption": ""
-            },
-            {
-              "$type": "Document",
               "DocumentIndex": 1,
-              "Title": "VulkanSwapchain.cpp",
-              "DocumentMoniker": "D:\\RendererPipeline\\src\\vulkan\\swapchain\\VulkanSwapchain.cpp",
-              "RelativeDocumentMoniker": "src\\vulkan\\swapchain\\VulkanSwapchain.cpp",
-              "ToolTip": "D:\\RendererPipeline\\src\\vulkan\\swapchain\\VulkanSwapchain.cpp",
-              "RelativeToolTip": "src\\vulkan\\swapchain\\VulkanSwapchain.cpp",
-              "ViewState": "AgIAAGoAAAAAAAAAAAAjwKUAAAABAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
-              "WhenOpened": "2026-06-08T10:31:53.175Z",
+              "Title": "SyncSystem.h",
+              "DocumentMoniker": "D:\\RendererPipeline\\include\\vulkan\\sync\\SyncSystem.h",
+              "RelativeDocumentMoniker": "include\\vulkan\\sync\\SyncSystem.h",
+              "ToolTip": "D:\\RendererPipeline\\include\\vulkan\\sync\\SyncSystem.h",
+              "RelativeToolTip": "include\\vulkan\\sync\\SyncSystem.h",
+              "ViewState": "AgIAAAgAAAAAAAAAAAAMwBQAAAATAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
+              "WhenOpened": "2026-06-08T14:19:08.018Z",
               "EditorCaption": ""
             },
             {
@@ -66,9 +53,22 @@
               "RelativeDocumentMoniker": "src\\vulkan\\VulkanContext.cpp",
               "ToolTip": "D:\\RendererPipeline\\src\\vulkan\\VulkanContext.cpp",
               "RelativeToolTip": "src\\vulkan\\VulkanContext.cpp",
-              "ViewState": "AgIAAAIAAAAAAAAAAAAjwBcAAAAGAAAAAAAAAA==",
+              "ViewState": "AgIAAEcAAAAAAAAAAAAMwFIAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
-              "WhenOpened": "2026-06-08T10:21:33.241Z",
+              "WhenOpened": "2026-06-08T14:05:37.074Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "SyncSystem.cpp",
+              "DocumentMoniker": "D:\\RendererPipeline\\src\\vulkan\\sync\\SyncSystem.cpp",
+              "RelativeDocumentMoniker": "src\\vulkan\\sync\\SyncSystem.cpp",
+              "ToolTip": "D:\\RendererPipeline\\src\\vulkan\\sync\\SyncSystem.cpp",
+              "RelativeToolTip": "src\\vulkan\\sync\\SyncSystem.cpp",
+              "ViewState": "AgIAABEAAAAAAAAAAAAMwBoAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2026-06-08T14:01:20.573Z",
               "EditorCaption": ""
             },
             {
@@ -79,9 +79,9 @@
               "RelativeDocumentMoniker": "CMakeLists.txt",
               "ToolTip": "D:\\RendererPipeline\\CMakeLists.txt",
               "RelativeToolTip": "CMakeLists.txt",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAABUAAAAdAAAAAAAAAA==",
+              "ViewState": "AgIAABkAAAAAAAAAAAAAACoAAAAQAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003109|",
-              "WhenOpened": "2026-06-08T09:40:16.977Z",
+              "WhenOpened": "2026-06-08T11:45:05.784Z",
               "EditorCaption": ""
             }
           ]

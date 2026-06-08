@@ -7,7 +7,6 @@ const std::vector<const char*> VulkanDevice::deviceExtensions = {
 
 void VulkanDevice::create(VkInstance instance, VkSurfaceKHR surface_) {
     surface = surface_;
-
     pickPhysicalDevice(instance);
     createLogicalDevice();
 }
@@ -26,9 +25,17 @@ void VulkanDevice::pickPhysicalDevice(VkInstance instance) {
 
     for (const auto& dev : devices) {
 
-        if (isDeviceSuitable(dev)) {
+        QueueFamilyIndices indices = findQueueFamilies(dev);
+
+        if (isDeviceSuitable(dev, indices)) {
+
             physicalDevice = dev;
-            break;
+
+            graphicsFamilyIndex = indices.graphicsFamily.value();
+            presentFamilyIndex   = indices.presentFamily.value();
+
+            std::cout << "[Vulkan] Selected physical device\n";
+            return;
         }
     }
 
@@ -37,13 +44,21 @@ void VulkanDevice::pickPhysicalDevice(VkInstance instance) {
     }
 }
 
-bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice device) {
-
+bool VulkanDevice::isDeviceSuitable(
+    VkPhysicalDevice device,
+    QueueFamilyIndices& outIndices)
+{
     QueueFamilyIndices indices = findQueueFamilies(device);
 
     bool extensionsSupported = checkDeviceExtensionSupport(device);
 
-    return indices.isComplete() && extensionsSupported;
+    bool valid = indices.isComplete() && extensionsSupported;
+
+    if (valid) {
+        outIndices = indices;
+    }
+
+    return valid;
 }
 
 QueueFamilyIndices VulkanDevice::findQueueFamilies(VkPhysicalDevice device) {

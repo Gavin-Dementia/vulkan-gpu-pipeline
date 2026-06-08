@@ -7,12 +7,15 @@
   },
   "ExpandedNodes": [
     "",
-    "\\include",
     "\\src",
     "\\src\\vulkan",
+    "\\src\\vulkan\\command",
     "\\src\\vulkan\\core",
+    "\\src\\vulkan\\device",
     "\\src\\vulkan\\platform",
-    "\\src\\vulkan\\swapchain"
+    "\\src\\vulkan\\render",
+    "\\src\\vulkan\\swapchain",
+    "\\src\\vulkan\\sync"
   ],
   "SelectedNode": "\\CMakeLists.txt",
   "PreviewInSolutionExplorer": false

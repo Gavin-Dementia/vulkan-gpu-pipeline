@@ -18,9 +18,17 @@ public:
                 GLFWwindow* window);
 
     void destroy(VkDevice device);
-
+    
+    VkFormat getFormat() const { return imageFormat; }
+    const std::vector<VkImage>& getImages() const { return images; }
+    VkExtent2D getExtent() const { return extent; }
+    VkSwapchainKHR get() const { return swapchain; }
+    
 private:
+    VkFormat imageFormat;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+
+    VkExtent2D extent;
 
     std::vector<VkImage> images;
     std::vector<VkImageView> imageViews;
