@@ -10,7 +10,7 @@ int main() {
     GLFWwindow* window = glfwCreateWindow(800, 600, "Vulkan", nullptr, nullptr);
 
     VulkanContext vk;
-    vk.init();
+    vk.init(window);
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
