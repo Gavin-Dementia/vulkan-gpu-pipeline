@@ -25,16 +25,20 @@ find_package(Vulkan REQUIRED)
 # Executable
 # =========================
 file(GLOB VULKAN_SRC
+    src/core/*.cpp
+    src/vulkan/command/*.cpp
     src/vulkan/core/*.cpp
     src/vulkan/device/*.cpp
+    src/vulkan/frame/*.cpp
     src/vulkan/platform/*.cpp
+    src/vulkan/renderpass/*.cpp
     src/vulkan/swapchain/*.cpp
     src/vulkan/*.cpp
 )
 
 add_executable(app
     src/main.cpp
-    src/core/Application.cpp
+    # src/core/Application.cpp
     ${VULKAN_SRC}
 )
 

@@ -69,7 +69,7 @@ Responsible for:
 ## VulkanSurface
 
 Responsible for:
-
+ 
 * GLFW surface creation
 * Platform abstraction
 

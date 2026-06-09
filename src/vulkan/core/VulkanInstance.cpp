@@ -20,7 +20,8 @@ static const std::vector<const char*> validationLayers = {
 // Extensions
 // ------------------------------------------------------------
 
-std::vector<const char*> VulkanInstance::getExtensions() {
+std::vector<const char*> VulkanInstance::getExtensions() 
+{
 
     uint32_t glfwExtensionCount = 0;
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -28,7 +29,8 @@ std::vector<const char*> VulkanInstance::getExtensions() {
     std::vector<const char*> extensions(glfwExtensions,
                                          glfwExtensions + glfwExtensionCount);
 
-    if (enableValidationLayers) {
+    if (enableValidationLayers) 
+    {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
@@ -39,7 +41,8 @@ std::vector<const char*> VulkanInstance::getExtensions() {
 // Validation layer support check
 // ------------------------------------------------------------
 
-bool VulkanInstance::checkValidationLayers() {
+bool VulkanInstance::checkValidationLayers() 
+{
 
     uint32_t layerCount;
     vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
@@ -47,20 +50,20 @@ bool VulkanInstance::checkValidationLayers() {
     std::vector<VkLayerProperties> availableLayers(layerCount);
     vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
 
-    for (const char* layerName : validationLayers) {
-
+    for (const char* layerName : validationLayers) 
+    {
         bool found = false;
 
-        for (const auto& layerProps : availableLayers) {
-            if (strcmp(layerName, layerProps.layerName) == 0) {
+        for (const auto& layerProps : availableLayers) 
+        {
+            if (strcmp(layerName, layerProps.layerName) == 0) 
+            {
                 found = true;
                 break;
             }
         }
 
-        if (!found) {
-            return false;
-        }
+        if (!found)  return false;
     }
 
     return true;
@@ -70,9 +73,11 @@ bool VulkanInstance::checkValidationLayers() {
 // Create instance
 // ------------------------------------------------------------
 
-void VulkanInstance::create() {
+void VulkanInstance::create() 
+{
 
-    if (enableValidationLayers && !checkValidationLayers()) {
+    if (enableValidationLayers && !checkValidationLayers()) 
+    {
         throw std::runtime_error("Validation layers requested but not available");
     }
 
@@ -93,14 +98,18 @@ void VulkanInstance::create() {
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
 
-    if (enableValidationLayers) {
+    if (enableValidationLayers) 
+    {
         createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
         createInfo.ppEnabledLayerNames = validationLayers.data();
-    } else {
+    } 
+    else 
+    {
         createInfo.enabledLayerCount = 0;
     }
 
-    if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
+    if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) 
+    {
         throw std::runtime_error("Failed to create Vulkan instance");
     }
 
@@ -111,9 +120,11 @@ void VulkanInstance::create() {
 // Destroy instance
 // ------------------------------------------------------------
 
-void VulkanInstance::destroy() {
+void VulkanInstance::destroy() 
+{
 
-    if (instance != VK_NULL_HANDLE) {
+    if (instance != VK_NULL_HANDLE) 
+    {
         vkDestroyInstance(instance, nullptr);
         instance = VK_NULL_HANDLE;
     }

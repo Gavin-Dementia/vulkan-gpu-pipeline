@@ -4,27 +4,38 @@
 #include <vector>
 #include <optional>
 
-struct QueueFamilyIndices {
+struct QueueFamilyIndices
+{
     std::optional<uint32_t> graphicsFamily;
     std::optional<uint32_t> presentFamily;
 
-    bool isComplete() const {
+    bool isComplete() const
+    {
         return graphicsFamily.has_value() &&
                presentFamily.has_value();
     }
 };
 
-class VulkanDevice {
+class VulkanDevice
+{
 public:
     static const std::vector<const char*> deviceExtensions;
+
     void create(VkInstance instance, VkSurfaceKHR surface);
     void destroy();
 
-    VkDevice get() const { return device; }
-    VkPhysicalDevice getPhysical() const { return physicalDevice; }
+    VkDevice get() const {  return device;  }
 
-    VkQueue getGraphicsQueue() const { return graphicsQueue; }
-    VkQueue getPresentQueue() const { return presentQueue; }
+    VkPhysicalDevice getPhysical() const {  return physicalDevice;  }
+
+    VkQueue getGraphicsQueue() const {  return graphicsQueue;  }
+
+    VkQueue getPresentQueue() const {  return presentQueue;  }
+
+    VkSurfaceKHR getSurface() const {  return surface;  }
+
+    uint32_t getGraphicsQueueFamily() const
+    {  return graphicsQueueFamilyIndex; }
 
 private:
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -35,11 +46,16 @@ private:
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
+    uint32_t graphicsQueueFamilyIndex = 0;
+
+private:
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
+
     bool isDeviceSuitable(VkPhysicalDevice device);
+
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);
 
     void pickPhysicalDevice(VkInstance instance);
+
     void createLogicalDevice();
 };
-

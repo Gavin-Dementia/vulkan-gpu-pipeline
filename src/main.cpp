@@ -1,25 +1,9 @@
-#include <GLFW/glfw3.h>
-#include <iostream>
-#include "vulkan/VulkanContext.h"
+#include "core/Application.h"
 
-int main() {
-
-    glfwInit();
-
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Vulkan", nullptr, nullptr);
-
-    VulkanContext vk;
-    vk.init(window);
-
-    while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
-    }
-
-    vk.cleanup();
-
-    glfwDestroyWindow(window);
-    glfwTerminate();
+int main()
+{
+    Application app;
+    app.run();
 
     return 0;
 }

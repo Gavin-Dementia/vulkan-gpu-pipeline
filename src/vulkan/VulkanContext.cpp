@@ -1,41 +1,54 @@
-#include <vulkan/VulkanContext.h>
+#include "vulkan/VulkanContext.h"
 #include <iostream>
-#include <cstring>
-#include <GLFW/glfw3.h>
-#include <stdexcept>
 
-void VulkanContext::init(GLFWwindow* window) {
+void VulkanContext::init(GLFWwindow* window)
+{
+    window_ = window;
 
-    // auto support = querySupport(physicalDevice, surface);
+    instance_.create();
+    surface_.create(instance_.get(), window_);
 
-    instance.create();
-    surface.create(instance.get(), window);
-    device.create(instance.get(), surface.get());
+    device_.create(instance_.get(), surface_.get());
 
-    // if (support.formats.empty() || support.presentModes.empty()) {
-    //     throw std::runtime_error("Swapchain support incomplete");
-    // }
+    swapchain_.create(
+        device_.getPhysical(),
+        device_.get(),
+        surface_.get(),
+        window_
+    );
 
-    swapchain.create(
-        device.getPhysical(),
-        device.get(),
-        surface.get(),
-        window
+    commandPool_.create(
+        device_.get(),
+        device_.getGraphicsQueueFamily()
+    );
+
+    renderPass_.create(
+        device_.get(),
+        swapchain_.getImageFormat()
+    );
+
+    framebuffer_.create(
+        device_.get(),
+        renderPass_.get(),
+        swapchain_.getImageViews(),
+        swapchain_.getExtent()
     );
 
     std::cout << "Vulkan Context initialized\n";
 }
 
-void VulkanContext::cleanup() {
+void VulkanContext::cleanup()
+{
+    framebuffer_.destroy(device_.get());
+    renderPass_.destroy(device_.get());
 
-    device.destroy();
+    swapchain_.destroy(device_.get());
+    commandPool_.destroy(device_.get());
 
-    surface.destroy(instance.get());
+    device_.destroy();
+    surface_.destroy(instance_.get());
+    instance_.destroy();
 
-    instance.destroy();
-
-    swapchain.destroy(device.get());
-
-    std::cout << "Vulkan Context destroyed\n";
+    std::cout << "VulkanContext destroyed\n";
 }
 

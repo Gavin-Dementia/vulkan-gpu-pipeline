@@ -2,7 +2,8 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 
-class VulkanInstance {
+class VulkanInstance 
+{
 public:
     void create();
     void destroy();
