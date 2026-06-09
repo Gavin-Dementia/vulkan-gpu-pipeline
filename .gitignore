@@ -1,53 +1,17 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# =========================
+# Build outputs
+# =========================
 build/
 Build/
 build-*/
 out/
 bin/
 bin-*/
+cmake-build-*/
 
+# =========================
 # CMake generated files
+# =========================
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
@@ -55,22 +19,85 @@ Makefile
 install_manifest.txt
 compile_commands.json
 
-# Vulkan / GPU
+# =========================
+# Visual Studio
+# =========================
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+ipch/
+*.VC.db
+*.VC.VC.opendb
+
+# =========================
+# VSCode
+# =========================
+.vscode/
+*.code-workspace
+
+# =========================
+# Compiled objects
+# =========================
+*.o
+*.obj
+*.lo
+*.slo
+
+# =========================
+# Libraries / binaries
+# =========================
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+*.app
+
+# =========================
+# Debug symbols
+# =========================
+*.pdb
+*.ilk
+*.dwo
+
+# =========================
+# Precompiled headers
+# =========================
+*.gch
+*.pch
+
+# =========================
+# Vulkan / shaders
+# =========================
 *.spv
 *.spirv
 
-# Temporary files
-*.tmp
+# =========================
+# Logs / temp
+# =========================
 *.log
+*.tmp
 *.bak
 *.swp
 
+# =========================
 # vcpkg
+# =========================
 vcpkg_installed/
 
-# debug information files
-*.dwo
-
-# test output & cache
+# =========================
+# Testing / cache
+# =========================
 Testing/
 .cache/
+
+# =========================
+# OS junk
+# =========================
+.DS_Store
+Thumbs.db
+

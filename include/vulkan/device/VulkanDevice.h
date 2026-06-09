@@ -22,14 +22,11 @@ public:
 
     VkDevice get() const { return device; }
     VkPhysicalDevice getPhysical() const { return physicalDevice; }
+
     VkQueue getGraphicsQueue() const { return graphicsQueue; }
     VkQueue getPresentQueue() const { return presentQueue; }
-    uint32_t getGraphicsQueueFamilyIndex() const{ return graphicsFamilyIndex; };
 
 private:
-    uint32_t graphicsFamilyIndex = UINT32_MAX;
-    uint32_t presentFamilyIndex = UINT32_MAX;
-
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
 
@@ -39,9 +36,7 @@ private:
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
-    bool isDeviceSuitable(
-        VkPhysicalDevice device,
-        QueueFamilyIndices& outIndices);
+    bool isDeviceSuitable(VkPhysicalDevice device);
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);
 
     void pickPhysicalDevice(VkInstance instance);

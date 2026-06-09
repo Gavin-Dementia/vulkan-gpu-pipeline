@@ -7,9 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # output (portable)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-#compile format
-add_compile_options(/utf-8)
-
 # =========================
 # Dependencies
 # =========================
@@ -21,20 +18,16 @@ add_subdirectory(third_party/glfw)
 add_library(glm INTERFACE)
 target_include_directories(glm INTERFACE third_party/glm)
 
-
 # Vulkan SDK (system)
 find_package(Vulkan REQUIRED)
 
 # =========================
 # Executable
 # =========================
-file(GLOB VULKAN_SRC 
-    src/vulkan/command/*.cpp
+file(GLOB VULKAN_SRC
     src/vulkan/core/*.cpp
     src/vulkan/device/*.cpp
     src/vulkan/platform/*.cpp
-    src/vulkan/render/*.cpp
-    src/vulkan/sync/*.cpp
     src/vulkan/swapchain/*.cpp
     src/vulkan/*.cpp
 )

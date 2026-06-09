@@ -87,18 +87,15 @@ void VulkanSwapchain::create(
 
     auto support = querySupport(physicalDevice, surface);
 
-    VkSurfaceFormatKHR chosenFormat = chooseFormat(support.formats);
-    imageFormat = chosenFormat.format;
-
+    VkSurfaceFormatKHR format = chooseFormat(support.formats);
     VkPresentModeKHR presentMode = choosePresentMode(support.presentModes);
 
-    VkExtent2D chosenExtent;
+    VkExtent2D extent;
     if (support.capabilities.currentExtent.width != UINT32_MAX) {
-        chosenExtent = support.capabilities.currentExtent;
+        extent = support.capabilities.currentExtent;
     } else {
-        chosenExtent = chooseExtent(support.capabilities, window);
+        extent = chooseExtent(support.capabilities, window);
     }
-    extent = chosenExtent;
 
     uint32_t imageCount = support.capabilities.minImageCount + 1;
 
@@ -112,9 +109,9 @@ void VulkanSwapchain::create(
     createInfo.surface = surface;
 
     createInfo.minImageCount = imageCount;
-    createInfo.imageFormat = chosenFormat.format;
-    createInfo.imageColorSpace = chosenFormat.colorSpace;
-    createInfo.imageExtent = chosenExtent;
+    createInfo.imageFormat = format.format;
+    createInfo.imageColorSpace = format.colorSpace;
+    createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
 
     // ✔ render target usage
