@@ -22,24 +22,71 @@ target_include_directories(glm INTERFACE third_party/glm)
 find_package(Vulkan REQUIRED)
 
 # =========================
-# Executable
+# Core
 # =========================
-file(GLOB VULKAN_SRC
-    src/core/*.cpp
-    src/vulkan/command/*.cpp
-    src/vulkan/core/*.cpp
-    src/vulkan/device/*.cpp
-    src/vulkan/frame/*.cpp
-    src/vulkan/platform/*.cpp
-    src/vulkan/renderpass/*.cpp
-    src/vulkan/swapchain/*.cpp
-    src/vulkan/*.cpp
+set(CORE_SRC
+    src/core/Application.cpp
 )
 
+# =========================
+# Vulkan Core
+# =========================
+set(VULKAN_CORE_SRC
+    src/vulkan/VulkanContext.cpp
+    src/vulkan/core/VulkanInstance.cpp
+    src/vulkan/platform/VulkanSurface.cpp
+    src/vulkan/device/VulkanDevice.cpp
+)
+
+# =========================
+# Vulkan Command
+# =========================
+set(VULKAN_COMMAND_SRC
+    src/vulkan/command/VulkanCommandPool.cpp
+)
+
+# =========================
+# Vulkan Frame System
+# =========================
+set(VULKAN_FRAME_SRC
+    src/vulkan/frame/FrameContext.cpp
+    src/vulkan/frame/FrameRenderer.cpp
+    src/vulkan/frame/FrameGraph.cpp
+)
+
+# =========================
+# Vulkan RenderPass
+# =========================
+set(VULKAN_RENDERPASS_SRC
+    src/vulkan/renderpass/VulkanRenderPass.cpp
+    src/vulkan/renderpass/VulkanFramebuffer.cpp
+)
+
+# =========================
+# Vulkan Swapchain
+# =========================
+set(VULKAN_SWAPCHAIN_SRC
+    src/vulkan/swapchain/VulkanSwapchain.cpp
+)
+
+# =========================
+# Vulkan Sync
+# =========================
+set(VULKAN_SYNC_SRC
+)
+
+# =========================
+# Executable
+# =========================
 add_executable(app
     src/main.cpp
-    # src/core/Application.cpp
-    ${VULKAN_SRC}
+    ${CORE_SRC}
+    ${VULKAN_CORE_SRC}
+    ${VULKAN_COMMAND_SRC}
+    ${VULKAN_FRAME_SRC}
+    ${VULKAN_RENDERPASS_SRC}
+    ${VULKAN_SWAPCHAIN_SRC}
+    ${VULKAN_SYNC_SRC}
 )
 
 # =========================

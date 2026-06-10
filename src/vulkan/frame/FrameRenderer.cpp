@@ -15,13 +15,61 @@ void FrameRenderer::init(VulkanContext& ctx)
 
     frames.resize(MAX_FRAMES);
     imagesInFlight.resize(getImageCount(), VK_NULL_HANDLE);
+    // imageRenderFinished.resize(getImageCount());
 
     createSyncObjects();
     createCommandBuffers();
 
-    std::cout << "[FrameRenderer] initialized\n";
+    // ===== FrameGraph (DAG VERSION) =====
+    graph = new FrameGraph();
+    graph->init(context);
+
+    // --------------------------------------------------
+    // Pass 0: Clear / Geometry
+    // --------------------------------------------------
+    int geometryPass = graph->addPass({
+        "GeometryPass",
+        {},     // no dependency
+        {},
+        [](VkCommandBuffer cmd)
+        {
+            // geometry rendering (future)
+        }
+    });
+
+    // --------------------------------------------------
+    // Pass 1: Lighting depends on Geometry
+    // --------------------------------------------------
+    int lightingPass = graph->addPass({
+        "LightingPass",
+        { geometryPass },   // DAG dependency
+        {},
+        [](VkCommandBuffer cmd)
+        {
+            // lighting stage
+        }
+    });
+
+    // --------------------------------------------------
+    // Pass 2: PostProcess depends on Lighting
+    // --------------------------------------------------
+    graph->addPass({
+        "PostProcess",
+        { lightingPass },
+        {},
+        [](VkCommandBuffer cmd)
+        {
+            // post process
+        }
+    });
+
+    // IMPORTANT: build DAG once
+    graph->build();
+
+    std::cout << "[FrameRenderer] initialized (FrameGraph DAG)\n";
 }
 
+#if 0
 void FrameRenderer::drawFrame()
 {
     auto& device = context->device();
@@ -150,6 +198,98 @@ void FrameRenderer::drawFrame()
     // 8. NEXT FRAME
     currentFrame = (currentFrame + 1) % frames.size();
 }
+#else
+void FrameRenderer::drawFrame()
+{
+    auto& device = context->device();
+    auto& swapchain = context->swapchain();
+    auto& renderPass = context->renderPass();
+    auto& framebuffer = context->framebuffer();
+
+    FrameContext& frame = frames[currentFrame];
+
+    vkWaitForFences(device.get(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(device.get(), 1, &frame.inFlightFence);
+
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(
+        device.get(),
+        swapchain.getSwapchain(),
+        UINT64_MAX,
+        frame.imageAvailableSemaphore,
+        VK_NULL_HANDLE,
+        &imageIndex
+    );
+
+    if (imagesInFlight[imageIndex] != VK_NULL_HANDLE)
+    {
+        vkWaitForFences(device.get(), 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+    }
+    imagesInFlight[imageIndex] = frame.inFlightFence;
+
+    vkResetCommandBuffer(frame.commandBuffer, 0);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    vkBeginCommandBuffer(frame.commandBuffer, &beginInfo);
+
+    VkClearValue clear{};
+    clear.color = {0.1f, 0.2f, 0.7f, 1.0f};
+
+    VkRenderPassBeginInfo rp{};
+    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rp.renderPass = renderPass.get();
+    rp.framebuffer = framebuffer.get()[imageIndex];
+    rp.renderArea.offset = {0, 0};
+    rp.renderArea.extent = swapchain.getExtent();
+    rp.clearValueCount = 1;
+    rp.pClearValues = &clear;
+
+    vkCmdBeginRenderPass(frame.commandBuffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+    // ===== FrameGraph execution =====
+    graph->execute(frame.commandBuffer);
+
+    vkCmdEndRenderPass(frame.commandBuffer);
+
+    vkEndCommandBuffer(frame.commandBuffer);
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    submit.waitSemaphoreCount = 1;
+    submit.pWaitSemaphores = &frame.imageAvailableSemaphore;
+    submit.pWaitDstStageMask = &waitStage;
+
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &frame.commandBuffer;
+
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &frame.renderFinishedSemaphore;
+    // submit.pSignalSemaphores = &imageRenderFinished[imageIndex];
+
+    vkQueueSubmit(device.getGraphicsQueue(), 1, &submit, frame.inFlightFence);
+
+    VkPresentInfoKHR present{};
+    present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+    present.waitSemaphoreCount = 1;
+    present.pWaitSemaphores = &frame.renderFinishedSemaphore;
+    // present.pWaitSemaphores = &imageRenderFinished[imageIndex];
+
+    VkSwapchainKHR swapchains[] = { swapchain.getSwapchain() };
+    present.swapchainCount = 1;
+    present.pSwapchains = swapchains;
+    present.pImageIndices = &imageIndex;
+
+    vkQueuePresentKHR(device.getPresentQueue(), &present);
+
+    currentFrame = (currentFrame + 1) % frames.size();
+}
+#endif 
 
 void FrameRenderer::cleanup()
 {
@@ -161,6 +301,8 @@ void FrameRenderer::cleanup()
         vkDestroySemaphore(device, frame.imageAvailableSemaphore, nullptr);
         vkDestroySemaphore(device, frame.renderFinishedSemaphore, nullptr);
     }
+
+    delete graph;
 }
 
 void FrameRenderer::createSyncObjects()

@@ -5,6 +5,7 @@
 
 #include "vulkan/frame/FrameContext.h"
 #include "vulkan/VulkanContext.h"
+#include "vulkan/frame/FrameGraph.h"
 
 class FrameRenderer
 {
@@ -20,8 +21,10 @@ public:
 
 private:
     VulkanContext* context = nullptr;
+    FrameGraph* graph = nullptr;
 
     std::vector<FrameContext> frames;
+    // std::vector<VkSemaphore> imageRenderFinished;
     std::vector<VkFence> imagesInFlight;
 
     uint32_t currentFrame = 0;
