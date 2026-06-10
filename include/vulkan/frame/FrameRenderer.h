@@ -24,7 +24,7 @@ private:
     FrameGraph* graph = nullptr;
 
     std::vector<FrameContext> frames;
-    // std::vector<VkSemaphore> imageRenderFinished;
+    std::vector<VkSemaphore> imageRenderFinished;
     std::vector<VkFence> imagesInFlight;
 
     uint32_t currentFrame = 0;
