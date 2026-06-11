@@ -20,17 +20,22 @@ void FrameRenderer::init(VulkanContext& ctx)
     createSyncObjects();
     createCommandBuffers();
 
-    // ===== FrameGraph (DAG VERSION) =====
+    // =====================================================
+    // FrameGraph
+    // =====================================================
     graph = new FrameGraph();
     graph->init(context);
 
-    // --------------------------------------------------
-    // Pass 0: Clear / Geometry
-    // --------------------------------------------------
-    int geometryPass = graph->addPass({
+    VkPipeline mainPipeline = context->pipeline().get();
+
+    // =====================================================
+    // Pass 0: Geometry
+    // =====================================================
+    int geometryPass = graph->addPass(RGPass{
         "GeometryPass",
         {},
         {},
+        mainPipeline,
         [this](VkCommandBuffer cmd)
         {
             vkCmdBindPipeline(
@@ -43,36 +48,41 @@ void FrameRenderer::init(VulkanContext& ctx)
         }
     });
 
-    // --------------------------------------------------
-    // Pass 1: Lighting depends on Geometry
-    // --------------------------------------------------
-    int lightingPass = graph->addPass({
+    // =====================================================
+    // Pass 1: Lighting (no pipeline yet → Stage B placeholder)
+    // =====================================================
+    int lightingPass = graph->addPass(RGPass{
         "LightingPass",
-        { geometryPass },   // DAG dependency
+        { geometryPass },
         {},
+        VK_NULL_HANDLE,
         [](VkCommandBuffer cmd)
         {
-            // lighting stage
+            // Stage B: logic placeholder
+            // later -> compute / fullscreen quad
         }
     });
 
-    // --------------------------------------------------
-    // Pass 2: PostProcess depends on Lighting
-    // --------------------------------------------------
-    graph->addPass({
+    // =====================================================
+    // Pass 2: PostProcess
+    // =====================================================
+    graph->addPass(RGPass{
         "PostProcess",
         { lightingPass },
         {},
+        VK_NULL_HANDLE,
         [](VkCommandBuffer cmd)
         {
-            // post process
+            // Stage B: placeholder
         }
     });
 
-    // IMPORTANT: build DAG once
+    // =====================================================
+    // Build DAG
+    // =====================================================
     graph->build();
 
-    std::cout << "[FrameRenderer] initialized (FrameGraph DAG)\n";
+    std::cout << "[FrameRenderer] initialized (FrameGraph Stage B)\n";
 }
 
 void FrameRenderer::drawFrame()

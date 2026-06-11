@@ -13,9 +13,12 @@ struct RGPass
 {
     std::string name;
 
-    std::vector<int> reads;   // dependency edges (pass indices)
+    std::vector<int> reads;
     std::vector<int> writes;
 
+    VkPipeline pipeline = VK_NULL_HANDLE;
+
+    // GPU command
     std::function<void(VkCommandBuffer)> execute;
 };
 
