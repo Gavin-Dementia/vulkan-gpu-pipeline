@@ -59,11 +59,12 @@ void Application::cleanup()
     frameRenderer->cleanup();
     context->cleanup();
 
+    GLFWwindow* window = context->window();
+
     delete frameRenderer;
     delete context;
 
-    GLFWwindow* window = context ? context->window() : nullptr;
-
+    glfwDestroyWindow(window);
     glfwTerminate();
 
     std::cout << "Application cleaned up\n";

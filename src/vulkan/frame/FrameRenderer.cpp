@@ -29,11 +29,17 @@ void FrameRenderer::init(VulkanContext& ctx)
     // --------------------------------------------------
     int geometryPass = graph->addPass({
         "GeometryPass",
-        {},     // no dependency
         {},
-        [](VkCommandBuffer cmd)
+        {},
+        [this](VkCommandBuffer cmd)
         {
-            // geometry rendering (future)
+            vkCmdBindPipeline(
+                cmd,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                context->pipeline().get()
+            );
+
+            vkCmdDraw(cmd, 3, 1, 0, 0);
         }
     });
 

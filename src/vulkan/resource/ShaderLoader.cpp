@@ -15,7 +15,6 @@ std::vector<char> ShaderLoader::readFile(const std::string& path)
     file.seekg(0);
     file.read(buffer.data(), size);
 
-    file.close();
     return buffer;
 }
 
@@ -28,13 +27,19 @@ VkShaderModule ShaderLoader::load(
     VkShaderModuleCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     info.codeSize = code.size();
-    info.pCode = reinterpret_cast<const uint32_t*>(code.data());
+    info.pCode =
+        reinterpret_cast<const uint32_t*>(code.data());
 
     VkShaderModule module;
 
-    if (vkCreateShaderModule(device, &info, nullptr, &module) != VK_SUCCESS)
+    if (vkCreateShaderModule(
+            device,
+            &info,
+            nullptr,
+            &module) != VK_SUCCESS)
+    {
         throw std::runtime_error("Failed to create shader module");
+    }
 
     return module;
 }
-

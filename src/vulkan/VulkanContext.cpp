@@ -27,6 +27,12 @@ void VulkanContext::init(GLFWwindow* window)
         swapchain_.getImageFormat()
     );
 
+    pipeline_.create(
+        device_.get(),
+        swapchain_.getExtent(),
+        renderPass_.get()
+    );
+
     framebuffer_.create(
         device_.get(),
         renderPass_.get(),
@@ -39,6 +45,7 @@ void VulkanContext::init(GLFWwindow* window)
 
 void VulkanContext::cleanup()
 {
+    pipeline_.destroy(device_.get());
     framebuffer_.destroy(device_.get());
     renderPass_.destroy(device_.get());
 

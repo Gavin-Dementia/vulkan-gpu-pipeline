@@ -9,6 +9,8 @@
 #include "vulkan/renderpass/VulkanFramebuffer.h"
 #include "vulkan/renderpass/VulkanRenderPass.h"
 #include "vulkan/swapchain/VulkanSwapchain.h"
+#include "vulkan/pipeline/VulkanPipeline.h"
+
 
 class VulkanContext
 {
@@ -23,6 +25,7 @@ public:
     VulkanCommandPool& commandPool() { return commandPool_; }
     VulkanRenderPass& renderPass() { return renderPass_; }
     VulkanFramebuffer& framebuffer() { return framebuffer_; }
+    VulkanPipeline& pipeline() { return pipeline_; }
 
     GLFWwindow* window() { return window_; }
 
@@ -36,5 +39,6 @@ private:
     VulkanCommandPool commandPool_;
     VulkanRenderPass renderPass_;
     VulkanFramebuffer framebuffer_;
+    VulkanPipeline pipeline_;
 };
 
