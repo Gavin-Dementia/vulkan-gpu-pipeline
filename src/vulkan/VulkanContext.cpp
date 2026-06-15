@@ -1,5 +1,7 @@
 #include "vulkan/VulkanContext.h"
+#include "vulkan/resource/ObjLoader.h"
 #include <iostream>
+#include <vector>
 
 void VulkanContext::init(GLFWwindow* window)
 {
@@ -40,11 +42,27 @@ void VulkanContext::init(GLFWwindow* window)
         swapchain_.getExtent()
     );
 
+    // std::vector<Vertex> vertices = {    // 删掉这个
+    //     {{ 0.0f, -0.5f}},
+    //     {{ 0.5f,  0.5f}},
+    //     {{-0.5f,  0.5f}}
+    // };
+
+    auto vertices = ObjLoader::load("assets/suzanne.obj");  // 换成这个
+    vertexBuffer_.create(
+        device_.getPhysical(),
+        device_.get(),
+        commandPool_.get(),
+        device_.getGraphicsQueue(),
+        vertices
+    );
+
     std::cout << "Vulkan Context initialized\n";
 }
 
 void VulkanContext::cleanup()
 {
+    vertexBuffer_.destroy(device_.get());
     pipeline_.destroy(device_.get());
     framebuffer_.destroy(device_.get());
     renderPass_.destroy(device_.get());

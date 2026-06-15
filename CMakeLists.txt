@@ -18,6 +18,9 @@ add_subdirectory(third_party/glfw)
 add_library(glm INTERFACE)
 target_include_directories(glm INTERFACE third_party/glm)
 
+add_library(tinyobjloader INTERFACE)
+target_include_directories(tinyobjloader INTERFACE third_party/tinyobjloader)
+
 find_package(Vulkan REQUIRED)
 
 find_program(GLSLC_EXECUTABLE glslc REQUIRED)
@@ -77,6 +80,11 @@ set(VULKAN_CORE_SRC
     src/vulkan/device/VulkanDevice.cpp
 )
 
+set(VULKAN_BUFFER_SRC
+    src/vulkan/buffer/VertexBuffer.cpp
+    src/vulkan/buffer/VulkanBuffer.cpp
+)
+
 set(VULKAN_COMMAND_SRC
     src/vulkan/command/VulkanCommandPool.cpp
 )
@@ -93,6 +101,7 @@ set(VULKAN_PIPELINE_SRC
 
 set(VULKAN_RESOURCE_SRC
     src/vulkan/resource/ShaderLoader.cpp
+    src/vulkan/resource/ObjLoader.cpp
 )
 
 set(VULKAN_RENDERPASS_SRC
@@ -114,6 +123,7 @@ set(VULKAN_SYNC_SRC
 add_executable(app
     src/main.cpp
     ${CORE_SRC}
+    ${VULKAN_BUFFER_SRC}
     ${VULKAN_CORE_SRC}
     ${VULKAN_COMMAND_SRC}
     ${VULKAN_FRAME_SRC}
@@ -125,6 +135,13 @@ add_executable(app
 )
 
 add_dependencies(app Shaders)
+
+add_custom_command(TARGET app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/assets
+        ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets
+    COMMENT "Copying assets to output directory"
+)
 
 # =========================================================
 # Include directories
@@ -142,6 +159,7 @@ target_include_directories(app PRIVATE
 target_link_libraries(app PRIVATE
     glfw
     glm
+    tinyobjloader
     Vulkan::Vulkan
 )
 

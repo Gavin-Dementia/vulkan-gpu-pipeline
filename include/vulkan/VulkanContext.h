@@ -2,6 +2,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include "vulkan/buffer/VertexBuffer.h"
 #include "vulkan/command/VulkanCommandPool.h"
 #include "vulkan/core/VulkanInstance.h"
 #include "vulkan/device/VulkanDevice.h"
@@ -10,7 +11,6 @@
 #include "vulkan/renderpass/VulkanRenderPass.h"
 #include "vulkan/swapchain/VulkanSwapchain.h"
 #include "vulkan/pipeline/VulkanPipeline.h"
-
 
 class VulkanContext
 {
@@ -26,6 +26,7 @@ public:
     VulkanRenderPass& renderPass() { return renderPass_; }
     VulkanFramebuffer& framebuffer() { return framebuffer_; }
     VulkanPipeline& pipeline() { return pipeline_; }
+    VertexBuffer& vertexBuffer() { return vertexBuffer_; }
 
     GLFWwindow* window() { return window_; }
 
@@ -40,5 +41,6 @@ private:
     VulkanRenderPass renderPass_;
     VulkanFramebuffer framebuffer_;
     VulkanPipeline pipeline_;
+    VertexBuffer vertexBuffer_;
 };
 

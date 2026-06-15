@@ -1,3 +1,4 @@
+#include "vulkan/buffer/VertexBuffer.h"
 #include "vulkan/pipeline/VulkanPipeline.h"
 #include "vulkan/resource/ShaderLoader.h"
 #include "vulkan/device/VulkanDevice.h"
@@ -33,13 +34,15 @@ void VulkanPipeline::create(
     // =========================================================
     // 2. Vertex input (no vertex buffer yet)
     // =========================================================
-    VkPipelineVertexInputStateCreateInfo vertexInput{};
-    vertexInput.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInput.vertexBindingDescriptionCount = 0;
-    vertexInput.pVertexBindingDescriptions = nullptr;
-    vertexInput.vertexAttributeDescriptionCount = 0;
-    vertexInput.pVertexAttributeDescriptions = nullptr;
+    auto binding = Vertex::getBindingDescription();
+    auto attrs   = Vertex::getAttributeDescriptions();
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount   = 1;
+    vertexInputInfo.pVertexBindingDescriptions      = &binding;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
+    vertexInputInfo.pVertexAttributeDescriptions    = attrs.data();
 
     // =========================================================
     // 3. Input assembly
@@ -138,7 +141,7 @@ void VulkanPipeline::create(
     info.stageCount = 2;
     info.pStages = stages;
 
-    info.pVertexInputState   = &vertexInput;
+    info.pVertexInputState   = &vertexInputInfo;
     info.pInputAssemblyState = &inputAsm;
     info.pViewportState      = &vp;
     info.pRasterizationState = &rast;

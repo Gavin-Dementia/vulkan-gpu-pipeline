@@ -38,13 +38,11 @@ void FrameRenderer::init(VulkanContext& ctx)
         mainPipeline,
         [this](VkCommandBuffer cmd)
         {
-            vkCmdBindPipeline(
-                cmd,
-                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                context->pipeline().get()
-            );
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
 
-            vkCmdDraw(cmd, 3, 1, 0, 0);
+            context->vertexBuffer().bind(cmd);
+
+            vkCmdDraw(cmd, context->vertexBuffer().vertexCount(), 1, 0, 0);
         }
     });
 
