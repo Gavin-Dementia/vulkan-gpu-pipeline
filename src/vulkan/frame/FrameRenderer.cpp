@@ -6,6 +6,11 @@
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#include <glm/gtc/matrix_transform.hpp>
+#include "vulkan/buffer/UniformBuffer.h"
+
+// Suzanne world-space offset (model center → origin)
+static constexpr glm::vec3 SUZANNE_OFFSET = { 2.49f, -1.25f, -4.10f };
 
 void FrameRenderer::init(VulkanContext& ctx)
 {
@@ -38,10 +43,41 @@ void FrameRenderer::init(VulkanContext& ctx)
         mainPipeline,
         [this](VkCommandBuffer cmd)
         {
+            // 每帧更新 MVP 矩阵
+            UBOData ubo{};
+            ubo.model = glm::rotate(
+                glm::translate(glm::mat4(1.0f), SUZANNE_OFFSET),
+                (float)glfwGetTime(),          // 随时间旋转
+                glm::vec3(0.0f, 1.0f, 1.0f)
+            );
+            ubo.view = glm::lookAt(
+                glm::vec3(0.0f, 0.0f, 10.0f),  // 摄像机位置
+                glm::vec3(0.0f, 0.0f, 0.0f),  // 看向原点
+                glm::vec3(0.0f, 1.0f, 0.0f)   // 上方向
+            );
+            ubo.proj = glm::perspective(
+                glm::radians(45.0f),
+                1280.0f / 720.0f,
+                0.1f, 100.0f
+            );
+            // Vulkan 的 Y 轴和 OpenGL 相反，要翻转
+            ubo.proj[1][1] *= -1;
+
+            context->uniformBuffer().update(context->device().get(), ubo);
+
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
 
-            context->vertexBuffer().bind(cmd);
+            // 绑定 DescriptorSet（告诉 GPU uniform buffer 在哪）
+            VkDescriptorSet ds = context->descriptor().set();
+            vkCmdBindDescriptorSets(
+                cmd,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                context->pipeline().getLayout(),   // 需要 pipeline layout
+                0, 1, &ds,
+                0, nullptr
+            );
 
+            context->vertexBuffer().bind(cmd);
             vkCmdDraw(cmd, context->vertexBuffer().vertexCount(), 1, 0, 0);
         }
     });

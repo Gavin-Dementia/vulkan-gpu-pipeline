@@ -8,7 +8,8 @@
 void VulkanPipeline::create(
     VkDevice device,
     VkExtent2D extent,
-    VkRenderPass renderPass)
+    VkRenderPass renderPass,
+    VkDescriptorSetLayout descriptorLayout)
 {
     // =========================================================
     // 1. Shader modules
@@ -121,7 +122,9 @@ void VulkanPipeline::create(
     // 8. Pipeline layout
     // =========================================================
     VkPipelineLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 1;                   
+    layoutInfo.pSetLayouts    = &descriptorLayout;   
 
     if (vkCreatePipelineLayout(
             device,

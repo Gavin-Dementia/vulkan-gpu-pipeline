@@ -29,10 +29,15 @@ void VulkanContext::init(GLFWwindow* window)
         swapchain_.getImageFormat()
     );
 
+    uniformBuffer_.create(device_.getPhysical(), device_.get());
+
+    descriptor_.create(device_.get(), uniformBuffer_.get());
+
     pipeline_.create(
         device_.get(),
         swapchain_.getExtent(),
-        renderPass_.get()
+        renderPass_.get(),
+        descriptor_.layout()
     );
 
     framebuffer_.create(
@@ -41,12 +46,6 @@ void VulkanContext::init(GLFWwindow* window)
         swapchain_.getImageViews(),
         swapchain_.getExtent()
     );
-
-    // std::vector<Vertex> vertices = {    // 删掉这个
-    //     {{ 0.0f, -0.5f}},
-    //     {{ 0.5f,  0.5f}},
-    //     {{-0.5f,  0.5f}}
-    // };
 
     auto vertices = ObjLoader::load("assets/suzanne.obj");  // 换成这个
     vertexBuffer_.create(
@@ -63,6 +62,8 @@ void VulkanContext::init(GLFWwindow* window)
 void VulkanContext::cleanup()
 {
     vertexBuffer_.destroy(device_.get());
+    descriptor_.destroy(device_.get());
+    uniformBuffer_.destroy(device_.get());
     pipeline_.destroy(device_.get());
     framebuffer_.destroy(device_.get());
     renderPass_.destroy(device_.get());

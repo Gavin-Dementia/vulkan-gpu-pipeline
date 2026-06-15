@@ -1,9 +1,15 @@
 #version 450
 
-layout(location = 0) in vec2 inPosition;  // ← 从Buffer读进来
+layout(location = 0) in vec3 inPosition;  // vec2 → vec3
+
+layout(binding = 0) uniform UBO {
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+} ubo;
 
 void main()
 {
-    gl_Position = vec4(inPosition, 0.0, 1.0);
+    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPosition, 1.0);
 }
 

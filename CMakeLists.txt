@@ -72,6 +72,15 @@ set(CORE_SRC
 # =========================================================
 # Vulkan modules
 # =========================================================
+set(VULKAN_BUFFER_SRC
+    src/vulkan/buffer/VertexBuffer.cpp
+    src/vulkan/buffer/VulkanBuffer.cpp
+    src/vulkan/buffer/UniformBuffer.cpp
+)
+
+set(VULKAN_COMMAND_SRC
+    src/vulkan/command/VulkanCommandPool.cpp
+)
 
 set(VULKAN_CORE_SRC
     src/vulkan/VulkanContext.cpp
@@ -80,13 +89,8 @@ set(VULKAN_CORE_SRC
     src/vulkan/device/VulkanDevice.cpp
 )
 
-set(VULKAN_BUFFER_SRC
-    src/vulkan/buffer/VertexBuffer.cpp
-    src/vulkan/buffer/VulkanBuffer.cpp
-)
-
-set(VULKAN_COMMAND_SRC
-    src/vulkan/command/VulkanCommandPool.cpp
+set(VULKAN_DESCRIPTOR_SRC
+    src/vulkan/descriptor/VulkanDescriptor.cpp
 )
 
 set(VULKAN_FRAME_SRC
@@ -126,6 +130,7 @@ add_executable(app
     ${VULKAN_BUFFER_SRC}
     ${VULKAN_CORE_SRC}
     ${VULKAN_COMMAND_SRC}
+    ${VULKAN_DESCRIPTOR_SRC}
     ${VULKAN_FRAME_SRC}
     ${VULKAN_PIPELINE_SRC}
     ${VULKAN_RENDERPASS_SRC}

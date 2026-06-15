@@ -29,10 +29,11 @@ std::vector<Vertex> ObjLoader::load(const std::string& path)
         for (const auto& index : shape.mesh.indices)
         {
             Vertex v{};
-            // OBJ的顶点坐标是3D的，我们先只取XY（等下一步加了Z再改）
+            
             v.position = {
                 attrib.vertices[3 * index.vertex_index + 0],
-                attrib.vertices[3 * index.vertex_index + 1]
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]  
             };
             vertices.push_back(v);
         }
@@ -40,27 +41,22 @@ std::vector<Vertex> ObjLoader::load(const std::string& path)
 
     std::cout << "[ObjLoader] loaded " << vertices.size() << " vertices from " << path << "\n";
     
-    //歸一化
-    float minX = FLT_MAX, maxX = -FLT_MAX;
-    float minY = FLT_MAX, maxY = -FLT_MAX;
+    // float minX = FLT_MAX, maxX = -FLT_MAX;
+    // float minY = FLT_MAX, maxY = -FLT_MAX;
+    // float minZ = FLT_MAX, maxZ = -FLT_MAX;
 
-    for (const auto& v : vertices) {
-        minX = std::min(minX, v.position.x);
-        maxX = std::max(maxX, v.position.x);
-        minY = std::min(minY, v.position.y);
-        maxY = std::max(maxY, v.position.y);
-    }    
-    float cx = (minX + maxX) * 0.5f;
-    float cy = (minY + maxY) * 0.5f;
-    float scale = 0.8f / std::max((maxX - minX), (maxY - minY)) * 2.0f;
-
-    for (auto& v : vertices) {
-        v.position.x = (v.position.x - cx) * scale;
-        v.position.y = (v.position.y - cy) * scale;
-    }
-
-    std::cout << "[ObjLoader] X range: " << minX << " ~ " << maxX << "\n";
-    std::cout << "[ObjLoader] Y range: " << minY << " ~ " << maxY << "\n";
+    // for (const auto& v : vertices) {
+    //     minX = std::min(minX, v.position.x);
+    //     maxX = std::max(maxX, v.position.x);
+    //     minY = std::min(minY, v.position.y);
+    //     maxY = std::max(maxY, v.position.y);
+    //     minZ = std::min(minZ, v.position.z);
+    //     maxZ = std::max(maxZ, v.position.z);
+    // }    
+    
+    // std::cout << "[ObjLoader] X range: " << minX << " ~ " << maxX << "\n";
+    // std::cout << "[ObjLoader] Y range: " << minY << " ~ " << maxY << "\n";
+    // std::cout << "[ObjLoader] Z range: " << minZ << " ~ " << maxZ << "\n";
     
     return vertices;
 }

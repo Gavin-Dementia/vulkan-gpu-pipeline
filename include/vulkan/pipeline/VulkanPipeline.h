@@ -7,7 +7,9 @@ public:
     void create(
         VkDevice device,
         VkExtent2D extent,
-        VkRenderPass renderPass);
+        VkRenderPass renderPass,
+        VkDescriptorSetLayout descriptorLayout
+    );
 
     void destroy(VkDevice device);
 
