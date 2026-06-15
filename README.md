@@ -15,8 +15,8 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Vertex Buffer (staging → DEVICE_LOCAL) | ✅ |
 | OBJ mesh loading (tinyobjloader) | ✅ |
 | Double buffering + sync primitives | ✅ |
-| Uniform Buffer (MVP matrix) | 🔲 |
-| Depth Buffer | 🔲 |
+| Uniform Buffer (MVP matrix) | ✅ |
+| Depth Buffer | ✅ |
 | Texture Sampling | 🔲 |
 | Compute Pass (GPU Culling) | 🔲 |
 

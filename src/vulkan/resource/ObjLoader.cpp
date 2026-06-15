@@ -13,8 +13,8 @@ std::vector<Vertex> ObjLoader::load(const std::string& path)
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
 
-    std::cout << "[ObjLoader] looking for: " << path << "\n";
-    std::cout << "[ObjLoader] cwd: " << std::filesystem::current_path() << "\n";
+    // std::cout << "[ObjLoader] looking for: " << path << "\n";
+    // std::cout << "[ObjLoader] cwd: " << std::filesystem::current_path() << "\n";
 
     if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str()))
         throw std::runtime_error("Failed to load OBJ: " + path + "\n" + err);
@@ -35,6 +35,19 @@ std::vector<Vertex> ObjLoader::load(const std::string& path)
                 attrib.vertices[3 * index.vertex_index + 1],
                 attrib.vertices[3 * index.vertex_index + 2]  
             };
+
+            if (index.normal_index >= 0)
+            {
+                v.normal = {
+                    attrib.normals[3 * index.normal_index + 0],
+                    attrib.normals[3 * index.normal_index + 1],
+                    attrib.normals[3 * index.normal_index + 2]
+                };
+            }
+            else
+            {
+                v.normal = { 0.0f, 0.0f, 1.0f };  // fallback
+            }
             vertices.push_back(v);
         }
     }

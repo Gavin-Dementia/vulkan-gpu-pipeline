@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <string>
-#include "vulkan/buffer/VertexBuffer.h"  // Vertex定义在这里
+#include "vulkan/buffer/VertexBuffer.h"  // Vertex define here
 
 class ObjLoader
 {

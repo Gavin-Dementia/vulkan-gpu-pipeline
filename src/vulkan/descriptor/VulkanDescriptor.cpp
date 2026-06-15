@@ -16,7 +16,7 @@ void VulkanDescriptor::destroy(VkDevice device)
 
 void VulkanDescriptor::createLayout(VkDevice device)
 {
-    // 告诉 Vulkan：binding 0 是一个 uniform buffer，用于 vertex shader
+    // notify Vulkan：binding 0 is a uniform buffer use for vertex shader
     VkDescriptorSetLayoutBinding binding{};
     binding.binding            = 0;
     binding.descriptorType     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -50,7 +50,7 @@ void VulkanDescriptor::createPool(VkDevice device)
 
 void VulkanDescriptor::allocateAndWrite(VkDevice device, VkBuffer uniformBuffer)
 {
-    // 从 pool 分配一个 set
+    //  let pool distribute set
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool     = pool_;
@@ -60,7 +60,7 @@ void VulkanDescriptor::allocateAndWrite(VkDevice device, VkBuffer uniformBuffer)
     if (vkAllocateDescriptorSets(device, &allocInfo, &set_) != VK_SUCCESS)
         throw std::runtime_error("Failed to allocate descriptor set");
 
-    // 把 uniform buffer 写进这个 set 的 binding 0
+    // write uniform buffer into set's binding 0
     VkDescriptorBufferInfo bufInfo{};
     bufInfo.buffer = uniformBuffer;
     bufInfo.offset = 0;

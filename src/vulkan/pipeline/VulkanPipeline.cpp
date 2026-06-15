@@ -135,6 +135,14 @@ void VulkanPipeline::create(
         throw std::runtime_error("Failed to create pipeline layout");
     }
 
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable       = VK_TRUE;
+    depthStencil.depthWriteEnable      = VK_TRUE;
+    depthStencil.depthCompareOp        = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable     = VK_FALSE;
+
     // =========================================================
     // 9. Graphics pipeline
     // =========================================================
@@ -150,6 +158,7 @@ void VulkanPipeline::create(
     info.pRasterizationState = &rast;
     info.pMultisampleState   = &ms;
     info.pColorBlendState    = &cb;
+    info.pDepthStencilState = &depthStencil;
 
     info.layout     = layout;
     info.renderPass = renderPass;

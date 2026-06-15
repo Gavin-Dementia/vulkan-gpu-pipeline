@@ -1,6 +1,9 @@
 #version 450
 
-layout(location = 0) in vec3 inPosition;  // vec2 → vec3
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec3 inNormal;
+
+layout(location = 0) out vec3 fragNormal;
 
 layout(binding = 0) uniform UBO {
     mat4 model;
@@ -10,6 +13,7 @@ layout(binding = 0) uniform UBO {
 
 void main()
 {
+    fragNormal  = inNormal;
     gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPosition, 1.0);
 }
 

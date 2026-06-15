@@ -14,7 +14,8 @@ public:
 
     void destroy(VkDevice device);
 
-    // 把CPU数据写进这个buffer（只对HOST_VISIBLE的buffer有效）
+    // CPU write data into this buffer
+    // only effected with HOST_VISIBLE's buffer
     void upload(VkDevice device, const void* data, VkDeviceSize size);
 
     VkBuffer get() const { return buffer_; }
@@ -23,7 +24,7 @@ private:
     VkBuffer buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
 
-    // 找到符合条件的memory type
+    // find the right constitutional memory type
     uint32_t findMemoryType(
         VkPhysicalDevice physical,
         uint32_t typeFilter,

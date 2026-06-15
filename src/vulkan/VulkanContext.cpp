@@ -24,9 +24,16 @@ void VulkanContext::init(GLFWwindow* window)
         device_.getGraphicsQueueFamily()
     );
 
+    depthBuffer_.create(
+        device_.getPhysical(),
+        device_.get(),
+        swapchain_.getExtent()
+    );
+
     renderPass_.create(
         device_.get(),
-        swapchain_.getImageFormat()
+        swapchain_.getImageFormat(),
+        depthBuffer_.format()  
     );
 
     uniformBuffer_.create(device_.getPhysical(), device_.get());
@@ -44,10 +51,11 @@ void VulkanContext::init(GLFWwindow* window)
         device_.get(),
         renderPass_.get(),
         swapchain_.getImageViews(),
+        depthBuffer_.view(),      
         swapchain_.getExtent()
     );
 
-    auto vertices = ObjLoader::load("assets/suzanne.obj");  // 换成这个
+    auto vertices = ObjLoader::load("assets/suzanne.obj");
     vertexBuffer_.create(
         device_.getPhysical(),
         device_.get(),
@@ -66,6 +74,7 @@ void VulkanContext::cleanup()
     uniformBuffer_.destroy(device_.get());
     pipeline_.destroy(device_.get());
     framebuffer_.destroy(device_.get());
+    depthBuffer_.destroy(device_.get());
     renderPass_.destroy(device_.get());
 
     swapchain_.destroy(device_.get());

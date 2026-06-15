@@ -9,6 +9,7 @@
 #include "vulkan/device/VulkanDevice.h"
 #include "vulkan/descriptor/VulkanDescriptor.h"
 #include "vulkan/platform/VulkanSurface.h"
+#include "vulkan/renderpass/VulkanDepthBuffer.h"
 #include "vulkan/renderpass/VulkanFramebuffer.h"
 #include "vulkan/renderpass/VulkanRenderPass.h"
 #include "vulkan/swapchain/VulkanSwapchain.h"
@@ -31,6 +32,7 @@ public:
     VertexBuffer& vertexBuffer() { return vertexBuffer_; }
     UniformBuffer&    uniformBuffer() { return uniformBuffer_; }
     VulkanDescriptor& descriptor()    { return descriptor_; }
+    VulkanDepthBuffer& depthBuffer() { return depthBuffer_; }
 
     GLFWwindow* window() { return window_; }
 
@@ -48,5 +50,7 @@ private:
     VertexBuffer vertexBuffer_;
     UniformBuffer    uniformBuffer_;
     VulkanDescriptor descriptor_;
+    VulkanDepthBuffer depthBuffer_;
+
 };
 

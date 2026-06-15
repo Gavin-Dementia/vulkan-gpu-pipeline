@@ -11,7 +11,7 @@ void VertexBuffer::create(
     count_ = static_cast<uint32_t>(vertices.size());
     VkDeviceSize size = sizeof(Vertex) * vertices.size();
 
-    // 1. 建staging buffer（CPU可写）
+    // 1. staging buffer（CPU writable）
     VulkanBuffer staging;
     staging.create(
         physical, device, size,
@@ -19,20 +19,20 @@ void VertexBuffer::create(
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
-    // 2. 把顶点数据写进staging
+    // 2. write vertex data into staging
     staging.upload(device, vertices.data(), size);
 
-    // 3. 建真正的vertex buffer（GPU专用）
+    // 3. build GPU vertex buffer
     buffer_.create(
         physical, device, size,
         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
     );
 
-    // 4. GPU把staging的数据copy过来
+    // 4. copy staging
     copyBuffer(device, pool, queue, staging.get(), buffer_.get(), size);
 
-    // 5. staging buffer完成使命，销毁
+    // 5. deatory staging buffer
     staging.destroy(device);
 }
 
@@ -56,7 +56,7 @@ void VertexBuffer::copyBuffer(
     VkBuffer dst,
     VkDeviceSize size)
 {
-    // 一次性command buffer
+    // throw_away command buffer
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -78,14 +78,14 @@ void VertexBuffer::copyBuffer(
 
     vkEndCommandBuffer(cmd);
 
-    // submit，等GPU完成
+    // submit wait untile GPU finish
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
     vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(queue);  // 等这次transfer完成
+    vkQueueWaitIdle(queue);  // wait for transfor complite
 
     vkFreeCommandBuffers(device, pool, 1, &cmd);
 }

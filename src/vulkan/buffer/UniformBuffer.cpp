@@ -1,9 +1,14 @@
 #include "vulkan/buffer/UniformBuffer.h"
 #include <cstring>
 
+// Uniform Buffer ||  Vertex Buffer
+// Vertex Buffer  : upload vertex data once, read while render each frame
+// Uniform Buffer : matirx , CPU write each frame, shader read
+// Uniform Buffer use HOST_VISIBLE 
+// cause each frame written by CPU use staging will become slower
 void UniformBuffer::create(VkPhysicalDevice physical, VkDevice device)
 {
-    // HOST_VISIBLE + HOST_COHERENT：CPU 直接写，不需要 staging
+    // HOST_VISIBLE + HOST_COHERENT：CPU writ, no need staging
     buffer_.create(
         physical, device,
         sizeof(UBOData),

@@ -109,6 +109,7 @@ set(VULKAN_RESOURCE_SRC
 )
 
 set(VULKAN_RENDERPASS_SRC
+    src/vulkan/renderpass/VulkanDepthBuffer.cpp 
     src/vulkan/renderpass/VulkanRenderPass.cpp
     src/vulkan/renderpass/VulkanFramebuffer.cpp
 )

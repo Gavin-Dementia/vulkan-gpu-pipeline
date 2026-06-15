@@ -5,7 +5,10 @@
 class VulkanRenderPass
 {
 public:
-    void create(VkDevice device, VkFormat swapchainFormat);
+    void create(
+        VkDevice device,
+        VkFormat colorFormat,
+        VkFormat depthFormat);
     void destroy(VkDevice device);
 
     VkRenderPass get() const { return renderPass; }

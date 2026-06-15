@@ -3,13 +3,17 @@
 
 #include <stdexcept>
 #include <iostream>
+#include <array>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include "vulkan/buffer/UniformBuffer.h"
 
-// Suzanne world-space offset (model center → origin)
+// Suzanne OBJ world-space center offset → move to origin
+// X: (-3.86 + -1.13) / 2 = -2.49
+// Y: (0.27 + 2.24) / 2   =  1.25
+// Z: (3.25 + 4.96) / 2   =  4.10
 static constexpr glm::vec3 SUZANNE_OFFSET = { 2.49f, -1.25f, -4.10f };
 
 void FrameRenderer::init(VulkanContext& ctx)
@@ -47,27 +51,27 @@ void FrameRenderer::init(VulkanContext& ctx)
             UBOData ubo{};
             ubo.model = glm::rotate(
                 glm::translate(glm::mat4(1.0f), SUZANNE_OFFSET),
-                (float)glfwGetTime(),          // 随时间旋转
+                (float)glfwGetTime(),          // rotate with time
                 glm::vec3(0.0f, 1.0f, 1.0f)
             );
             ubo.view = glm::lookAt(
-                glm::vec3(0.0f, 0.0f, 10.0f),  // 摄像机位置
-                glm::vec3(0.0f, 0.0f, 0.0f),  // 看向原点
-                glm::vec3(0.0f, 1.0f, 0.0f)   // 上方向
+                glm::vec3(0.0f, 0.0f, 10.0f),  // cam pos
+                glm::vec3(0.0f, 0.0f, 0.0f),  // lookat origin
+                glm::vec3(0.0f, 1.0f, 0.0f)   // uphup
             );
             ubo.proj = glm::perspective(
                 glm::radians(45.0f),
                 1280.0f / 720.0f,
                 0.1f, 100.0f
             );
-            // Vulkan 的 Y 轴和 OpenGL 相反，要翻转
+            // Vulkan 的 Y 轴和 OpenGL 相反
             ubo.proj[1][1] *= -1;
 
             context->uniformBuffer().update(context->device().get(), ubo);
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
 
-            // 绑定 DescriptorSet（告诉 GPU uniform buffer 在哪）
+            // bind DescriptorSet（notify where GPU uniform buffer is）
             VkDescriptorSet ds = context->descriptor().set();
             vkCmdBindDescriptorSets(
                 cmd,
@@ -154,8 +158,11 @@ void FrameRenderer::drawFrame()
 
     vkBeginCommandBuffer(frame.commandBuffer, &beginInfo);
 
-    VkClearValue clear{};
-    clear.color = {0.1f, 0.2f, 0.7f, 1.0f};
+    // VkClearValue clear{};
+    // clear.color = {0.1f, 0.2f, 0.7f, 1.0f};
+    std::array<VkClearValue, 2> clearValues{};
+    clearValues[0].color        = { 0.1f, 0.2f, 0.7f, 1.0f };
+    clearValues[1].depthStencil = { 1.0f, 0 };   // depth=1.0（最远），stencil=0
 
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -163,8 +170,8 @@ void FrameRenderer::drawFrame()
     rp.framebuffer = framebuffer.get()[imageIndex];
     rp.renderArea.offset = {0, 0};
     rp.renderArea.extent = swapchain.getExtent();
-    rp.clearValueCount = 1;
-    rp.pClearValues = &clear;
+    rp.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    rp.pClearValues    = clearValues.data();
 
     vkCmdBeginRenderPass(frame.commandBuffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
 

@@ -18,7 +18,7 @@ void VulkanBuffer::create(
     if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer_) != VK_SUCCESS)
         throw std::runtime_error("Failed to create buffer");
 
-    // 查询这个buffer需要什么样的内存
+    // looking for memory type of buffer needed
     VkMemoryRequirements memReq;
     vkGetBufferMemoryRequirements(device, buffer_, &memReq);
 
