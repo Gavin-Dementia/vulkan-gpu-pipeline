@@ -4,20 +4,36 @@ layout(local_size_x = 64) in;
 
 struct ObjectData
 {
-    vec4 boundingSphere;  // xyz=世界空间中心, w=半径
+    vec4 boundingSphere;  // xyz=center, w=radius
 };
 
+struct InstanceData
+{
+    vec4 position;
+};
+
+// 输入：原始物体数据（343个）
 layout(std430, binding = 0) readonly buffer ObjectBuffer
 {
     ObjectData objects[];
 };
 
-layout(std430, binding = 1) writeonly buffer VisibilityBuffer
+// 输出：压缩后的instance数据（只有通过culling的会被写入）
+layout(std430, binding = 1) writeonly buffer VisibleInstanceBuffer
 {
-    uint visible[];
+    InstanceData visibleInstances[];
 };
 
-// 视锥体的6个平面，每个平面用vec4表示(normal.xyz, distance)
+// 输出：Indirect Draw参数（GPU自己改写instanceCount）
+layout(std430, binding = 3) buffer IndirectDrawBuffer
+{
+    uint indexCount;
+    uint instanceCount;   // ← 这个值会被原子递增
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+} indirectDraw;
+
 layout(binding = 2) uniform FrustumData
 {
     vec4 planes[6];
@@ -27,12 +43,12 @@ void main()
 {
     uint idx = gl_GlobalInvocationID.x;
 
+    if (idx >= objects.length()) return;
+
     vec3 center = objects[idx].boundingSphere.xyz;
     float radius = objects[idx].boundingSphere.w;
 
     bool inside = true;
-
-    // 检查球心到每个平面的距离，如果小于-radius，球完全在平面外侧
     for (int i = 0; i < 6; i++)
     {
         float dist = dot(frustum.planes[i].xyz, center) + frustum.planes[i].w;
@@ -43,5 +59,11 @@ void main()
         }
     }
 
-    visible[idx] = inside ? 1u : 0u;
+    if (inside)
+    {
+        // 原子递增计数器，拿到自己应该写入的位置
+        uint writeIndex = atomicAdd(indirectDraw.instanceCount, 1u);
+        visibleInstances[writeIndex].position = vec4(center, 1.0);
+    }
 }
+

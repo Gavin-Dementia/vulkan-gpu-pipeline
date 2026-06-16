@@ -5,14 +5,19 @@
 void ComputeDescriptor::create(
     VkDevice device,
     VkBuffer objectBuffer,
-    VkBuffer visibilityBuffer,
+    VkBuffer visibleInstanceBuffer,
     VkBuffer frustumBuffer,
+    VkBuffer indirectDrawBuffer,
     VkDeviceSize objectBufferSize,
-    VkDeviceSize visibilityBufferSize,
-    VkDeviceSize frustumBufferSize)
+    VkDeviceSize visibleInstanceBufferSize,
+    VkDeviceSize frustumBufferSize,
+    VkDeviceSize indirectDrawBufferSize)
 {
-    // ---- Layout: binding 0 = object SSBO (read), binding 1 = visibility SSBO (write) ----
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    // binding 0: object (STORAGE_BUFFER)
+    // binding 1: visibleInstance (STORAGE_BUFFER)
+    // binding 2: frustum (UNIFORM_BUFFER)
+    // binding 3: indirectDraw (STORAGE_BUFFER)
 
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -29,6 +34,11 @@ void ComputeDescriptor::create(
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    bindings[3].binding         = 3;
+    bindings[3].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -41,7 +51,7 @@ void ComputeDescriptor::create(
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
 
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 2;   // object + visibility
+    poolSizes[0].descriptorCount = 3;   // object + visibleInstance + indirectDraw
 
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = 1;   // frustum
@@ -72,16 +82,21 @@ void ComputeDescriptor::create(
     objInfo.range  = objectBufferSize;
 
     VkDescriptorBufferInfo visInfo{};
-    visInfo.buffer = visibilityBuffer;
+    visInfo.buffer = visibleInstanceBuffer;
     visInfo.offset = 0;
-    visInfo.range  = visibilityBufferSize;
+    visInfo.range  = visibleInstanceBufferSize;
+    
+    VkDescriptorBufferInfo indirectDrawInfo{};
+    indirectDrawInfo.buffer = indirectDrawBuffer;
+    indirectDrawInfo.offset = 0;
+    indirectDrawInfo.range  = indirectDrawBufferSize;
 
     VkDescriptorBufferInfo frustInfo{};
     frustInfo.buffer = frustumBuffer;
     frustInfo.offset = 0;
     frustInfo.range  = frustumBufferSize;
 
-    std::array<VkWriteDescriptorSet, 3> writes{};
+    std::array<VkWriteDescriptorSet, 4> writes{};
 
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = set_;
@@ -103,6 +118,13 @@ void ComputeDescriptor::create(
     writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[2].descriptorCount = 1;
     writes[2].pBufferInfo     = &frustInfo;
+
+    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet          = set_;
+    writes[3].dstBinding      = 3;
+    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[3].descriptorCount = 1;
+    writes[3].pBufferInfo     = &indirectDrawInfo;
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }

@@ -1,20 +1,35 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "vulkan/resource/ObjLoader.h"
 #include "tiny_obj_loader.h"
-#include <cfloat>
 #include <stdexcept>
-#include <filesystem>
 #include <iostream>
+#include <unordered_map>
 
-std::vector<Vertex> ObjLoader::load(const std::string& path)
+// put Vertex into unordered_map to compare with self_define hash
+struct VertexHash
+{
+    size_t operator()(const Vertex& v) const
+    {
+        size_t h1 = std::hash<float>()(v.position.x) ^ std::hash<float>()(v.position.y) ^ std::hash<float>()(v.position.z);
+        size_t h2 = std::hash<float>()(v.normal.x)   ^ std::hash<float>()(v.normal.y)   ^ std::hash<float>()(v.normal.z);
+        return h1 ^ (h2 << 1);
+    }
+};
+
+struct VertexEqual
+{
+    bool operator()(const Vertex& a, const Vertex& b) const
+    {
+        return a.position == b.position && a.normal == b.normal;
+    }
+};
+
+MeshData ObjLoader::load(const std::string& path)
 {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
-
-    // std::cout << "[ObjLoader] looking for: " << path << "\n";
-    // std::cout << "[ObjLoader] cwd: " << std::filesystem::current_path() << "\n";
 
     if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str()))
         throw std::runtime_error("Failed to load OBJ: " + path + "\n" + err);
@@ -22,18 +37,18 @@ std::vector<Vertex> ObjLoader::load(const std::string& path)
     if (!warn.empty())
         std::cout << "[ObjLoader] warn: " << warn << "\n";
 
-    std::vector<Vertex> vertices;
+    MeshData mesh;
+    std::unordered_map<Vertex, uint32_t, VertexHash, VertexEqual> uniqueVertices;
 
     for (const auto& shape : shapes)
     {
         for (const auto& index : shape.mesh.indices)
         {
             Vertex v{};
-            
             v.position = {
                 attrib.vertices[3 * index.vertex_index + 0],
                 attrib.vertices[3 * index.vertex_index + 1],
-                attrib.vertices[3 * index.vertex_index + 2]  
+                attrib.vertices[3 * index.vertex_index + 2]
             };
 
             if (index.normal_index >= 0)
@@ -46,31 +61,23 @@ std::vector<Vertex> ObjLoader::load(const std::string& path)
             }
             else
             {
-                v.normal = { 0.0f, 0.0f, 1.0f };  // fallback
+                v.normal = { 0.0f, 0.0f, 1.0f };
             }
-            vertices.push_back(v);
+
+            // 如果这个顶点没出现过，加进顶点数组，记下它的index
+            if (uniqueVertices.count(v) == 0)
+            {
+                uniqueVertices[v] = static_cast<uint32_t>(mesh.vertices.size());
+                mesh.vertices.push_back(v);
+            }
+
+            mesh.indices.push_back(uniqueVertices[v]);
         }
     }
 
-    std::cout << "[ObjLoader] loaded " << vertices.size() << " vertices from " << path << "\n";
-    
-    // float minX = FLT_MAX, maxX = -FLT_MAX;
-    // float minY = FLT_MAX, maxY = -FLT_MAX;
-    // float minZ = FLT_MAX, maxZ = -FLT_MAX;
+    std::cout << "[ObjLoader] " << mesh.vertices.size() << " unique vertices, "
+               << mesh.indices.size() << " indices (from " << path << ")\n";
 
-    // for (const auto& v : vertices) {
-    //     minX = std::min(minX, v.position.x);
-    //     maxX = std::max(maxX, v.position.x);
-    //     minY = std::min(minY, v.position.y);
-    //     maxY = std::max(maxY, v.position.y);
-    //     minZ = std::min(minZ, v.position.z);
-    //     maxZ = std::max(maxZ, v.position.z);
-    // }    
-    
-    // std::cout << "[ObjLoader] X range: " << minX << " ~ " << maxX << "\n";
-    // std::cout << "[ObjLoader] Y range: " << minY << " ~ " << maxY << "\n";
-    // std::cout << "[ObjLoader] Z range: " << minZ << " ~ " << maxZ << "\n";
-    
-    return vertices;
+    return mesh;
 }
 

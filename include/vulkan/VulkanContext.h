@@ -17,13 +17,25 @@
 #include "vulkan/swapchain/VulkanSwapchain.h"
 #include "vulkan/pipeline/VulkanPipeline.h"
 #include "vulkan/pipeline/VulkanComputePipeline.h"
+#include "vulkan/buffer/IndexBuffer.h"
+#include "vulkan/buffer/InstanceBuffer.h"
+#include "vulkan/buffer/IndirectDrawBuffer.h"
+
+
+
+
 
 class VulkanContext
 {
 public:
-    static constexpr uint32_t OBJECT_COUNT = 128;  // 假数据数量
+    static constexpr uint32_t GRID_SIZE = 7;
+    static constexpr uint32_t OBJECT_COUNT = 
+                                GRID_SIZE * GRID_SIZE * GRID_SIZE;  // 343
+    
     void init(GLFWwindow* window);
     void cleanup();
+
+    GLFWwindow* window() { return window_; }
 
     VulkanDevice&          device()            { return device_; }
     VulkanSwapchain&       swapchain()         { return swapchain_; }
@@ -42,8 +54,14 @@ public:
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
     VulkanBuffer&          visibilityBuffer()  { return visibilityBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
-    
-    GLFWwindow* window() { return window_; }
+    IndexBuffer&           indexBuffer()       { return indexBuffer_; }
+    InstanceBuffer&        instanceBuffer()    { return instanceBuffer_; }
+    VulkanBuffer&          visibleInstanceBuffer() { return visibleInstanceBuffer_; }
+    IndirectDrawBuffer&    indirectDrawBuffer()    { return indirectDrawBuffer_; }
+
+
+
+
 
 private:
     GLFWwindow* window_ = nullptr;
@@ -60,11 +78,17 @@ private:
     UniformBuffer         uniformBuffer_;
     VulkanDescriptor      descriptor_;
     VulkanDepthBuffer     depthBuffer_;
-
     VulkanBuffer          objectBuffer_;
     VulkanBuffer          visibilityBuffer_;
     ComputeDescriptor     computeDescriptor_;
     VulkanComputePipeline computePipeline_;
     VulkanBuffer          frustumBuffer_;
+    IndexBuffer           indexBuffer_;
+    InstanceBuffer        instanceBuffer_;
+    VulkanBuffer          visibleInstanceBuffer_;
+    IndirectDrawBuffer    indirectDrawBuffer_;
+
+
+
 };
 

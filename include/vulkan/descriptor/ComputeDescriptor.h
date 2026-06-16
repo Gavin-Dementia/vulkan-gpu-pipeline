@@ -7,11 +7,13 @@ public:
     void create(
         VkDevice device,
         VkBuffer objectBuffer,
-        VkBuffer visibilityBuffer,
-        VkBuffer frustumBuffer,    
+        VkBuffer visibleInstanceBuffer,
+        VkBuffer frustumBuffer,
+        VkBuffer indirectDrawBuffer,
         VkDeviceSize objectBufferSize,
-        VkDeviceSize visibilityBufferSize,
-        VkDeviceSize frustumBufferSize
+        VkDeviceSize visibleInstanceBufferSize,
+        VkDeviceSize frustumBufferSize,
+        VkDeviceSize indirectDrawBufferSize
     );
     void destroy(VkDevice device);
 

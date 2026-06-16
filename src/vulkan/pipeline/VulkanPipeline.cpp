@@ -2,6 +2,7 @@
 #include "vulkan/pipeline/VulkanPipeline.h"
 #include "vulkan/resource/ShaderLoader.h"
 #include "vulkan/device/VulkanDevice.h"
+#include "vulkan/instance/InstanceData.h"
 #include <vector>
 #include <stdexcept>
 
@@ -33,15 +34,32 @@ void VulkanPipeline::create(
     stages[1].pName  = "main";
 
     // =========================================================
-    // 2. Vertex input (no vertex buffer yet)
+    // 2. Vertex input (vertex buffer)
     // =========================================================
-    auto binding = Vertex::getBindingDescription();
-    auto attrs   = Vertex::getAttributeDescriptions();
+    auto vertexBinding = Vertex::getBindingDescription();        // binding=0
+    auto vertexAttrs   = Vertex::getAttributeDescriptions();     // location 0,1
+
+    VkVertexInputBindingDescription instanceBinding{};
+    instanceBinding.binding   = 1;
+    instanceBinding.stride    = sizeof(InstanceData);
+    instanceBinding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;   
+    // +：IS per-instance NOT per-vertex
+
+    VkVertexInputAttributeDescription instanceAttr{};
+    instanceAttr.binding  = 1;
+    instanceAttr.location = 2;   // after Vertex's location 0,1
+    instanceAttr.format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+    instanceAttr.offset   = 0;
+
+    std::array<VkVertexInputBindingDescription, 2> bindings = { vertexBinding, instanceBinding };
+
+    std::vector<VkVertexInputAttributeDescription> attrs(vertexAttrs.begin(), vertexAttrs.end());
+    attrs.push_back(instanceAttr);
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount   = 1;
-    vertexInputInfo.pVertexBindingDescriptions      = &binding;
+    vertexInputInfo.vertexBindingDescriptionCount   = static_cast<uint32_t>(bindings.size());
+    vertexInputInfo.pVertexBindingDescriptions      = bindings.data();
     vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
     vertexInputInfo.pVertexAttributeDescriptions    = attrs.data();
 

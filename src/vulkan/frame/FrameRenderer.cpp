@@ -48,35 +48,28 @@ void FrameRenderer::init(VulkanContext& ctx)
         {},
         mainPipeline,
         [this](VkCommandBuffer cmd)
-        {
-            // 1. 算出当前帧的view-proj矩阵（复用GeometryPass会用的同一套矩阵）
-            glm::mat4 model = glm::rotate(
-                glm::translate(glm::mat4(1.0f), SUZANNE_OFFSET),
-                (float)glfwGetTime(),
-                glm::vec3(0.0f, 1.0f, 0.0f)
+        {  
+            // 1. reset instanceCount=0（CPU directe write, HOST_VISIBLE）
+            context->indirectDrawBuffer().resetInstanceCount(
+                context->device().get(),
+                context->indexBuffer().indexCount()
             );
-            glm::mat4 view = glm::lookAt(
-                glm::vec3(0.0f, 0.0f, 3.0f),
-                glm::vec3(0.0f, 0.0f, 0.0f),
-                glm::vec3(0.0f, 1.0f, 0.0f)
-            );
-            glm::mat4 proj = glm::perspective(glm::radians(45.0f), 1280.0f/720.0f, 0.1f, 100.0f);
+
+            // 2. update frustum
+            glm::mat4 view = glm::lookAt(glm::vec3(0,0,25), glm::vec3(0), glm::vec3(0,1,0));
+            glm::mat4 proj = glm::perspective(glm::radians(45.0f), 1280.0f/720.0f, 0.1f, 200.0f);
             proj[1][1] *= -1;
 
             FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view);
             context->frustumBuffer().upload(context->device().get(), frustum.planes.data(), sizeof(glm::vec4)*6);
 
-            // 2. dispatch compute shader
+            // 3. dispatch
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().get());
 
             VkDescriptorSet ds = context->computeDescriptor().set();
-            vkCmdBindDescriptorSets(
-                cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                context->computePipeline().layout(),
-                0, 1, &ds, 0, nullptr
-            );
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().layout(), 0, 1, &ds, 0, nullptr);
 
-            vkCmdDispatch(cmd, VulkanContext::OBJECT_COUNT / 64, 1, 1);
+            vkCmdDispatch(cmd, (VulkanContext::OBJECT_COUNT + 63) / 64, 1, 1);
         },
         PassStage::Compute
     });
@@ -91,25 +84,26 @@ void FrameRenderer::init(VulkanContext& ctx)
         mainPipeline,
         [this](VkCommandBuffer cmd)
         {
-            // 每帧更新 MVP 矩阵
+            // update MVP each frame
             UBOData ubo{};
+            // model matrix
             ubo.model = glm::rotate(
-                glm::translate(glm::mat4(1.0f), SUZANNE_OFFSET),
-                (float)glfwGetTime(),          // rotate with time
-                glm::vec3(0.0f, 1.0f, 1.0f)
+                glm::mat4(1.0f),
+                (float)glfwGetTime(),
+                glm::vec3(0.0f, 1.0f, 0.0f)
             );
             ubo.view = glm::lookAt(
-                glm::vec3(0.0f, 0.0f, 10.0f),  // cam pos
+                glm::vec3(0.0f, 0.0f, 25.0f),  // cam pos
                 glm::vec3(0.0f, 0.0f, 0.0f),  // lookat origin
                 glm::vec3(0.0f, 1.0f, 0.0f)   // uphup
             );
             ubo.proj = glm::perspective(
                 glm::radians(45.0f),
                 1280.0f / 720.0f,
-                0.1f, 100.0f
-            );
-            // Vulkan 的 Y 轴和 OpenGL 相反
-            ubo.proj[1][1] *= -1;
+                0.1f, 200.0f
+            );// increace far plane
+            
+            ubo.proj[1][1] *= -1;// Vulkan 的 Y 轴和 OpenGL 相反
 
             context->uniformBuffer().update(context->device().get(), ubo);
 
@@ -120,13 +114,25 @@ void FrameRenderer::init(VulkanContext& ctx)
             vkCmdBindDescriptorSets(
                 cmd,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
-                context->pipeline().getLayout(),   // 需要 pipeline layout
+                context->pipeline().getLayout(),
                 0, 1, &ds,
                 0, nullptr
             );
 
             context->vertexBuffer().bind(cmd);
-            vkCmdDraw(cmd, context->vertexBuffer().vertexCount(), 1, 0, 0);
+            context->indexBuffer().bind(cmd); 
+            VkBuffer instanceBuffers[] = { context->visibleInstanceBuffer().get() };
+            VkDeviceSize offsets[] = { 0 };
+            vkCmdBindVertexBuffers(cmd, 1, 1, instanceBuffers, offsets);
+
+            // Indirect Draw：use GPU buffer
+            vkCmdDrawIndexedIndirect(
+                cmd,
+                context->indirectDrawBuffer().get(),
+                0,    // offset
+                1,    // drawCount(ONLY ONE draw command)
+                sizeof(DrawIndirectCommand)
+            );
         },
         PassStage::Graphics
     });
@@ -206,16 +212,19 @@ void FrameRenderer::drawFrame()
     // ===== Compute：outside RenderPass =====
     graph->executeCompute(frame.commandBuffer);
 
-    // Barrier：确保compute写完visibility buffer，graphics才能读
+    // Barrier：insure compute COMPLETE visibility buffer 
+    // then let graphics read
     VkMemoryBarrier barrier{};
     barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = 
+        VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | 
+        VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 
     vkCmdPipelineBarrier(
         frame.commandBuffer,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
         0, 1, &barrier, 0, nullptr, 0, nullptr
     );
 

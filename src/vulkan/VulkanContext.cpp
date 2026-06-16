@@ -56,23 +56,59 @@ void VulkanContext::init(GLFWwindow* window)
         swapchain_.getExtent()
     );
 
-    auto vertices = ObjLoader::load("assets/suzanne.obj");
+    auto mesh = ObjLoader::load("assets/suzanne.obj");
     vertexBuffer_.create(
-        device_.getPhysical(),
-        device_.get(),
-        commandPool_.get(),
-        device_.getGraphicsQueue(),
-        vertices
+        device_.getPhysical(), device_.get(),
+        commandPool_.get(), device_.getGraphicsQueue(),
+        mesh.vertices
     );
 
-    // ---- Compute culling setup (fake data for now) ----
-    struct FakeObjectData { glm::vec4 boundingSphere; };
+    indexBuffer_.create(
+        device_.getPhysical(), device_.get(),
+        commandPool_.get(), device_.getGraphicsQueue(),
+        mesh.indices
+    );
 
-    std::vector<FakeObjectData> fakeObjects(OBJECT_COUNT);
-    for (auto& obj : fakeObjects)
-        obj.boundingSphere = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);  // 假数据，先全填一样的
+    // ---- Compute culling setup ----
+    // 7x7x7, blank 3.0, origin
+    std::vector<InstanceData> instances(OBJECT_COUNT);
 
-    VkDeviceSize objSize = sizeof(FakeObjectData) * OBJECT_COUNT;
+    float spacing = 3.0f;
+    float halfGrid = (GRID_SIZE - 1) * spacing * 0.5f;
+
+    uint32_t idx = 0;
+    for (uint32_t x = 0; x < GRID_SIZE; x++)
+    for (uint32_t y = 0; y < GRID_SIZE; y++)
+    for (uint32_t z = 0; z < GRID_SIZE; z++)
+    {
+        glm::vec3 pos = {
+            x * spacing - halfGrid,
+            y * spacing - halfGrid,
+            z * spacing - halfGrid
+        };
+        instances[idx++].position = glm::vec4(pos, 1.0f);
+    }
+
+    instanceBuffer_.create(
+        device_.getPhysical(), device_.get(),
+        commandPool_.get(), device_.getGraphicsQueue(),
+        instances
+    );
+
+    struct ComputeObjectData { glm::vec4 boundingSphere; };  // xyz=center, w=radius
+
+    std::vector<ComputeObjectData> objects(OBJECT_COUNT);
+    float suzanneRadius = 1.5f;  // Suzanne大约的包围球半径
+
+    for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+    {
+        objects[i].boundingSphere = glm::vec4(
+            glm::vec3(instances[i].position),
+            suzanneRadius
+        );
+    }
+
+    VkDeviceSize objSize = sizeof(ComputeObjectData) * OBJECT_COUNT;
     VkDeviceSize visSize = sizeof(uint32_t) * OBJECT_COUNT;
 
     objectBuffer_.create(
@@ -80,7 +116,21 @@ void VulkanContext::init(GLFWwindow* window)
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
-    objectBuffer_.upload(device_.get(), fakeObjects.data(), objSize);
+    objectBuffer_.upload(device_.get(), objects.data(), objSize);
+
+    // 输出buffer：大小跟原始instance一样大（最坏情况全部可见）
+    VkDeviceSize visibleInstanceSize = sizeof(InstanceData) * OBJECT_COUNT;
+
+    visibleInstanceBuffer_.create(
+        device_.getPhysical(), device_.get(), visibleInstanceSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,  // 双重用途
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+
+    indirectDrawBuffer_.create(
+        device_.getPhysical(), device_.get(),
+        static_cast<uint32_t>(mesh.indices.size())  // 用Suzanne的真实index count
+    );
 
     visibilityBuffer_.create(
         device_.getPhysical(), device_.get(), visSize,
@@ -97,13 +147,16 @@ void VulkanContext::init(GLFWwindow* window)
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
+    VkDeviceSize indirectDrawSize= sizeof(VkDrawIndexedIndirectCommand);
+
     computeDescriptor_.create(
         device_.get(),
         objectBuffer_.get(),
-        visibilityBuffer_.get(),
+        visibleInstanceBuffer_.get(),
         frustumBuffer_.get(),
-        objSize, visSize,
-        frustumSize
+        indirectDrawBuffer_.get(),
+        objSize, visibleInstanceSize,
+        frustumSize, indirectDrawSize
     );
 
     computePipeline_.create(device_.get(), computeDescriptor_.layout());
@@ -117,9 +170,12 @@ void VulkanContext::cleanup()
     computePipeline_.destroy(device_.get());
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
-    objectBuffer_.destroy(device_.get());
     visibilityBuffer_.destroy(device_.get());
-
+    visibleInstanceBuffer_.destroy(device_.get());
+    indirectDrawBuffer_.destroy(device_.get());
+    objectBuffer_.destroy(device_.get());
+    instanceBuffer_.destroy(device_.get());
+    indexBuffer_.destroy(device_.get());
     vertexBuffer_.destroy(device_.get());
     descriptor_.destroy(device_.get());
     uniformBuffer_.destroy(device_.get());
