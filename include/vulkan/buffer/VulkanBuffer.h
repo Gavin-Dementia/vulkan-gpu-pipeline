@@ -18,6 +18,8 @@ public:
     // only effected with HOST_VISIBLE's buffer
     void upload(VkDevice device, const void* data, VkDeviceSize size);
 
+    void download(VkDevice device, void* outData, VkDeviceSize size);
+    
     VkBuffer get() const { return buffer_; }
 
 private:

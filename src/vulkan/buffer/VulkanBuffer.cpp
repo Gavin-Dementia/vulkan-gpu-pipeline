@@ -51,6 +51,14 @@ void VulkanBuffer::upload(VkDevice device, const void* data, VkDeviceSize size)
     vkUnmapMemory(device, memory_);
 }
 
+void VulkanBuffer::download(VkDevice device, void* outData, VkDeviceSize size)
+{
+    void* mapped;
+    vkMapMemory(device, memory_, 0, size, 0, &mapped);
+    memcpy(outData, mapped, size);
+    vkUnmapMemory(device, memory_);
+}
+
 uint32_t VulkanBuffer::findMemoryType(
     VkPhysicalDevice physical,
     uint32_t typeFilter,

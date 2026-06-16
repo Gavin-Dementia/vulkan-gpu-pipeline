@@ -1,5 +1,7 @@
 #include "vulkan/frame/FrameRenderer.h"
 #include "vulkan/VulkanContext.h"
+#include "vulkan/culling/Frustum.h"
+#include "vulkan/frame/FrameGraph.h"
 
 #include <stdexcept>
 #include <iostream>
@@ -36,13 +38,55 @@ void FrameRenderer::init(VulkanContext& ctx)
     graph->init(context);
 
     VkPipeline mainPipeline = context->pipeline().get();
+    
+    // =====================================================
+    // GPUCulling
+    // =====================================================
+    int cullingPass = graph->addPass({
+        "GPUCullingPass",
+        {},
+        {},
+        mainPipeline,
+        [this](VkCommandBuffer cmd)
+        {
+            // 1. 算出当前帧的view-proj矩阵（复用GeometryPass会用的同一套矩阵）
+            glm::mat4 model = glm::rotate(
+                glm::translate(glm::mat4(1.0f), SUZANNE_OFFSET),
+                (float)glfwGetTime(),
+                glm::vec3(0.0f, 1.0f, 0.0f)
+            );
+            glm::mat4 view = glm::lookAt(
+                glm::vec3(0.0f, 0.0f, 3.0f),
+                glm::vec3(0.0f, 0.0f, 0.0f),
+                glm::vec3(0.0f, 1.0f, 0.0f)
+            );
+            glm::mat4 proj = glm::perspective(glm::radians(45.0f), 1280.0f/720.0f, 0.1f, 100.0f);
+            proj[1][1] *= -1;
+
+            FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view);
+            context->frustumBuffer().upload(context->device().get(), frustum.planes.data(), sizeof(glm::vec4)*6);
+
+            // 2. dispatch compute shader
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().get());
+
+            VkDescriptorSet ds = context->computeDescriptor().set();
+            vkCmdBindDescriptorSets(
+                cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                context->computePipeline().layout(),
+                0, 1, &ds, 0, nullptr
+            );
+
+            vkCmdDispatch(cmd, VulkanContext::OBJECT_COUNT / 64, 1, 1);
+        },
+        PassStage::Compute
+    });
 
     // =====================================================
     // Pass 0: Geometry
     // =====================================================
     int geometryPass = graph->addPass(RGPass{
         "GeometryPass",
-        {},
+        {cullingPass},
         {},
         mainPipeline,
         [this](VkCommandBuffer cmd)
@@ -83,7 +127,8 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             context->vertexBuffer().bind(cmd);
             vkCmdDraw(cmd, context->vertexBuffer().vertexCount(), 1, 0, 0);
-        }
+        },
+        PassStage::Graphics
     });
 
     // =====================================================
@@ -158,8 +203,23 @@ void FrameRenderer::drawFrame()
 
     vkBeginCommandBuffer(frame.commandBuffer, &beginInfo);
 
-    // VkClearValue clear{};
-    // clear.color = {0.1f, 0.2f, 0.7f, 1.0f};
+    // ===== Compute：outside RenderPass =====
+    graph->executeCompute(frame.commandBuffer);
+
+    // Barrier：确保compute写完visibility buffer，graphics才能读
+    VkMemoryBarrier barrier{};
+    barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        frame.commandBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr
+    );
+
+    // ===== Graphics：inside RenderPass =====
     std::array<VkClearValue, 2> clearValues{};
     clearValues[0].color        = { 0.1f, 0.2f, 0.7f, 1.0f };
     clearValues[1].depthStencil = { 1.0f, 0 };   // depth=1.0（最远），stencil=0
@@ -176,7 +236,7 @@ void FrameRenderer::drawFrame()
     vkCmdBeginRenderPass(frame.commandBuffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
     // ===== FrameGraph execution =====
-    graph->execute(frame.commandBuffer);
+    graph->executeGraphics(frame.commandBuffer);
 
     vkCmdEndRenderPass(frame.commandBuffer);
 

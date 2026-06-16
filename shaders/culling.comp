@@ -1,0 +1,47 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+struct ObjectData
+{
+    vec4 boundingSphere;  // xyz=世界空间中心, w=半径
+};
+
+layout(std430, binding = 0) readonly buffer ObjectBuffer
+{
+    ObjectData objects[];
+};
+
+layout(std430, binding = 1) writeonly buffer VisibilityBuffer
+{
+    uint visible[];
+};
+
+// 视锥体的6个平面，每个平面用vec4表示(normal.xyz, distance)
+layout(binding = 2) uniform FrustumData
+{
+    vec4 planes[6];
+} frustum;
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+
+    vec3 center = objects[idx].boundingSphere.xyz;
+    float radius = objects[idx].boundingSphere.w;
+
+    bool inside = true;
+
+    // 检查球心到每个平面的距离，如果小于-radius，球完全在平面外侧
+    for (int i = 0; i < 6; i++)
+    {
+        float dist = dot(frustum.planes[i].xyz, center) + frustum.planes[i].w;
+        if (dist < -radius)
+        {
+            inside = false;
+            break;
+        }
+    }
+
+    visible[idx] = inside ? 1u : 0u;
+}

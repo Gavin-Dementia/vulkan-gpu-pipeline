@@ -1,5 +1,4 @@
 #pragma once
-// #include "vulkan/frame/FrameContext.h"
 
 #include <vector>
 #include <functional>
@@ -8,6 +7,12 @@
 #include <iostream>
 
 class VulkanContext;
+
+enum class PassStage
+{
+    Compute,
+    Graphics
+};
 
 struct RGPass
 {
@@ -20,6 +25,7 @@ struct RGPass
 
     // GPU command
     std::function<void(VkCommandBuffer)> execute;
+    PassStage stage = PassStage::Graphics;  
 };
 
 class FrameGraph
@@ -31,6 +37,9 @@ public:
 
     void build();   // build DAG order
     void execute(VkCommandBuffer cmd);
+
+    void executeCompute(VkCommandBuffer cmd);   // 在RenderPass外执行
+    void executeGraphics(VkCommandBuffer cmd);  // 在RenderPass内执行
 
 private:
     VulkanContext* context = nullptr;

@@ -32,6 +32,7 @@ find_program(GLSLC_EXECUTABLE glslc REQUIRED)
 set(SHADER_SRC
     ${CMAKE_SOURCE_DIR}/shaders/triangle.vert
     ${CMAKE_SOURCE_DIR}/shaders/triangle.frag
+    ${CMAKE_SOURCE_DIR}/shaders/culling.comp
 )
 
 set(SHADER_OUT_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/compiled)
@@ -91,6 +92,7 @@ set(VULKAN_CORE_SRC
 
 set(VULKAN_DESCRIPTOR_SRC
     src/vulkan/descriptor/VulkanDescriptor.cpp
+    src/vulkan/descriptor/ComputeDescriptor.cpp 
 )
 
 set(VULKAN_FRAME_SRC
@@ -101,6 +103,7 @@ set(VULKAN_FRAME_SRC
 
 set(VULKAN_PIPELINE_SRC
     src/vulkan/pipeline/VulkanPipeline.cpp
+    src/vulkan/pipeline/VulkanComputePipeline.cpp 
 )
 
 set(VULKAN_RESOURCE_SRC
