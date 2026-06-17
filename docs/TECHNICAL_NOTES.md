@@ -298,7 +298,61 @@ class, not an accident of code reuse.
 
 ---
 
-### 11. Refactor: splitting `init()` {#refactor-splitting-init}
+### 11. GPU readback timing: record-time vs. execute-time
+
+**Bug:** After wiring up the ImGui debug overlay to display
+`instanceCount` from the indirect draw buffer, the displayed value was
+stuck at `0` regardless of camera position or instance count. A direct
+diagnostic — calling `vkQueueWaitIdle()` immediately after
+`vkCmdDispatch()` inside the culling pass lambda, then reading the
+buffer — also returned `0`, which initially looked like confirmation
+that the compute shader wasn't culling anything.
+
+**Root cause:** `vkCmdDispatch()` does not execute anything — it
+*records* a dispatch instruction into the command buffer. The actual
+GPU execution only happens after that command buffer is submitted via
+`vkQueueSubmit()`. The diagnostic code was calling `vkQueueWaitIdle()`
+*during command buffer recording*, before the buffer had been submitted
+at all — there was nothing for the GPU to be idle *from* yet. The read
+that followed wasn't picking up a "culling failed" result; it was
+reading the buffer's reset value, because no compute work had run.
+
+This meant every layer of the actual culling logic (frustum extraction,
+sphere-plane test, atomic compaction, descriptor bindings) was correct
+from the start — confirmed by re-deriving and re-checking each one
+independently before finding the actual cause. The bug was never in the
+GPU-side logic; it was in *when* the CPU was allowed to look at the
+result.
+
+**Fix:** Readback of `instanceCount` was moved out of the pass-recording
+lambda entirely. It now happens once per frame, immediately after
+`vkWaitForFences()` succeeds at the top of `drawFrame()` — the one point
+in the frame loop where the *previous* frame's GPU work is guaranteed
+complete. The value is cached on `VulkanContext` and the ImGui pass
+reads the cached value rather than calling `getVisibleCount()` itself.
+
+**Consequence accepted deliberately:** The displayed count is always
+one frame behind the actual culling result for *that* frame (it shows
+what was visible last frame, not this frame). This is invisible at
+60fps and is the standard tradeoff for any GPU→CPU debug readback —
+the alternative (synchronizing every frame to read the current frame's
+exact result) would reintroduce a real GPU stall purely for a debug
+number, which is a worse trade than a one-frame-old display value.
+
+**Interview-relevant:** This is a strong example of distinguishing
+*recording* a command buffer from *executing* it — a foundational Vulkan
+concept that's easy to state abstractly but easy to violate in practice
+the first time a "just read it back to check" instinct (reasonable in
+higher-level APIs) gets applied to a command-buffer-based API. Worth
+volunteering directly if asked "what was the hardest bug in this
+project" — it's not flashy, but it demonstrates the difference between
+debugging by checking assumptions one at a time (which is what actually
+found it) versus debugging by re-reading code looking for a typo (which
+wouldn't have, since there wasn't one).
+
+---
+
+### 12. Refactor: splitting `init()` {#refactor-splitting-init}
 
 **Problem:** `VulkanContext::init()` grew into ~150 lines covering
 Vulkan core object creation, mesh loading, instance grid generation, and

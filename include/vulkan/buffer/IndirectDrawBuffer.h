@@ -18,6 +18,7 @@ public:
     void resetInstanceCount(VkDevice device, uint32_t indexCount);
     void destroy(VkDevice device);
 
+    uint32_t getVisibleCount(VkDevice device);
     VkBuffer get() const { return buffer_.get(); }
 
 private:

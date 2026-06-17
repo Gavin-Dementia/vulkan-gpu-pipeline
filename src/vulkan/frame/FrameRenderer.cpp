@@ -2,6 +2,7 @@
 #include "vulkan/VulkanContext.h"
 #include "vulkan/culling/Frustum.h"
 #include "vulkan/frame/FrameGraph.h"
+#include "imgui.h"
 
 #include <stdexcept>
 #include <iostream>
@@ -163,6 +164,32 @@ void FrameRenderer::init(VulkanContext& ctx)
     });
 
     // =====================================================
+    // ImGuiPass
+    // =====================================================
+    graph->addPass({
+        "ImGuiPass",
+        { geometryPass },   // 依赖GeometryPass，确保UI画在最上层
+        {},
+        mainPipeline,
+        [this](VkCommandBuffer cmd)
+        {
+            context->imguiLayer().beginFrame();
+
+            ImGui::Begin("GPU Culling Stats");
+            ImGui::Text("Visible: %u / %u", context->getLastVisibleCount(), VulkanContext::OBJECT_COUNT);
+            ImGui::Text("Camera: (%.1f, %.1f, %.1f)",
+                context->camera().position().x,
+                context->camera().position().y,
+                context->camera().position().z
+            );
+            ImGui::End();
+
+            context->imguiLayer().render(cmd);
+        },
+        PassStage::Graphics
+    });
+
+    // =====================================================
     // Build DAG
     // =====================================================
     graph->build();
@@ -180,6 +207,9 @@ void FrameRenderer::drawFrame()
     FrameContext& frame = frames[currentFrame];
 
     vkWaitForFences(device.get(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX);
+    
+    uint32_t lastFrameVisibleCount = context->indirectDrawBuffer().getVisibleCount(device.get());
+    context->setLastVisibleCount(lastFrameVisibleCount);  // 存起来给ImGuiPass用
     vkResetFences(device.get(), 1, &frame.inFlightFence);
 
     uint32_t imageIndex;

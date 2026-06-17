@@ -2,6 +2,8 @@
 
 #include <GLFW/glfw3.h>
 #include <vector>
+#include "core/Camera.h"
+#include "ui/ImGuiLayer.h"
 
 #include "vulkan/buffer/VertexBuffer.h"
 #include "vulkan/buffer/UniformBuffer.h"
@@ -21,8 +23,6 @@
 #include "vulkan/buffer/IndexBuffer.h"
 #include "vulkan/buffer/InstanceBuffer.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
-#include "core/Camera.h"
-
 
 
 
@@ -32,12 +32,17 @@ public:
     static constexpr uint32_t GRID_SIZE = 7;
     static constexpr uint32_t OBJECT_COUNT = 
                                 GRID_SIZE * GRID_SIZE * GRID_SIZE;  // 343
-    
+
+    uint32_t lastVisibleCount_ = 0;
+    void setLastVisibleCount(uint32_t c) { lastVisibleCount_ = c; }
+    uint32_t getLastVisibleCount() const { return lastVisibleCount_; }
+
     void init(GLFWwindow* window);
     void cleanup();
 
-    GLFWwindow* window() { return window_; }
-    Camera&     camera() { return camera_; }
+    GLFWwindow* window()     { return window_; }
+    Camera&     camera()     { return camera_; }
+    ImGuiLayer& imguiLayer() { return imguiLayer_; }
 
     VulkanDevice&          device()            { return device_; }
     VulkanSwapchain&       swapchain()         { return swapchain_; }
@@ -74,6 +79,7 @@ private:
 
     GLFWwindow* window_ = nullptr;
     Camera camera_;
+    ImGuiLayer imguiLayer_;
 
     VulkanInstance        instance_;
     VulkanSurface         surface_;

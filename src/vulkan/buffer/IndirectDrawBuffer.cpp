@@ -27,3 +27,10 @@ void IndirectDrawBuffer::destroy(VkDevice device)
     buffer_.destroy(device);
 }
 
+uint32_t IndirectDrawBuffer::getVisibleCount(VkDevice device)
+{
+    DrawIndirectCommand cmd;
+    buffer_.download(device, &cmd, sizeof(DrawIndirectCommand));
+    return cmd.instanceCount;
+}
+

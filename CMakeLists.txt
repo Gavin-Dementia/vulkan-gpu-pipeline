@@ -26,6 +26,28 @@ find_package(Vulkan REQUIRED)
 find_program(GLSLC_EXECUTABLE glslc REQUIRED)
 
 # =========================================================
+# ImGui core + backends
+# =========================================================
+
+set(IMGUI_DIR third_party/imgui)
+
+add_library(imgui STATIC
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+)
+
+target_include_directories(imgui PUBLIC
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+)
+
+target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
+
+# =========================================================
 # Shader System (AUTO BUILD SPIR-V)
 # =========================================================
 
@@ -69,6 +91,10 @@ add_custom_target(Shaders ALL DEPENDS ${SPIRV_SHADERS})
 set(CORE_SRC
     src/core/Application.cpp
     src/core/Camera.cpp
+)
+
+set(UI_SRC
+    src/ui/ImGuiLayer.cpp
 )
 
 # =========================================================
@@ -145,6 +171,7 @@ add_executable(app
     ${VULKAN_RESOURCE_SRC}
     ${VULKAN_SWAPCHAIN_SRC}
     ${VULKAN_SYNC_SRC}
+    ${UI_SRC} 
 )
 
 add_dependencies(app Shaders)
@@ -173,6 +200,7 @@ target_link_libraries(app PRIVATE
     glfw
     glm
     tinyobjloader
+    imgui   
     Vulkan::Vulkan
 )
 

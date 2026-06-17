@@ -12,6 +12,17 @@ void VulkanContext::init(GLFWwindow* window)
     initSceneData();
     initCullingResources();
 
+    imguiLayer_.init(
+        window_,
+        instance_.get(),
+        device_.getPhysical(),
+        device_.get(),
+        device_.getGraphicsQueueFamily(),
+        device_.getGraphicsQueue(),
+        renderPass_.get(),
+        swapchain_.getImageViews().size()
+    );
+
     std::cout << "Vulkan Context initialized\n";
 }
 
@@ -193,7 +204,7 @@ void VulkanContext::initCullingResources()
 
 void VulkanContext::cleanup()
 {
-    
+    imguiLayer_.destroy(device_.get());
     computePipeline_.destroy(device_.get());
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
