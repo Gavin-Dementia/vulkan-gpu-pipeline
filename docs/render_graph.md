@@ -1,20 +1,18 @@
 # Render Graph Architecture
 
-## Overview
-This document defines the Render Graph system for Vulkan pipeline abstraction.
+> This document originally tracked the Render Graph design while it was
+> still an MVP idea ("linear execution, no DAG yet"). The system has
+> since been implemented as a full DAG with Compute/Graphics stage
+> separation — see the detailed design rationale in
+> [`TECHNICAL_NOTES.md`](./TECHNICAL_NOTES.md), specifically:
+>
+> - §1 — FrameGraph as a DAG, not a fixed pipeline
+> - §4 — Compute and Graphics as separate FrameGraph stages
+>
+> and the current module breakdown in
+> [`architecture.md`](./architecture.md) under **FrameGraph**.
 
-## Core Idea
-Render Graph is a declarative rendering system that replaces manual frame execution logic.
+This stub is kept so old links/references to `render_graph.md` don't
+break, but `TECHNICAL_NOTES.md` is now the canonical source for design
+rationale on this system.
 
-## Components
-- RenderGraph
-- RenderPassNode
-- Resource dependency system (future)
-
-## Execution Flow
-1. Declare passes
-2. Build dependency graph
-3. Execute in topological order
-
-## Current Stage
-MVP: Linear execution (no DAG yet)
