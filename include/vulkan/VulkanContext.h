@@ -1,6 +1,7 @@
 #pragma once
 
 #include <GLFW/glfw3.h>
+#include <vector>
 
 #include "vulkan/buffer/VertexBuffer.h"
 #include "vulkan/buffer/UniformBuffer.h"
@@ -52,7 +53,6 @@ public:
     VulkanComputePipeline& computePipeline()   { return computePipeline_; }
     ComputeDescriptor&     computeDescriptor() { return computeDescriptor_; }
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
-    VulkanBuffer&          visibilityBuffer()  { return visibilityBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
     IndexBuffer&           indexBuffer()       { return indexBuffer_; }
     InstanceBuffer&        instanceBuffer()    { return instanceBuffer_; }
@@ -62,8 +62,15 @@ public:
 
 
 
-
 private:
+
+    void initCore();
+    void initSceneData();
+    void initCullingResources();
+
+    uint32_t meshIndexCount_ = 0;
+    std::vector<InstanceData> cachedInstances_;
+
     GLFWwindow* window_ = nullptr;
 
     VulkanInstance        instance_;
@@ -79,7 +86,6 @@ private:
     VulkanDescriptor      descriptor_;
     VulkanDepthBuffer     depthBuffer_;
     VulkanBuffer          objectBuffer_;
-    VulkanBuffer          visibilityBuffer_;
     ComputeDescriptor     computeDescriptor_;
     VulkanComputePipeline computePipeline_;
     VulkanBuffer          frustumBuffer_;

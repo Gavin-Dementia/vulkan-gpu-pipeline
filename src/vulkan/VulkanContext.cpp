@@ -8,6 +8,19 @@ void VulkanContext::init(GLFWwindow* window)
 {
     window_ = window;
 
+    initCore();
+    initSceneData();
+    initCullingResources();
+
+    std::cout << "Vulkan Context initialized\n";
+}
+
+// =========================================================
+// Core Vulkan objects: Instance -> Device -> Swapchain ->
+// DepthBuffer -> RenderPass -> Pipeline -> Framebuffer
+// =========================================================
+void VulkanContext::initCore()
+{
     instance_.create();
     surface_.create(instance_.get(), window_);
 
@@ -34,7 +47,7 @@ void VulkanContext::init(GLFWwindow* window)
     renderPass_.create(
         device_.get(),
         swapchain_.getImageFormat(),
-        depthBuffer_.format()  
+        depthBuffer_.format()
     );
 
     uniformBuffer_.create(device_.getPhysical(), device_.get());
@@ -52,11 +65,18 @@ void VulkanContext::init(GLFWwindow* window)
         device_.get(),
         renderPass_.get(),
         swapchain_.getImageViews(),
-        depthBuffer_.view(),      
+        depthBuffer_.view(),
         swapchain_.getExtent()
     );
+}
 
+// =========================================================
+// Scene data: mesh (Vertex/Index Buffer) + instance grid
+// =========================================================
+void VulkanContext::initSceneData()
+{
     auto mesh = ObjLoader::load("assets/suzanne.obj");
+
     vertexBuffer_.create(
         device_.getPhysical(), device_.get(),
         commandPool_.get(), device_.getGraphicsQueue(),
@@ -69,8 +89,10 @@ void VulkanContext::init(GLFWwindow* window)
         mesh.indices
     );
 
-    // ---- Compute culling setup ----
-    // 7x7x7, blank 3.0, origin
+    // Cache index count for IndirectDrawBuffer setup later
+    meshIndexCount_ = static_cast<uint32_t>(mesh.indices.size());
+
+    // 7x7x7 grid, spacing 3.0, centered on origin
     std::vector<InstanceData> instances(OBJECT_COUNT);
 
     float spacing = 3.0f;
@@ -95,21 +117,30 @@ void VulkanContext::init(GLFWwindow* window)
         instances
     );
 
+    // Cache instance world positions for object buffer setup
+    cachedInstances_ = std::move(instances);
+}
+
+// =========================================================
+// GPU culling resources: ObjectBuffer, VisibleInstanceBuffer,
+// IndirectDrawBuffer, FrustumBuffer, ComputeDescriptor/Pipeline
+// =========================================================
+void VulkanContext::initCullingResources()
+{
     struct ComputeObjectData { glm::vec4 boundingSphere; };  // xyz=center, w=radius
 
     std::vector<ComputeObjectData> objects(OBJECT_COUNT);
-    float suzanneRadius = 1.5f;  // Suzanne大约的包围球半径
+    constexpr float suzanneRadius = 1.5f;  // approximate Suzanne bounding sphere radius
 
     for (uint32_t i = 0; i < OBJECT_COUNT; i++)
     {
         objects[i].boundingSphere = glm::vec4(
-            glm::vec3(instances[i].position),
+            glm::vec3(cachedInstances_[i].position),
             suzanneRadius
         );
     }
 
     VkDeviceSize objSize = sizeof(ComputeObjectData) * OBJECT_COUNT;
-    VkDeviceSize visSize = sizeof(uint32_t) * OBJECT_COUNT;
 
     objectBuffer_.create(
         device_.getPhysical(), device_.get(), objSize,
@@ -118,27 +149,21 @@ void VulkanContext::init(GLFWwindow* window)
     );
     objectBuffer_.upload(device_.get(), objects.data(), objSize);
 
-    // 输出buffer：大小跟原始instance一样大（最坏情况全部可见）
+    // Output buffer sized for worst case: all instances visible
     VkDeviceSize visibleInstanceSize = sizeof(InstanceData) * OBJECT_COUNT;
 
     visibleInstanceBuffer_.create(
         device_.getPhysical(), device_.get(), visibleInstanceSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,  // 双重用途
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,  // dual purpose: SSBO write + vertex input read
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
     indirectDrawBuffer_.create(
         device_.getPhysical(), device_.get(),
-        static_cast<uint32_t>(mesh.indices.size())  // 用Suzanne的真实index count
+        meshIndexCount_
     );
 
-    visibilityBuffer_.create(
-        device_.getPhysical(), device_.get(), visSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-    );
-
-    // Frustum buffer: vec4平面*6个 = 96 bytes
+    // Frustum buffer: 6 vec4 planes = 96 bytes
     VkDeviceSize frustumSize = sizeof(glm::vec4) * 6;
 
     frustumBuffer_.create(
@@ -147,7 +172,7 @@ void VulkanContext::init(GLFWwindow* window)
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
-    VkDeviceSize indirectDrawSize= sizeof(VkDrawIndexedIndirectCommand);
+    VkDeviceSize indirectDrawSize = sizeof(VkDrawIndexedIndirectCommand);
 
     computeDescriptor_.create(
         device_.get(),
@@ -161,16 +186,17 @@ void VulkanContext::init(GLFWwindow* window)
 
     computePipeline_.create(device_.get(), computeDescriptor_.layout());
 
-    std::cout << "Vulkan Context initialized\n";
+    // No longer needed after culling resources are built
+    cachedInstances_.clear();
+    cachedInstances_.shrink_to_fit();
 }
 
 void VulkanContext::cleanup()
 {
-
+    
     computePipeline_.destroy(device_.get());
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
-    visibilityBuffer_.destroy(device_.get());
     visibleInstanceBuffer_.destroy(device_.get());
     indirectDrawBuffer_.destroy(device_.get());
     objectBuffer_.destroy(device_.get());
