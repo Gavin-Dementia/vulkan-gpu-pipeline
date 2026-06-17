@@ -68,6 +68,7 @@ add_custom_target(Shaders ALL DEPENDS ${SPIRV_SHADERS})
 
 set(CORE_SRC
     src/core/Application.cpp
+    src/core/Camera.cpp
 )
 
 # =========================================================

@@ -41,9 +41,18 @@ void Application::init()
 void Application::mainLoop()
 {
     std::cout << "Application mainLoop\n";
+
+    float lastTime = (float)glfwGetTime();
+
     while (running)
     {
         glfwPollEvents();
+
+        float currentTime = (float)glfwGetTime();
+        float deltaTime = currentTime - lastTime;
+        lastTime = currentTime;
+
+        context->camera().processInput(context->window(), deltaTime);
 
         if (glfwWindowShouldClose(context->window()))
             running = false;

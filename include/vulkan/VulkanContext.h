@@ -21,7 +21,7 @@
 #include "vulkan/buffer/IndexBuffer.h"
 #include "vulkan/buffer/InstanceBuffer.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
-
+#include "core/Camera.h"
 
 
 
@@ -37,6 +37,7 @@ public:
     void cleanup();
 
     GLFWwindow* window() { return window_; }
+    Camera&     camera() { return camera_; }
 
     VulkanDevice&          device()            { return device_; }
     VulkanSwapchain&       swapchain()         { return swapchain_; }
@@ -72,6 +73,7 @@ private:
     std::vector<InstanceData> cachedInstances_;
 
     GLFWwindow* window_ = nullptr;
+    Camera camera_;
 
     VulkanInstance        instance_;
     VulkanSurface         surface_;

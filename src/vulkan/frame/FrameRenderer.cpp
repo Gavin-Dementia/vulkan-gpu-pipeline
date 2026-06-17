@@ -56,7 +56,7 @@ void FrameRenderer::init(VulkanContext& ctx)
             );
 
             // 2. update frustum
-            glm::mat4 view = glm::lookAt(glm::vec3(0,0,25), glm::vec3(0), glm::vec3(0,1,0));
+            glm::mat4 view = context->camera().getViewMatrix();
             glm::mat4 proj = glm::perspective(glm::radians(45.0f), 1280.0f/720.0f, 0.1f, 200.0f);
             proj[1][1] *= -1;
 
@@ -92,11 +92,7 @@ void FrameRenderer::init(VulkanContext& ctx)
                 (float)glfwGetTime(),
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
-            ubo.view = glm::lookAt(
-                glm::vec3(0.0f, 0.0f, 25.0f),  // cam pos
-                glm::vec3(0.0f, 0.0f, 0.0f),  // lookat origin
-                glm::vec3(0.0f, 1.0f, 0.0f)   // uphup
-            );
+            ubo.view = context->camera().getViewMatrix();
             ubo.proj = glm::perspective(
                 glm::radians(45.0f),
                 1280.0f / 720.0f,
