@@ -23,7 +23,7 @@
 #include "vulkan/buffer/IndexBuffer.h"
 #include "vulkan/buffer/InstanceBuffer.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
-
+#include "vulkan/texture/VulkanTexture.h"
 
 
 class VulkanContext
@@ -64,6 +64,7 @@ public:
     InstanceBuffer&        instanceBuffer()    { return instanceBuffer_; }
     VulkanBuffer&          visibleInstanceBuffer() { return visibleInstanceBuffer_; }
     IndirectDrawBuffer&    indirectDrawBuffer()    { return indirectDrawBuffer_; }
+    VulkanTexture&         texture()           { return texture_; }
 
 
 
@@ -101,6 +102,7 @@ private:
     InstanceBuffer        instanceBuffer_;
     VulkanBuffer          visibleInstanceBuffer_;
     IndirectDrawBuffer    indirectDrawBuffer_;
+    VulkanTexture         texture_;
 
 
 

@@ -37,7 +37,7 @@ void VulkanPipeline::create(
     // 2. Vertex input (vertex buffer)
     // =========================================================
     auto vertexBinding = Vertex::getBindingDescription();        // binding=0
-    auto vertexAttrs   = Vertex::getAttributeDescriptions();     // location 0,1
+    auto vertexAttrs   = Vertex::getAttributeDescriptions();     // location 0,1,2
 
     VkVertexInputBindingDescription instanceBinding{};
     instanceBinding.binding   = 1;
@@ -45,9 +45,9 @@ void VulkanPipeline::create(
     instanceBinding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;   
     // +：IS per-instance NOT per-vertex
 
-    VkVertexInputAttributeDescription instanceAttr{};
+    VkVertexInputAttributeDescription instanceAttr{};//InstanceData
     instanceAttr.binding  = 1;
-    instanceAttr.location = 2;   // after Vertex's location 0,1
+    instanceAttr.location = 3;
     instanceAttr.format   = VK_FORMAT_R32G32B32A32_SFLOAT;
     instanceAttr.offset   = 0;
 

@@ -18,6 +18,9 @@ add_subdirectory(third_party/glfw)
 add_library(glm INTERFACE)
 target_include_directories(glm INTERFACE third_party/glm)
 
+add_library(stb INTERFACE)
+target_include_directories(stb INTERFACE third_party/stb)
+
 add_library(tinyobjloader INTERFACE)
 target_include_directories(tinyobjloader INTERFACE third_party/tinyobjloader)
 
@@ -151,7 +154,8 @@ set(VULKAN_SWAPCHAIN_SRC
     src/vulkan/swapchain/VulkanSwapchain.cpp
 )
 
-set(VULKAN_SYNC_SRC
+set(VULKAN_TEXTURE_SRC
+    src/vulkan/texture/VulkanTexture.cpp
 )
 
 # =========================================================
@@ -170,7 +174,7 @@ add_executable(app
     ${VULKAN_RENDERPASS_SRC}
     ${VULKAN_RESOURCE_SRC}
     ${VULKAN_SWAPCHAIN_SRC}
-    ${VULKAN_SYNC_SRC}
+    ${VULKAN_TEXTURE_SRC}
     ${UI_SRC} 
 )
 
@@ -201,6 +205,7 @@ target_link_libraries(app PRIVATE
     glm
     tinyobjloader
     imgui   
+    stb
     Vulkan::Vulkan
 )
 

@@ -382,6 +382,77 @@ function-body relocation, zero behavior change) specifically so it
 wouldn't become its own multi-day side quest.
 
 ---
+ 
+### 13. Texture pipeline: Image/ImageView/Sampler as a parallel resource model to Buffer
+ 
+**Decision:** Textures are implemented as a new `VulkanTexture` class
+wrapping `VkImage` + `VkDeviceMemory` + `VkImageView` + `VkSampler`,
+following the same staging-buffer-then-DEVICE_LOCAL-copy pattern used
+for vertex/index/instance buffers (#2), but with an additional step
+neither of those needed: explicit layout transitions.
+ 
+**Why images need layout transitions and buffers don't:** A `VkImage`
+has an associated layout describing what the GPU currently expects to
+do with that memory (`UNDEFINED`, `TRANSFER_DST_OPTIMAL`,
+`SHADER_READ_ONLY_OPTIMAL`, etc.) — this is a real hardware concept,
+since GPUs often store image data in implementation-specific tiled/
+compressed-for-access-pattern formats that differ between "being
+written to" and "being sampled from." A buffer has no equivalent
+concept; it's just linear memory. The texture upload path is therefore:
+upload pixels to a staging buffer → create the image in `UNDEFINED`
+layout → transition to `TRANSFER_DST_OPTIMAL` → `vkCmdCopyBufferToImage`
+→ transition again to `SHADER_READ_ONLY_OPTIMAL` before the fragment
+shader is allowed to sample it. Each transition is itself a
+`VkImageMemoryBarrier` recorded into a one-shot command buffer — the
+same submit/wait/free pattern already established for buffer-to-buffer
+copies, just with an image-specific barrier instead of a
+`vkCmdCopyBuffer`.
+ 
+**Format choice:** `VK_FORMAT_R8G8B8A8_SRGB` — sRGB because texture
+source images (PNGs of real photos/art) are typically authored in sRGB
+color space, and sampling them as sRGB tells the GPU to convert to
+linear space automatically before the fragment shader sees the value,
+which avoids the (very common beginner) "everything looks washed out
+or too dark" bug from doing lighting math on raw gamma-encoded values.
+ 
+---
+ 
+### 14. ImGui's descriptor pool requirements aren't the same as the app's
+ 
+**Decision:** `ImGuiLayer` allocates and owns its own `VkDescriptorPool`,
+entirely separate from the pools used by `VulkanDescriptor` (graphics)
+and `ComputeDescriptor` (compute).
+ 
+**Why:** ImGui's Vulkan backend manages descriptor sets internally for
+font textures and any images it renders (e.g. font atlas, future custom
+texture widgets), and it expects to own a pool sized for its own
+descriptor type needs — not to share the application's pool, which has
+no reason to know what ImGui needs internally.
+ 
+**Bug found here:** The pool was initially sized with only
+`VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`, which produced (non-fatal,
+but real) validation warnings — `vkAllocateDescriptorSets(): ... binding
+0 was created with VK_DESCRIPTOR_TYPE_SAMPLER but VkDescriptorPool ...
+was not created with any VkDescriptorPoolSize::type with
+VK_DESCRIPTOR_TYPE_SAMPLER`. ImGui's internal layouts use `SAMPLER` and
+`SAMPLED_IMAGE` as separate descriptor types in addition to (or instead
+of, in certain code paths) the combined type. Fixed by declaring three
+separate `VkDescriptorPoolSize` entries (`SAMPLER`, `SAMPLED_IMAGE`,
+`COMBINED_IMAGE_SAMPLER`) rather than assuming one combined-type entry
+would cover everything ImGui's backend might request.
+ 
+**Pattern this reinforces:** Same lesson as #6 in the bugs table below —
+a descriptor pool's size list is a literal enumeration of what it can
+hand out, not something the pool infers from a single "this is roughly
+what I need" entry. This is the second time in the project this exact
+mistake surfaced (first in `ComputeDescriptor`, now in `ImGuiLayer`),
+which says more about how easy the mistake is to make than about either
+specific instance — worth treating "did I declare a `VkDescriptorPoolSize`
+for *every* `VkDescriptorType` the corresponding layout uses" as a
+standing checklist item whenever wiring up a new descriptor set, not
+just something to debug into existence after a warning appears.
+ 
+---
 
 ## Bugs encountered (and what they taught)
 
@@ -396,6 +467,9 @@ wouldn't become its own multi-day side quest.
 | Descriptor pool allocation silently insufficient | `VkDescriptorPoolCreateInfo.pPoolSizes` only listed `STORAGE_BUFFER`, but the layout also declared a `UNIFORM_BUFFER` binding | Pool sizes are a *budget declaration per descriptor type*, not implicitly inferred from the layout — every distinct `VkDescriptorType` in the layout needs its own `VkDescriptorPoolSize` entry |
 | Compute culling result looked static at first (`visibility[0] = 1` forever) | Plausible but unverified — the shader could have been silently doing nothing | Forced an actual experiment: oscillate the test object's position with `sin(time)` and confirm `visibility[0]` flips `1 → 0 → 1` in sync. Passing a test that *could* fail is meaningfully different from a test that can only ever pass. |
 | Monkey heads "exploded" into disconnected triangles after enabling instancing | Leftover `vkCmdDraw` call (non-indexed) not updated to `vkCmdDrawIndexed` when index buffer was introduced | Search-and-replace across a codebase is not the same as confirming every call site was actually touched |
+| `stbi_load` returned `nullptr`, "unknown image type" | The specific PNG file used for testing had some non-standard encoding stb_image couldn't parse — confirmed by checking `stbi_failure_reason()` rather than guessing | Always surface the library's own error reason before assuming the bug is in your code; a generic "load failed" could mean a dozen different things, the library usually already knows which one |
+| Texture loaded successfully but Suzanne rendered with no visible texture (looked like a flat color) | `suzanne.obj`'s vertex data had no texcoord entries at all — confirmed by instrumenting the loader to count vertices with `uv == (0,0)`, which came back 507/507 | Don't assume a downloaded test asset has every vertex attribute you need; verify with a count, not a glance. Isolated the texture *pipeline* from the *asset* problem by switching to a hand-written cube OBJ with explicit `vt` coordinates — this confirmed the Vulkan-side code (descriptor, shader, layout transitions) was correct *before* spending more time on the unrelated asset issue |
+| New/modified files in `assets/` weren't reflected in the running executable despite a successful rebuild | CMake's `add_custom_command(... COMMAND copy_directory ...)` does not reliably re-copy a file whose name is unchanged but whose *content* changed — incremental build tracking treated the POST_BUILD step as already satisfied | Had to manually delete or `Copy-Item -Force` the stale file in the output directory to force a refresh. This is a real caveat of `copy_directory`-based asset pipelines, not a one-off fluke — worth remembering before re-debugging "my code change isn't taking effect" when the actual change was to a *data* file, not a source file |
 
 ---
 
@@ -418,9 +492,12 @@ wouldn't become its own multi-day side quest.
   per-object testing). Acceptable at this instance count; would need
   revisiting at much higher instance counts where the linear scan itself
   becomes the bottleneck.
-- **No texture sampling yet** — fragment shading is normal-based only.
-  Planned but deprioritized relative to finishing the GPU-driven culling
-  core.
+- **Texture sampling is implemented and validated** (#13), but currently
+  rendering a hand-written `textured_cube.obj` rather than Suzanne —
+  `suzanne.obj` has no texcoord data (confirmed: 507/507 vertices with
+  `uv == (0,0)`, see bugs table). Next step is either sourcing/exporting
+  a Suzanne variant with UVs, or generating one in Blender, to bring
+  the textured pipeline back to the primary demo mesh.
 
 ---
 

@@ -12,7 +12,8 @@ struct VertexHash
     {
         size_t h1 = std::hash<float>()(v.position.x) ^ std::hash<float>()(v.position.y) ^ std::hash<float>()(v.position.z);
         size_t h2 = std::hash<float>()(v.normal.x)   ^ std::hash<float>()(v.normal.y)   ^ std::hash<float>()(v.normal.z);
-        return h1 ^ (h2 << 1);
+        size_t h3 = std::hash<float>()(v.uv.x)       ^ std::hash<float>()(v.uv.y);
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
     }
 };
 
@@ -20,7 +21,7 @@ struct VertexEqual
 {
     bool operator()(const Vertex& a, const Vertex& b) const
     {
-        return a.position == b.position && a.normal == b.normal;
+        return a.position == b.position && a.normal == b.normal && a.uv == b.uv;
     }
 };
 
@@ -60,9 +61,18 @@ MeshData ObjLoader::load(const std::string& path)
                 };
             }
             else
+            {  v.normal = { 0.0f, 0.0f, 1.0f };  }
+
+            // read UV
+            if (index.texcoord_index >= 0)
             {
-                v.normal = { 0.0f, 0.0f, 1.0f };
+                v.uv = {
+                    attrib.texcoords[2 * index.texcoord_index + 0],
+                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1]  // Vulkan的V轴方向跟OBJ相反，要翻转
+                };
             }
+            else
+            {  v.uv = { 0.0f, 0.0f };  }
 
             // 如果这个顶点没出现过，加进顶点数组，记下它的index
             if (uniqueVertices.count(v) == 0)

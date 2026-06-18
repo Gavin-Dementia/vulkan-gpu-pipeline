@@ -5,7 +5,12 @@
 class VulkanDescriptor
 {
 public:
-    void create(VkDevice device, VkBuffer uniformBuffer);
+    void create(
+        VkDevice device,
+        VkBuffer uniformBuffer,
+        VkImageView textureView,
+        VkSampler textureSampler
+    );
     void destroy(VkDevice device);
 
     VkDescriptorSetLayout layout() const { return layout_; }
@@ -18,6 +23,11 @@ private:
 
     void createLayout(VkDevice device);
     void createPool(VkDevice device);
-    void allocateAndWrite(VkDevice device, VkBuffer uniformBuffer);
+    void allocateAndWrite(
+        VkDevice device, 
+        VkBuffer uniformBuffer,
+        VkImageView textureView,
+        VkSampler textureSampler  
+    );
 };
 

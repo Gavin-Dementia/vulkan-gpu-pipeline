@@ -17,7 +17,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Double buffering + sync primitives | ✅ |
 | Uniform Buffer (MVP matrix) | ✅ |
 | Depth Buffer | ✅ |
-| Texture Sampling | 🔲 |
+| Texture Sampling | ✅ |
 | Compute Pass (GPU Culling) | ✅ |
 
 ---

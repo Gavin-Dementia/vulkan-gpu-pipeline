@@ -63,7 +63,18 @@ void VulkanContext::initCore()
 
     uniformBuffer_.create(device_.getPhysical(), device_.get());
 
-    descriptor_.create(device_.get(), uniformBuffer_.get());
+    texture_.create(
+        device_.getPhysical(), device_.get(),
+        commandPool_.get(), device_.getGraphicsQueue(),
+        "assets/test_texture.png"
+    );
+
+    descriptor_.create(
+        device_.get(),
+        uniformBuffer_.get(),
+        texture_.view(),
+        texture_.sampler()
+    );
 
     pipeline_.create(
         device_.get(),
@@ -86,7 +97,8 @@ void VulkanContext::initCore()
 // =========================================================
 void VulkanContext::initSceneData()
 {
-    auto mesh = ObjLoader::load("assets/suzanne.obj");
+    // auto mesh = ObjLoader::load("assets/suzanne.obj");
+    auto mesh = ObjLoader::load("assets/textured_cube.obj");
 
     vertexBuffer_.create(
         device_.getPhysical(), device_.get(),
@@ -214,6 +226,7 @@ void VulkanContext::cleanup()
     instanceBuffer_.destroy(device_.get());
     indexBuffer_.destroy(device_.get());
     vertexBuffer_.destroy(device_.get());
+    texture_.destroy(device_.get());
     descriptor_.destroy(device_.get());
     uniformBuffer_.destroy(device_.get());
 
