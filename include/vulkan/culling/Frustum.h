@@ -6,8 +6,11 @@
 struct FrustumPlanes
 {
     std::array<glm::vec4, 6> planes;
+    glm::vec4 cameraPos;   // xyz=cam pos, w=0（padding）
 
-    static FrustumPlanes extractFromMatrix(const glm::mat4& viewProj)
+    static FrustumPlanes extractFromMatrix(
+        const glm::mat4& viewProj,
+        const glm::vec3& camPos)
     {
         FrustumPlanes result;
         glm::mat4 m = glm::transpose(viewProj);
@@ -19,14 +22,15 @@ struct FrustumPlanes
         result.planes[4] = m[3] + m[2];  // Near
         result.planes[5] = m[3] - m[2];  // Far
 
-        // 归一化每个平面（让法线长度为1，距离才有意义）
         for (auto& p : result.planes)
         {
             float len = glm::length(glm::vec3(p));
             p /= len;
         }
 
+        result.cameraPos = glm::vec4(camPos, 0.0f);
         return result;
     }
 };
+
 

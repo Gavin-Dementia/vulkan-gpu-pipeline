@@ -12,42 +12,60 @@ struct InstanceData
     vec4 position;
 };
 
-// 输入：原始物体数据（343个）
-layout(std430, binding = 0) readonly buffer ObjectBuffer
-{
-    ObjectData objects[];
-};
-
-// 输出：压缩后的instance数据（只有通过culling的会被写入）
-layout(std430, binding = 1) writeonly buffer VisibleInstanceBuffer
-{
-    InstanceData visibleInstances[];
-};
-
-// 输出：Indirect Draw参数（GPU自己改写instanceCount）
-layout(std430, binding = 3) buffer IndirectDrawBuffer
+struct DrawCommand
 {
     uint indexCount;
     uint instanceCount;
     uint firstIndex;
     int  vertexOffset;
     uint firstInstance;
-} indirectDraw;
+};
 
-layout(binding = 2) uniform FrustumData
+layout(std430, binding = 0) readonly buffer ObjectBuffer
+{
+    ObjectData objects[];
+};
+
+// 3 individual visible instance buffer
+layout(std430, binding = 1) writeonly buffer VisibleLOD0
+{
+    InstanceData visibleLOD0[];
+};
+
+layout(std430, binding = 2) writeonly buffer VisibleLOD1
+{
+    InstanceData visibleLOD1[];
+};
+
+layout(std430, binding = 3) writeonly buffer VisibleLOD2
+{
+    InstanceData visibleLOD2[];
+};
+
+// 3 individual indirect draw buffer
+layout(std430, binding = 4) buffer IndirectLOD0 { DrawCommand cmd0; };
+layout(std430, binding = 5) buffer IndirectLOD1 { DrawCommand cmd1; };
+layout(std430, binding = 6) buffer IndirectLOD2 { DrawCommand cmd2; };
+
+layout(binding = 7) uniform FrustumData
 {
     vec4 planes[6];
+    vec4 cameraPos;   // xyz=camera pos, w not yet
 } frustum;
+
+// LOD bias
+const float LOD1_DIST = 12.0;
+const float LOD2_DIST = 20.0;
 
 void main()
 {
     uint idx = gl_GlobalInvocationID.x;
-
     if (idx >= objects.length()) return;
 
     vec3 center = objects[idx].boundingSphere.xyz;
     float radius = objects[idx].boundingSphere.w;
 
+    // Frustum culling
     bool inside = true;
     for (int i = 0; i < 6; i++)
     {
@@ -59,11 +77,25 @@ void main()
         }
     }
 
-    if (inside)
+    if (!inside) return;
+
+    // distance influence LOD
+    float camDist = length(center - frustum.cameraPos.xyz);
+
+    if (camDist < LOD1_DIST)
     {
-        // 原子递增计数器，拿到自己应该写入的位置
-        uint writeIndex = atomicAdd(indirectDraw.instanceCount, 1u);
-        visibleInstances[writeIndex].position = vec4(center, 1.0);
+        uint slot = atomicAdd(cmd0.instanceCount, 1u);
+        visibleLOD0[slot].position = vec4(center, 1.0);
+    }
+    else if (camDist < LOD2_DIST)
+    {
+        uint slot = atomicAdd(cmd1.instanceCount, 1u);
+        visibleLOD1[slot].position = vec4(center, 1.0);
+    }
+    else
+    {
+        uint slot = atomicAdd(cmd2.instanceCount, 1u);
+        visibleLOD2[slot].position = vec4(center, 1.0);
     }
 }
 

@@ -97,23 +97,31 @@ void VulkanContext::initCore()
 // =========================================================
 void VulkanContext::initSceneData()
 {
-    // auto mesh = ObjLoader::load("assets/suzanne.obj");
-    auto mesh = ObjLoader::load("assets/textured_cube.obj");
+    const std::array<std::string, 3> lodPaths = {
+        "assets/suzanne.obj",
+        "assets/suzanne_lod1.obj",
+        "assets/suzanne_lod2.obj"
+    };
 
-    vertexBuffer_.create(
-        device_.getPhysical(), device_.get(),
-        commandPool_.get(), device_.getGraphicsQueue(),
-        mesh.vertices
-    );
+    for (int i = 0; i < 3; i++)
+    {
+        auto mesh = ObjLoader::load(lodPaths[i]);
 
-    indexBuffer_.create(
-        device_.getPhysical(), device_.get(),
-        commandPool_.get(), device_.getGraphicsQueue(),
-        mesh.indices
-    );
+        lods_[i].vertexBuffer.create(
+            device_.getPhysical(), device_.get(),
+            commandPool_.get(), device_.getGraphicsQueue(),
+            mesh.vertices
+        );
 
-    // Cache index count for IndirectDrawBuffer setup later
-    meshIndexCount_ = static_cast<uint32_t>(mesh.indices.size());
+        lods_[i].indexBuffer.create(
+            device_.getPhysical(), device_.get(),
+            commandPool_.get(), device_.getGraphicsQueue(),
+            mesh.indices
+        );
+
+        // ONLY give LOD0's indexCount to indirectDrawBuffer
+        if (i == 0) meshIndexCount_ = static_cast<uint32_t>(mesh.indices.size());
+    }
 
     // 7x7x7 grid, spacing 3.0, centered on origin
     std::vector<InstanceData> instances(OBJECT_COUNT);
@@ -174,37 +182,51 @@ void VulkanContext::initCullingResources()
 
     // Output buffer sized for worst case: all instances visible
     VkDeviceSize visibleInstanceSize = sizeof(InstanceData) * OBJECT_COUNT;
+    VkDeviceSize indirectDrawSize    = sizeof(DrawIndirectCommand);
 
-    visibleInstanceBuffer_.create(
-        device_.getPhysical(), device_.get(), visibleInstanceSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,  // dual purpose: SSBO write + vertex input read
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-    );
+    for (int i = 0; i < 3; i++)
+    {
+        lods_[i].visibleInstanceBuffer.create(
+            device_.getPhysical(), device_.get(), visibleInstanceSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
 
-    indirectDrawBuffer_.create(
-        device_.getPhysical(), device_.get(),
-        meshIndexCount_
-    );
+        // 每个LOD的indexCount不同
+        uint32_t lodIndexCount = lods_[i].indexBuffer.indexCount();
+        lods_[i].indirectDrawBuffer.create(
+            device_.getPhysical(), device_.get(), lodIndexCount
+        );
+    }
 
-    // Frustum buffer: 6 vec4 planes = 96 bytes
-    VkDeviceSize frustumSize = sizeof(glm::vec4) * 6;
-
+    // Frustum buffer: 6 planes + cameraPos = 7 vec4 = 112 bytes
+    VkDeviceSize frustumSize = sizeof(FrustumPlanes);  
+    
     frustumBuffer_.create(
         device_.getPhysical(), device_.get(), frustumSize,
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
-    VkDeviceSize indirectDrawSize = sizeof(VkDrawIndexedIndirectCommand);
+    std::array<VkBuffer, 3> visibleBufs = {
+        lods_[0].visibleInstanceBuffer.get(),
+        lods_[1].visibleInstanceBuffer.get(),
+        lods_[2].visibleInstanceBuffer.get()
+    };
+
+    std::array<VkBuffer, 3> indirectBufs = {
+        lods_[0].indirectDrawBuffer.get(),
+        lods_[1].indirectDrawBuffer.get(),
+        lods_[2].indirectDrawBuffer.get()
+    };
 
     computeDescriptor_.create(
         device_.get(),
         objectBuffer_.get(),
-        visibleInstanceBuffer_.get(),
+        visibleBufs, indirectBufs,
         frustumBuffer_.get(),
-        indirectDrawBuffer_.get(),
         objSize, visibleInstanceSize,
-        frustumSize, indirectDrawSize
+        indirectDrawSize, frustumSize
     );
 
     computePipeline_.create(device_.get(), computeDescriptor_.layout());
@@ -220,12 +242,17 @@ void VulkanContext::cleanup()
     computePipeline_.destroy(device_.get());
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
-    visibleInstanceBuffer_.destroy(device_.get());
-    indirectDrawBuffer_.destroy(device_.get());
     objectBuffer_.destroy(device_.get());
     instanceBuffer_.destroy(device_.get());
-    indexBuffer_.destroy(device_.get());
-    vertexBuffer_.destroy(device_.get());
+
+    for (int i = 0; i < 3; i++)
+    {
+        lods_[i].indirectDrawBuffer.destroy(device_.get());
+        lods_[i].visibleInstanceBuffer.destroy(device_.get());
+        lods_[i].indexBuffer.destroy(device_.get());
+        lods_[i].vertexBuffer.destroy(device_.get());
+    }
+
     texture_.destroy(device_.get());
     descriptor_.destroy(device_.get());
     uniformBuffer_.destroy(device_.get());

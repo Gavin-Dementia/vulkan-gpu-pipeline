@@ -51,18 +51,26 @@ void FrameRenderer::init(VulkanContext& ctx)
         [this](VkCommandBuffer cmd)
         {  
             // 1. reset instanceCount=0（CPU directe write, HOST_VISIBLE）
-            context->indirectDrawBuffer().resetInstanceCount(
-                context->device().get(),
-                context->indexBuffer().indexCount()
-            );
+            for (int i = 0; i < 3; i++)
+            {
+                context->lod(i).indirectDrawBuffer.resetInstanceCount(
+                    context->device().get(),
+                    context->lod(i).indexBuffer.indexCount()
+                );
+            }
 
             // 2. update frustum
             glm::mat4 view = context->camera().getViewMatrix();
             glm::mat4 proj = glm::perspective(glm::radians(45.0f), 1280.0f/720.0f, 0.1f, 200.0f);
             proj[1][1] *= -1;
 
-            FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view);
-            context->frustumBuffer().upload(context->device().get(), frustum.planes.data(), sizeof(glm::vec4)*6);
+            glm::vec3 camPos = context->camera().position();
+            FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view, camPos);
+            context->frustumBuffer().upload(
+                context->device().get(),
+                &frustum,
+                sizeof(FrustumPlanes)
+            );
 
             // 3. dispatch
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().get());
@@ -116,20 +124,23 @@ void FrameRenderer::init(VulkanContext& ctx)
                 0, nullptr
             );
 
-            context->vertexBuffer().bind(cmd);
-            context->indexBuffer().bind(cmd); 
-            VkBuffer instanceBuffers[] = { context->visibleInstanceBuffer().get() };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(cmd, 1, 1, instanceBuffers, offsets);
+            for (int i = 0; i < 3; i++)
+            {
+                context->lod(i).vertexBuffer.bind(cmd);
+                context->lod(i).indexBuffer.bind(cmd);
 
-            // Indirect Draw：use GPU buffer
-            vkCmdDrawIndexedIndirect(
-                cmd,
-                context->indirectDrawBuffer().get(),
-                0,    // offset
-                1,    // drawCount(ONLY ONE draw command)
-                sizeof(DrawIndirectCommand)
-            );
+                VkBuffer instanceBuf = context->lod(i).visibleInstanceBuffer.get();
+                VkDeviceSize offset = 0;
+                vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &offset);
+
+                vkCmdDrawIndexedIndirect(
+                    cmd,
+                    context->lod(i).indirectDrawBuffer.get(),
+                    0,    // offset
+                    1,    // drawCount(ONLY ONE draw command)
+                    sizeof(DrawIndirectCommand)
+                );
+            }
         },
         PassStage::Graphics
     });
@@ -176,7 +187,15 @@ void FrameRenderer::init(VulkanContext& ctx)
             context->imguiLayer().beginFrame();
 
             ImGui::Begin("GPU Culling Stats");
-            ImGui::Text("Visible: %u / %u", context->getLastVisibleCount(), VulkanContext::OBJECT_COUNT);
+            // ImGui::Text("Visible: %u / %u", context->getLastVisibleCount(), VulkanContext::OBJECT_COUNT);
+            ImGui::Text("LOD0 (near):   %u", context->getLastVisibleCount(0));
+            ImGui::Text("LOD1 (mid):    %u", context->getLastVisibleCount(1));
+            ImGui::Text("LOD2 (far):    %u", context->getLastVisibleCount(2));
+            ImGui::Text("Total visible: %u / %u",
+                context->getLastVisibleCount(0) +
+                context->getLastVisibleCount(1) +
+                context->getLastVisibleCount(2),
+                VulkanContext::OBJECT_COUNT);
             ImGui::Text("Camera: (%.1f, %.1f, %.1f)",
                 context->camera().position().x,
                 context->camera().position().y,
@@ -208,8 +227,13 @@ void FrameRenderer::drawFrame()
 
     vkWaitForFences(device.get(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX);
     
-    uint32_t lastFrameVisibleCount = context->indirectDrawBuffer().getVisibleCount(device.get());
-    context->setLastVisibleCount(lastFrameVisibleCount);  // 存起来给ImGuiPass用
+    // insert into ImGuiPass
+    for (int i = 0; i < 3; i++)
+    {
+        context->setLastVisibleCount(i,
+            context->lod(i).indirectDrawBuffer.getVisibleCount(context->device().get())
+        );
+    }
     vkResetFences(device.get(), 1, &frame.inFlightFence);
 
     uint32_t imageIndex;

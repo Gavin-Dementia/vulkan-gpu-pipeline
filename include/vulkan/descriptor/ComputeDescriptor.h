@@ -1,20 +1,22 @@
 #pragma once
 #include <vulkan/vulkan.h>
+#include <array>
 
 class ComputeDescriptor
 {
-public:
+public:  
     void create(
         VkDevice device,
         VkBuffer objectBuffer,
-        VkBuffer visibleInstanceBuffer,
+        std::array<VkBuffer, 3> visibleInstanceBuffers,
+        std::array<VkBuffer, 3> indirectDrawBuffers,
         VkBuffer frustumBuffer,
-        VkBuffer indirectDrawBuffer,
-        VkDeviceSize objectBufferSize,
-        VkDeviceSize visibleInstanceBufferSize,
-        VkDeviceSize frustumBufferSize,
-        VkDeviceSize indirectDrawBufferSize
+        VkDeviceSize objectSize,
+        VkDeviceSize visibleInstanceSize,
+        VkDeviceSize indirectDrawSize,
+        VkDeviceSize frustumSize
     );
+  
     void destroy(VkDevice device);
 
     VkDescriptorSetLayout layout() const { return layout_; }

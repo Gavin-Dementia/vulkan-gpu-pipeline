@@ -32,10 +32,17 @@ public:
     static constexpr uint32_t GRID_SIZE = 7;
     static constexpr uint32_t OBJECT_COUNT = 
                                 GRID_SIZE * GRID_SIZE * GRID_SIZE;  // 343
+    struct LODMesh
+    {
+        VertexBuffer   vertexBuffer;
+        IndexBuffer    indexBuffer;
+        VulkanBuffer   visibleInstanceBuffer;
+        IndirectDrawBuffer indirectDrawBuffer;
+    };
 
-    uint32_t lastVisibleCount_ = 0;
-    void setLastVisibleCount(uint32_t c) { lastVisibleCount_ = c; }
-    uint32_t getLastVisibleCount() const { return lastVisibleCount_; }
+    std::array<uint32_t, 3> lastVisibleCount_ = {0, 0, 0};
+    void setLastVisibleCount(int lod, uint32_t c)   { lastVisibleCount_[lod] = c; }
+    uint32_t getLastVisibleCount(int lod) const     { return lastVisibleCount_[lod]; }
 
     void init(GLFWwindow* window);
     void cleanup();
@@ -52,7 +59,6 @@ public:
     VulkanRenderPass&      renderPass()        { return renderPass_; }
     VulkanFramebuffer&     framebuffer()       { return framebuffer_; }
     VulkanPipeline&        pipeline()          { return pipeline_; }
-    VertexBuffer&          vertexBuffer()      { return vertexBuffer_; }
     UniformBuffer&         uniformBuffer()     { return uniformBuffer_; }
     VulkanDescriptor&      descriptor()        { return descriptor_; }
     VulkanDepthBuffer&     depthBuffer()       { return depthBuffer_; }
@@ -60,13 +66,10 @@ public:
     ComputeDescriptor&     computeDescriptor() { return computeDescriptor_; }
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
-    IndexBuffer&           indexBuffer()       { return indexBuffer_; }
     InstanceBuffer&        instanceBuffer()    { return instanceBuffer_; }
-    VulkanBuffer&          visibleInstanceBuffer() { return visibleInstanceBuffer_; }
-    IndirectDrawBuffer&    indirectDrawBuffer()    { return indirectDrawBuffer_; }
     VulkanTexture&         texture()           { return texture_; }
 
-
+    LODMesh& lod(int level) { return lods_[level]; }
 
 
 private:
@@ -77,6 +80,7 @@ private:
 
     uint32_t meshIndexCount_ = 0;
     std::vector<InstanceData> cachedInstances_;
+    std::array<LODMesh, 3> lods_;
 
     GLFWwindow* window_ = nullptr;
     Camera camera_;
@@ -90,7 +94,6 @@ private:
     VulkanRenderPass      renderPass_;
     VulkanFramebuffer     framebuffer_;
     VulkanPipeline        pipeline_;
-    VertexBuffer          vertexBuffer_;
     UniformBuffer         uniformBuffer_;
     VulkanDescriptor      descriptor_;
     VulkanDepthBuffer     depthBuffer_;
@@ -98,10 +101,7 @@ private:
     ComputeDescriptor     computeDescriptor_;
     VulkanComputePipeline computePipeline_;
     VulkanBuffer          frustumBuffer_;
-    IndexBuffer           indexBuffer_;
     InstanceBuffer        instanceBuffer_;
-    VulkanBuffer          visibleInstanceBuffer_;
-    IndirectDrawBuffer    indirectDrawBuffer_;
     VulkanTexture         texture_;
 
 
