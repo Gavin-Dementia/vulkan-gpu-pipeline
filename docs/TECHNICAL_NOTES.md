@@ -677,6 +677,26 @@ registering motion past it; disabling the cursor gives GLFW's unbounded
 virtual-position mode, which is the actual mechanism (not a workaround)
 every mouse-look camera depends on.
 
+**Addendum — Ctrl toggles the cursor back on for UI adjustment:** once
+the ImGui "GPU Culling Stats" and "Lighting" windows had actual controls
+worth dragging/resizing (§19's sliders), `GLFW_CURSOR_DISABLED` became a
+problem: GLFW's unbounded virtual position in that mode doesn't
+correspond to real screen coordinates, so ImGui can't hit-test against
+it — the debug windows were effectively unclickable while mouse-look was
+active. Fix: `Camera::processInput()` now polls Ctrl each frame and
+toggles `GLFW_CURSOR_NORMAL`/`GLFW_CURSOR_DISABLED` on the actual
+transition (not every frame), and returns early — skipping yaw/pitch
+entirely — while the cursor is shown, so moving the mouse to click a
+slider doesn't also spin the camera. The same `firstMouseSample_` guard
+already in place (see above) is re-armed on the transition back to
+`DISABLED`, so releasing Ctrl doesn't reintroduce the first-frame-jump
+problem this section was originally about.
+
+**Also added: Esc to quit** (`Application::mainLoop()`, alongside the
+existing `glfwWindowShouldClose` check) — unrelated to the cursor
+mechanism above, just a normal quality-of-life addition once the window
+had no title-bar close affordance reason to reach for during testing.
+
 ---
 
 ### 19. PBR milestone 1: Cook-Torrance lighting, no new textures

@@ -51,6 +51,8 @@ Responsible for:
 - Polling (not callback-based) left-click input to launch `Projectile`,
   gated on `!ImGui::GetIO().WantCaptureMouse` — see `Projectile` below
   for why polling instead of a GLFW callback
+- Polling Escape each frame to quit (alongside the existing
+  `glfwWindowShouldClose` check)
 
 Not responsible for:
 - Vulkan resource management
@@ -147,10 +149,14 @@ First-person controller: WASD for movement, mouse-look for yaw/pitch
 (the window is set to `GLFW_CURSOR_DISABLED` once in `Application::init()`
 so the cursor is hidden and reports an unbounded virtual position — see
 `TECHNICAL_NOTES.md` §18 for why this replaced the original QE/arrow-key
-scheme). Exposes `getViewMatrix()`, called once per frame and shared
-identically by both the culling compute pass (frustum construction) and
-the geometry pass (vertex transform) — see `TECHNICAL_NOTES.md` §10 for
-why this single-source-of-truth matters.
+scheme). Holding **Ctrl** reveals the cursor (`GLFW_CURSOR_NORMAL`) and
+suspends mouse-look entirely, so the ImGui debug windows can actually be
+clicked/dragged — GLFW's unbounded virtual cursor position in disabled
+mode isn't real screen coordinates, so ImGui can't hit-test against it
+otherwise (§18 addendum). Exposes `getViewMatrix()`, called once per
+frame and shared identically by both the culling compute pass (frustum
+construction) and the geometry pass (vertex transform) — see
+`TECHNICAL_NOTES.md` §10 for why this single-source-of-truth matters.
 
 ### ObjLoader
 

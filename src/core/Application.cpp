@@ -68,17 +68,27 @@ void Application::mainLoop()
         // owns GLFW's mouse callbacks internally (install_callbacks=true
         // in ImGuiLayer::init), so registering our own would clobber it.
         bool leftPressed = glfwGetMouseButton(context->window(), GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        // Hold Ctrl to reveal the cursor and adjust the ImGui debug windows;
+        // release it to go back to mouse-look. Only toggle GLFW's cursor mode
+        // on an actual transition, not every frame.
+        bool ctrlHeld = glfwGetKey(context->window(), GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                        glfwGetKey(context->window(), GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
         if (leftPressed && !prevLeftMousePressed_ && !ImGui::GetIO().WantCaptureMouse)
         {
-            glm::vec3 origin = context->camera().position()
-                              + context->camera().getForward() * 1.5f;
-            context->projectile().launch(origin, context->camera().getForward());
+            if(!ctrlHeld)
+            {
+                glm::vec3 origin = context->camera().position()
+                                + context->camera().getForward() * 1.5f;
+                context->projectile().launch(origin, context->camera().getForward());
+            }// Ctrl held: cursor is visible, don't fire projectiles
+
         }
         prevLeftMousePressed_ = leftPressed;
 
         context->projectile().update(deltaTime);
 
-        if (glfwWindowShouldClose(context->window()))
+        if (glfwWindowShouldClose(context->window()) ||
+            glfwGetKey(context->window(), GLFW_KEY_ESCAPE) == GLFW_PRESS)
             running = false;
 
         frameRenderer->drawFrame();

@@ -43,6 +43,14 @@ private:
     float lastMouseY_ = 0.0f;
     bool  firstMouseSample_ = true;   // suppress the first frame's jump
 
+    // Holding Ctrl reveals the cursor (GLFW_CURSOR_NORMAL) so the ImGui
+    // debug windows can actually be clicked/dragged - GLFW's unbounded
+    // virtual position in DISABLED mode doesn't correspond to real screen
+    // coordinates, so ImGui can't hit-test against it. Mouse-look is
+    // suspended while the cursor is shown, matching the initial value
+    // Application::init() sets the window to (disabled = look mode).
+    bool cursorVisible_ = false;
+
     glm::vec3 right() const;
 };
 

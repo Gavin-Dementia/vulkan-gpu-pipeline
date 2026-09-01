@@ -29,6 +29,22 @@ void Camera::processInput(GLFWwindow* window, float deltaTime)
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         position_ += right() * moveAmount;
 
+    // Hold Ctrl to reveal the cursor and adjust the ImGui debug windows;
+    // release it to go back to mouse-look. Only toggle GLFW's cursor mode
+    // on an actual transition, not every frame.
+    bool ctrlHeld = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                    glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+
+    if (ctrlHeld != cursorVisible_)
+    {
+        cursorVisible_ = ctrlHeld;
+        glfwSetInputMode(window, GLFW_CURSOR, cursorVisible_ ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+        firstMouseSample_ = true;   // avoid a jump when look mode resumes
+    }
+
+    if (cursorVisible_)
+        return;   // UI-adjustment mode: skip mouse-look entirely
+
     // Mouse look (replaces the old QE-up/down + arrow-key yaw/pitch
     // controls). Polled here rather than a GLFW callback, same reasoning
     // as Application's click polling - keeps input handling in one place
