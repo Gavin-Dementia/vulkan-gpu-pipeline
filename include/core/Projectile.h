@@ -13,6 +13,7 @@ public:
 
     bool isActive() const { return active_; }
     glm::vec3 position() const { return position_; }
+    void stop() { active_ = false; }   // immediate deactivation, e.g. on grid impact
 
 private:
     static constexpr float kDefaultSpeed = 30.0f;

@@ -53,6 +53,11 @@ Responsible for:
   for why polling instead of a GLFW callback
 - Polling Escape each frame to quit (alongside the existing
   `glfwWindowShouldClose` check)
+- Polling **R** (reset grid formation) and **T** (pause/resume grid
+  spin), both edge-detected the same way as the click trigger, and
+  driving `VulkanContext::updateInstanceSimulation()`/`updateSpin()`
+  every frame (world-simulation state, not rendering state — kept here
+  rather than inside a `FrameRenderer` pass)
 
 Not responsible for:
 - Vulkan resource management
@@ -78,19 +83,51 @@ before this split — see `TECHNICAL_NOTES.md` §11):
   (343 entries, not duplicated per LOD), 3 parallel sets of
   {visible-instance buffer, indirect draw buffer} — one set per LOD
   level — frustum uniform buffer, compute descriptor set (8 bindings),
-  compute pipeline
+  compute pipeline. `cachedInstances_` (the grid's rest positions) is
+  kept alive here rather than freed — see "Grid collision + scatter"
+  below.
+
+### Grid collision + scatter (Phase 7 milestone 2)
+
+`objectBuffer_` — the same 343-entry bounding-sphere buffer
+`culling.comp` already reads every dispatch for visibility/LOD — is now
+re-uploaded every frame from CPU-simulated positions instead of once at
+startup. Zero compute shader or descriptor changes: `culling.comp` has
+no separate concept of a "static" position, so making the upload
+per-frame is a purely CPU-side change (cheap thanks to `VulkanBuffer`'s
+persistent mapping). See `TECHNICAL_NOTES.md` §20 for the full
+rationale, the framerate-independent damping formula, and the discrete-
+collision tradeoff.
+
+- `VulkanContext::updateInstanceSimulation(deltaTime)` — called once per
+  frame from `Application::mainLoop()` (not from a `FrameRenderer` pass
+  lambda — this is world-simulation state, not rendering state, and
+  keeps `deltaTime` where it already lives). Integrates
+  `instanceVelocities_` into `instanceCurrentPositions_` with damping,
+  checks the active projectile against every instance (cheap `O(343)`),
+  and on the first touch applies a radial blast impulse (falloff by
+  distance, `+=`'d so overlapping blasts compound) to every instance
+  within a blast radius, then stops the projectile.
+- `VulkanContext::resetInstanceFormation()` — restores
+  `instanceCurrentPositions_` from the permanent `cachedInstances_` rest
+  formation and zeroes all velocities. Triggered by an edge-detected
+  **R** keypress in `Application::mainLoop()`.
+- `VulkanContext::spinAngle()`/`updateSpin()`/`toggleSpinPaused()` — the
+  grid's shared rotation now advances an accumulated angle instead of
+  reading `glfwGetTime()` directly, so a **T**-key pause/resume (added
+  alongside this feature) freezes/resumes smoothly instead of snapping.
 
 ### Projectile
 
 Plain C++ class (no Vulkan includes), owned as a value member of
 `VulkanContext`, mirroring `Camera`'s shape. `launch(origin, direction,
 speed)` sets it flying; `update(deltaTime)` integrates position at
-constant velocity and deactivates it after a fixed lifetime (~5s). No
-collision detection against the instance grid yet — `position()` is the
-one value a future milestone reads to add that. Rendered by reusing
-LOD2's mesh + its own UBO/descriptor set/instance buffer (see
-`TECHNICAL_NOTES.md` §17); drawn with a plain `vkCmdDrawIndexed` inside
-`GeometryPass`, guarded by `isActive()` — no new `FrameGraph` pass.
+constant velocity and deactivates it after a fixed lifetime (~5s), or
+immediately via `stop()` on grid impact (see "Grid collision + scatter"
+above). Rendered by reusing LOD2's mesh + its own UBO/descriptor
+set/instance buffer (see `TECHNICAL_NOTES.md` §17); drawn with a plain
+`vkCmdDrawIndexed` inside `GeometryPass`, guarded by `isActive()` — no
+new `FrameGraph` pass.
 
 ### Lighting (PBR milestone 1)
 
@@ -219,7 +256,10 @@ Application
     ├── VulkanDescriptor (graphics, 3 bindings: UBO / combined-image-sampler / SceneData)
     ├── ComputeDescriptor (compute, 8 bindings: object / 3×visible / 3×indirect / frustum)
     ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
-    ├── ObjectBuffer (shared, 343 entries) / FrustumBuffer
+    ├── ObjectBuffer (shared, 343 entries, re-uploaded every frame) / FrustumBuffer
+    ├── cachedInstances_ / instanceCurrentPositions_ / instanceVelocities_
+    │     (rest formation / live scatter state, all 343 entries — see
+    │      "Grid collision + scatter" module notes)
     ├── VulkanTexture
     ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos —
     │     bound at binding 2 on both descriptor_ and projectileDescriptor_)

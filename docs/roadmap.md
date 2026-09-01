@@ -161,13 +161,12 @@ camera moves toward/away from them (see `docs/assets/lod_demo_01.gif`).
 
 ## Phase 7 — Interactive Objects (toward PBR)
 
-**Status: Milestone 1 complete**
+**Status: Complete (both milestones)**
 
 Stated long-term direction: PBR material model. First concrete step
 toward it is an interactive object the player can aim and fire, which
-will eventually collide with and scatter the instance grid — that
-collision/scatter behavior is deliberately its own future milestone, not
-part of this one.
+collides with and scatters the instance grid — the feature that
+originally motivated this whole arc.
 
 Milestone 1 — mouse-fired projectile — implemented:
 - `Projectile` (plain C++ class, no Vulkan) — `launch()`/`update()`,
@@ -187,9 +186,22 @@ Milestone 1 — mouse-fired projectile — implemented:
   with the projectile's left-click fire trigger since mouse buttons are
   independent of cursor visibility mode.
 
-Milestone 2 (not started) — collision detection against the 343-instance
-grid and a scatter reaction on impact. `Projectile::position()` is
-already the value that milestone needs to read each frame.
+Milestone 2 — grid collision + scatter — implemented:
+- `objectBuffer_` (the 343-entry bounding-sphere buffer `culling.comp`
+  already reads every dispatch) goes from write-once at startup to
+  re-uploaded every frame from CPU-simulated positions — zero compute
+  shader or descriptor changes needed, since the shader never had a
+  separate concept of a "static" grid position. Cheap thanks to
+  `VulkanBuffer`'s persistent mapping. See `TECHNICAL_NOTES.md` §20.
+- CPU simulation (position + velocity + framerate-independent damping,
+  not full rigid-body physics): on the projectile touching any instance,
+  applies a radially-falling-off blast impulse to every instance within
+  a blast radius (not just the one touched), then stops the projectile —
+  one explosion per flight
+- Manual **R** key resets the grid to its original formation (no
+  automatic spring-back — instances stay scattered until reset)
+- Bundled in: manual **T** key pauses/resumes the grid's shared spin,
+  useful for observing the scatter without the whole grid also rotating
 
 ---
 
@@ -228,13 +240,12 @@ the per-object-descriptor-set pattern this milestone already proved out.
 
 ## Open / not yet started
 
-- **Grid collision + scatter reaction** (Phase 7, milestone 2) — needs
-  per-instance dynamic position/velocity state, replacing the grid's
-  current write-once `ObjectBuffer` upload with a per-frame CPU
-  simulation re-uploaded each frame (cheap now that `VulkanBuffer` is
-  persistently mapped)
 - **Texture-based PBR materials** (Phase 8, milestone 2) — albedo/
   normal/metallic-roughness/AO maps, a formal `Material` class
+- **Swept (not discrete) projectile collision** — current hit test only
+  checks position once per frame; not observable at the current
+  speed/instance-radius ratio, but would need revisiting for a much
+  faster projectile or much smaller instances (§20)
 - **IBL / environment lighting** — current ambient term is a flat
   `0.03 * albedo` constant; no shadows either
 - **Texture sampling reunited with the primary mesh** — implemented and

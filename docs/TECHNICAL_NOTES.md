@@ -781,6 +781,101 @@ material values.
 
 ---
 
+### 20. Grid collision + scatter: `objectBuffer_` goes from write-once to per-frame
+
+**Decision:** The projectile now triggers a radial "blast" scatter on
+touching any grid instance — CPU-simulated (position + velocity +
+framerate-independent damping, not full rigid-body physics), no
+automatic return to formation, only a manual **R** key reset. This is
+the feature the whole interactive-object arc (§17) was originally built
+toward.
+
+**Why this needed zero compute shader or descriptor changes:**
+`culling.comp` has never had a concept of a "static" grid — every
+dispatch, it reads whatever is currently in `objectBuffer_` and treats
+`boundingSphere.xyz` as that instance's position, full stop, for both
+the frustum/LOD test and what gets written into the visible-instance
+buffers the vertex shader reads. `objectBuffer_` was simply uploaded
+once at startup and never touched again — nothing about the GPU-side
+pipeline assumed that. Making the grid dynamic was therefore purely a
+CPU-side change: `VulkanContext::updateInstanceSimulation()` re-uploads
+`objectBuffer_` every frame from simulated positions, and the existing
+`VulkanBuffer::upload()` persistent-mapping optimization (the earlier
+performance commit) makes that a plain `memcpy`, not a real cost.
+
+**`cachedInstances_` stopped being scratch data.** It used to be
+`.clear()`'d and `.shrink_to_fit()`'d at the end of
+`initCullingResources()` once the object buffer was built from it — a
+correct decision at the time (nothing else needed the grid's rest
+positions after init). Now it's the permanent reference
+`resetInstanceFormation()` restores from, so that clear was removed.
+343×16 bytes ≈ 5.5KB kept alive for the app's lifetime — not worth a
+second thought at this scale.
+
+**Framerate-independent damping:** velocity decays via
+`dampingFactor = pow(kDampingPerSecond, deltaTime)`, where
+`kDampingPerSecond` is "fraction of velocity retained after one full
+second" — this is the correct closed form because
+`pow(k, dt1) * pow(k, dt2) == pow(k, dt1+dt2)`, so the perceived
+deceleration rate doesn't depend on frame rate the way a naive
+`velocity *= 0.9` per-frame multiplier would (that would decay faster at
+higher framerates, since more multiplications happen per real second).
+
+**One explosion per flight, applied as a blast radius, not a single-point
+hit:** the hit test finds the *first* instance the projectile's bounding
+sphere touches, then applies a radially-falling-off impulse to *every*
+instance within a separate, larger blast radius — not just the one
+touched — then immediately calls the new `Projectile::stop()` and
+`break`s out of the search. Velocity is accumulated (`+=`), not
+overwritten, so a second explosion before the first has settled
+compounds rather than resets prior motion.
+
+**`ComputeObjectData` → bare `glm::vec4`, verified byte-identical:** the
+struct `initCullingResources()` originally built the upload from
+(`struct ComputeObjectData { glm::vec4 boundingSphere; };`) is local to
+that function and inaccessible from `updateInstanceSimulation()`.
+Rather than hoist it to header scope for one caller, the new method
+uploads a plain `std::vector<glm::vec4>` directly — safe because a
+struct with exactly one non-static member, no base class, and no
+virtual table has identical size and alignment to that member; there is
+nothing for the compiler to pad around. Confirmed no `GLM_FORCE_ALIGNED`
+or similar macros are defined anywhere in this project that could change
+`vec4`'s layout between the two call sites.
+
+**Known, accepted tradeoff — discrete, not swept, collision:** the hit
+test only checks the projectile's position once per frame, so at a
+large enough `deltaTime`/speed it could in principle tunnel through an
+instance without ever registering inside the hit radius. At the
+projectile's speed (30 units/s) and normal frame times this isn't
+observable (sub-unit movement per frame vs. a ~1.3-unit hit radius), and
+nothing else in this codebase clamps `deltaTime` either (e.g.
+`Camera::processInput`) — consistent with the project's existing risk
+tolerance at this instance count, not a new gap this feature introduces.
+
+**Bundled addition — spin pause/resume (`T` key):** unrelated to the
+collision system, but small enough to fold into the same pass.
+`GeometryPass`'s rotation used to read `(float)glfwGetTime()` directly
+each frame; pausing can't just skip that line; because the model matrix
+still needs *an* angle every frame, and reusing the raw clock value
+after a pause would snap to wherever the clock currently is rather than
+resuming smoothly. Fixed by having `VulkanContext` own the accumulated
+angle itself (`spinAngle_`), advanced by `deltaTime` only while not
+paused — visually identical to the old behavior when never paused, and
+resumes exactly where it left off otherwise.
+
+**Interview-relevant:** *"Why is this simulation update called from
+`Application::mainLoop()` instead of from inside `FrameRenderer`'s
+`GPUCullingPass` lambda, the way the frustum buffer is updated?"* — both
+placements are correct (the host write to coherent memory just needs to
+happen-before the `vkQueueSubmit` that reads it, not at any particular
+point in command recording), but `Application::mainLoop()` is where
+`deltaTime` and the projectile's own `update(deltaTime)` call already
+live, and this is world-simulation state, not rendering state — keeping
+it there avoids threading a `deltaTime` parameter through
+`FrameRenderer::drawFrame()`, which currently takes none.
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |

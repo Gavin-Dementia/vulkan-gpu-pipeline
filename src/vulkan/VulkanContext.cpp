@@ -1,6 +1,8 @@
 #include "vulkan/VulkanContext.h"
 #include "vulkan/resource/ObjLoader.h"
 #include <glm/glm.hpp>
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <vector>
 
@@ -263,9 +265,77 @@ void VulkanContext::initCullingResources()
 
     computePipeline_.create(device_.get(), computeDescriptor_.layout());
 
-    // No longer needed after culling resources are built
-    cachedInstances_.clear();
-    cachedInstances_.shrink_to_fit();
+    // cachedInstances_ is kept alive as the permanent rest formation
+    // (used by resetInstanceFormation()) instead of being freed here.
+    instanceCurrentPositions_.resize(OBJECT_COUNT);
+    instanceVelocities_.assign(OBJECT_COUNT, glm::vec3(0.0f));
+    for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+        instanceCurrentPositions_[i] = glm::vec3(cachedInstances_[i].position);
+}
+
+// =========================================================
+// Grid collision + scatter (Phase 7 milestone 2)
+// =========================================================
+void VulkanContext::updateInstanceSimulation(float deltaTime)
+{
+    constexpr float kDampingPerSecond = 0.05f;   // fraction of velocity retained after 1 full second
+    constexpr float kProjectileRadius = 0.3f;
+    constexpr float kBlastRadius      = 6.0f;
+    constexpr float kImpulseStrength  = 8.0f;
+
+    float dampingFactor = std::pow(kDampingPerSecond, deltaTime);   // framerate-independent decay
+
+    for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+    {
+        instanceCurrentPositions_[i] += instanceVelocities_[i] * deltaTime;
+        instanceVelocities_[i] *= dampingFactor;
+    }
+
+    if (projectile_.isActive())
+    {
+        glm::vec3 projPos = projectile_.position();
+        float hitDist = boundingSphereRadius_ + kProjectileRadius;
+
+        for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+        {
+            if (glm::length(instanceCurrentPositions_[i] - projPos) < hitDist)
+            {
+                // Blast: radial push falling off with distance from the
+                // impact point, applied to every instance within range -
+                // not just the one instance that was actually touched.
+                for (uint32_t j = 0; j < OBJECT_COUNT; j++)
+                {
+                    glm::vec3 offset = instanceCurrentPositions_[j] - projPos;
+                    float dist = glm::length(offset);
+                    if (dist < kBlastRadius)
+                    {
+                        glm::vec3 dir = (dist > 0.001f) ? (offset / dist) : glm::vec3(0.0f, 1.0f, 0.0f);
+                        float falloff = 1.0f - (dist / kBlastRadius);
+                        instanceVelocities_[j] += dir * kImpulseStrength * falloff;
+                    }
+                }
+                projectile_.stop();
+                break;   // one explosion per flight
+            }
+        }
+    }
+
+    // Re-upload the (possibly changed) positions - cheap, persistently
+    // mapped memcpy (see the VulkanBuffer persistent-mapping commit).
+    // A bare glm::vec4 is byte-identical to the local ComputeObjectData
+    // struct above (single member, no padding), safe to upload directly.
+    std::vector<glm::vec4> objects(OBJECT_COUNT);
+    for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+        objects[i] = glm::vec4(instanceCurrentPositions_[i], boundingSphereRadius_);
+
+    objectBuffer_.upload(device_.get(), objects.data(), sizeof(glm::vec4) * OBJECT_COUNT);
+}
+
+void VulkanContext::resetInstanceFormation()
+{
+    for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+        instanceCurrentPositions_[i] = glm::vec3(cachedInstances_[i].position);
+    std::fill(instanceVelocities_.begin(), instanceVelocities_.end(), glm::vec3(0.0f));
 }
 
 void VulkanContext::cleanup()

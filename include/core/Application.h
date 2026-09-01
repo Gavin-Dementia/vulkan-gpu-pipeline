@@ -21,5 +21,7 @@ private:
 
     bool running = true;
     bool prevLeftMousePressed_ = false;
+    bool prevRPressed_ = false;
+    bool prevTPressed_ = false;
 };
 

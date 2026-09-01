@@ -82,10 +82,12 @@ void FrameRenderer::init(VulkanContext& ctx)
         {
             // update MVP each frame
             UBOData ubo{};
-            // model matrix
+            // model matrix - accumulated angle (not raw glfwGetTime()) so
+            // pausing via VulkanContext::toggleSpinPaused() freezes at the
+            // current angle instead of snapping when resumed.
             ubo.model = glm::rotate(
                 glm::mat4(1.0f),
-                (float)glfwGetTime(),
+                context->spinAngle(),
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
             ubo.view = context->camera().getViewMatrix();

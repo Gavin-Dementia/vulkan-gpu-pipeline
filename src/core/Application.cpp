@@ -85,7 +85,22 @@ void Application::mainLoop()
         }
         prevLeftMousePressed_ = leftPressed;
 
+        // R resets the grid back to its rest formation - edge-detected
+        // the same way as the click trigger above.
+        bool rPressed = glfwGetKey(context->window(), GLFW_KEY_R) == GLFW_PRESS;
+        if (rPressed && !prevRPressed_ && !ImGui::GetIO().WantCaptureKeyboard)
+            context->resetInstanceFormation();
+        prevRPressed_ = rPressed;
+
+        // T pauses/resumes the grid's shared spin.
+        bool tPressed = glfwGetKey(context->window(), GLFW_KEY_T) == GLFW_PRESS;
+        if (tPressed && !prevTPressed_ && !ImGui::GetIO().WantCaptureKeyboard)
+            context->toggleSpinPaused();
+        prevTPressed_ = tPressed;
+
         context->projectile().update(deltaTime);
+        context->updateInstanceSimulation(deltaTime);
+        context->updateSpin(deltaTime);
 
         if (glfwWindowShouldClose(context->window()) ||
             glfwGetKey(context->window(), GLFW_KEY_ESCAPE) == GLFW_PRESS)

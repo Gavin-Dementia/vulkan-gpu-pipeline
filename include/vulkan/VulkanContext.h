@@ -85,6 +85,20 @@ public:
     void setLightColor(const glm::vec3& c)     { lightColor_ = c; }
     void setLightIntensity(float i)            { lightIntensity_ = i; }
 
+    // Grid collision + scatter (Phase 7 milestone 2). Re-uploads
+    // objectBuffer_ every frame from CPU-simulated positions - no compute
+    // shader or descriptor changes needed, since culling.comp already
+    // treats whatever is in objectBuffer_ at dispatch time as ground
+    // truth for both visibility and render position.
+    void updateInstanceSimulation(float deltaTime);
+    void resetInstanceFormation();
+
+    // Manual pause/resume for the grid's shared spin - independent of
+    // the scatter system above, only affects the rotation model matrix.
+    float spinAngle() const { return spinAngle_; }
+    void updateSpin(float deltaTime) { if (!spinPaused_) spinAngle_ += deltaTime; }
+    void toggleSpinPaused() { spinPaused_ = !spinPaused_; }
+
     LODMesh& lod(int level) { return lods_[level]; }
 
 
@@ -94,9 +108,18 @@ private:
     void initSceneData();
     void initCullingResources();
 
+    // Grid's rest formation (7x7x7 grid positions computed in
+    // initSceneData()) - kept alive for the app's lifetime (not cleared
+    // after init) as the reference resetInstanceFormation() restores.
     std::vector<InstanceData> cachedInstances_;
+    std::vector<glm::vec3>    instanceCurrentPositions_;  // live simulated position, size OBJECT_COUNT
+    std::vector<glm::vec3>    instanceVelocities_;        // per-instance blast velocity, size OBJECT_COUNT
+
     std::array<LODMesh, 3> lods_;
     float boundingSphereRadius_ = 0.0f;   // computed from LOD0's mesh bounds, see initSceneData()
+
+    float spinAngle_    = 0.0f;   // accumulated grid rotation angle, replaces raw glfwGetTime()
+    bool  spinPaused_   = false;
 
     GLFWwindow* window_ = nullptr;
     Camera camera_;
