@@ -118,6 +118,12 @@ void VulkanContext::initSceneData()
             commandPool_.get(), device_.getGraphicsQueue(),
             mesh.indices
         );
+
+        // LOD0 is the most detailed variant, so its bounds are the most
+        // representative object radius for the (LOD-independent) culling
+        // test - LOD1/2 are decimated versions of the same shape and are
+        // never larger than LOD0.
+        if (i == 0) boundingSphereRadius_ = mesh.boundingRadius;
     }
 
     // 7x7x7 grid, spacing 3.0, centered on origin
@@ -152,13 +158,12 @@ void VulkanContext::initCullingResources()
     struct ComputeObjectData { glm::vec4 boundingSphere; };  // xyz=center, w=radius
 
     std::vector<ComputeObjectData> objects(OBJECT_COUNT);
-    constexpr float suzanneRadius = 1.5f;  // approximate Suzanne bounding sphere radius
 
     for (uint32_t i = 0; i < OBJECT_COUNT; i++)
     {
         objects[i].boundingSphere = glm::vec4(
             glm::vec3(cachedInstances_[i].position),
-            suzanneRadius
+            boundingSphereRadius_
         );
     }
 

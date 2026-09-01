@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <iostream>
 #include <unordered_map>
+#include <limits>
+#include <algorithm>
 
 // boost::hash_combine-style mix: plain XOR is commutative, so e.g.
 // position (1,2,3) and (2,1,3) would hash identically under
@@ -101,8 +103,33 @@ MeshData ObjLoader::load(const std::string& path)
         }
     }
 
+    // Recenter to the mesh's own bounding-box center. Raw OBJ vertex
+    // coordinates are authored around whatever origin the modeling tool
+    // used (Suzanne's OBJ files are ~5 units off (0,0,0)) - the renderer's
+    // per-instance model matrix only rotates (see FrameRenderer.cpp), so
+    // an off-center mesh would visibly orbit its grid slot every frame
+    // instead of spinning in place around it.
+    glm::vec3 bboxMin(std::numeric_limits<float>::max());
+    glm::vec3 bboxMax(std::numeric_limits<float>::lowest());
+    for (const auto& v : mesh.vertices)
+    {
+        bboxMin = glm::min(bboxMin, v.position);
+        bboxMax = glm::max(bboxMax, v.position);
+    }
+    glm::vec3 center = (bboxMin + bboxMax) * 0.5f;
+
+    float radius = 0.0f;
+    for (auto& v : mesh.vertices)
+    {
+        v.position -= center;
+        radius = std::max(radius, glm::length(v.position));
+    }
+    mesh.boundingRadius = radius;
+
     std::cout << "[ObjLoader] " << mesh.vertices.size() << " unique vertices, "
-               << mesh.indices.size() << " indices (from " << path << ")\n";
+               << mesh.indices.size() << " indices (from " << path << "), "
+               << "recentered by (" << center.x << ", " << center.y << ", " << center.z
+               << "), bounding radius " << radius << "\n";
 
     return mesh;
 }

@@ -13,12 +13,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include "vulkan/buffer/UniformBuffer.h"
 
-// Suzanne OBJ world-space center offset → move to origin
-// X: (-3.86 + -1.13) / 2 = -2.49
-// Y: (0.27 + 2.24) / 2   =  1.25
-// Z: (3.25 + 4.96) / 2   =  4.10
-static constexpr glm::vec3 SUZANNE_OFFSET = { 2.49f, -1.25f, -4.10f };
-
 void FrameRenderer::init(VulkanContext& ctx)
 {
     context = &ctx;

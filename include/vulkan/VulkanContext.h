@@ -79,6 +79,7 @@ private:
 
     std::vector<InstanceData> cachedInstances_;
     std::array<LODMesh, 3> lods_;
+    float boundingSphereRadius_ = 0.0f;   // computed from LOD0's mesh bounds, see initSceneData()
 
     GLFWwindow* window_ = nullptr;
     Camera camera_;

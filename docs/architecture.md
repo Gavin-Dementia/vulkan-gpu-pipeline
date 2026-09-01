@@ -113,7 +113,14 @@ source-of-truth matters.
 Loads OBJ via tinyobjloader, deduplicates vertices into a `unordered_map`
 keyed by position+normal+uv (Suzanne LOD0: 2904 → 507 unique vertices).
 Called once per LOD mesh (`suzanne.obj` / `suzanne_lod1.obj` /
-`suzanne_lod2.obj`), each returning its own `{ vertices, indices }`.
+`suzanne_lod2.obj`), each returning its own `{ vertices, indices,
+boundingRadius }`. Also recenters the mesh to its own bounding-box
+center (raw OBJ coordinates aren't authored at local origin) and
+computes `boundingRadius` — the max vertex distance from that new
+center — used by `initCullingResources()` as the shared object bounding
+sphere. See `TECHNICAL_NOTES.md` §16 for why recentering matters here
+(per-instance rotation would otherwise orbit rather than spin in
+place).
 
 ### Compute culling + LOD selection pipeline
 

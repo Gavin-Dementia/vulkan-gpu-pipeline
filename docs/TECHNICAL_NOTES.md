@@ -506,8 +506,7 @@ pair to know how many and which instances to draw with that mesh.
 **Known simplification carried over from this pivot:** The LOD distance
 thresholds are constants baked into `culling.comp`, not derived from
 each mesh's actual detail level, screen-space size, or exposed as a
-tunable — the same category of hardcoded-magic-number tradeoff as the
-`1.5f` bounding-sphere radius in `initCullingResources()`.
+tunable.
 
 **Interview-relevant:** *"Why not just add an `lod` field to the
 instance and branch in the vertex shader?"* — because indirect draw
@@ -515,6 +514,58 @@ parameters (which vertex/index buffer, how many instances) are decided
 at `vkCmdDrawIndexedIndirect` record/dispatch time, not per-vertex in the
 shader; the mesh itself differs per LOD, so the branch has to happen
 before the draw call is issued, not inside one.
+
+---
+
+### 16. Mesh recentering + bounding sphere computed from actual vertex bounds
+
+**Bug found:** `FrameRenderer.cpp` had a dead constant, `SUZANNE_OFFSET
+= {2.49f, -1.25f, -4.10f}`, with a comment explaining it was Suzanne's
+OBJ-space center offset — but it was never applied anywhere. Measuring
+`assets/suzanne.obj`'s actual vertex bounds confirmed the comment: the
+raw OBJ data is centered around `(-2.49, 1.25, 4.10)`, not the origin.
+Since `GeometryPass`'s model matrix is a pure rotation about the
+instance's local Y axis with no compensating translation, rotating an
+off-center mesh doesn't spin it in place — it swings the mesh through a
+horizontal circle of radius `sqrt(2.49² + 4.10²) ≈ 4.8` units around its
+grid slot. With the instance grid spaced 3.0 units apart, that orbit
+would sweep well into neighboring cells, not stay contained in the
+instance's own slot. The intended fix (the offset constant) existed in
+the code but was never wired into the model matrix or the mesh data.
+
+**Fix:** Rather than patching the model matrix with the offset,
+`ObjLoader::load()` now recenters every mesh at load time: after
+building the deduplicated vertex list, it computes the mesh's own
+bounding-box center and subtracts it from every vertex position. This
+makes local `(0,0,0)` coincide with each LOD mesh's own geometric
+center, so per-instance rotation is a true in-place spin regardless of
+where the source OBJ's vertex data happened to be authored. All 3 LOD
+variants recenter independently using their own bounds; their measured
+bbox centers already agree to within ~0.12 units of each other on every
+axis (expected, since they're decimated versions of the same shape), so
+LOD switching doesn't introduce a visible position jump. The
+now-superseded `SUZANNE_OFFSET` constant was deleted.
+
+**Bounding sphere radius, computed instead of guessed:** `ObjLoader`
+also now returns `MeshData::boundingRadius` — the max distance from the
+new local origin to any vertex, i.e. the tightest origin-centered sphere
+containing the whole mesh. `VulkanContext::initSceneData()` captures
+LOD0's radius (the most detailed variant; LOD1/2 are decimated versions
+of the same shape and are never larger) into `boundingSphereRadius_`,
+which replaces the previous hardcoded `1.5f` in
+`initCullingResources()`. This is a correctness fix, not just a
+cleanliness one: the recentering changed the mesh's actual extents
+relative to local origin, so a stale hardcoded radius could now
+under- or over-approximate the true bounds depending on how the guess
+compared to the recentered geometry.
+
+**Interview-relevant:** This is a good example of a dead-code trail
+pointing straight at a real bug — the unused `SUZANNE_OFFSET` constant
+was the tell that someone had already diagnosed this exact problem and
+started a fix that was never finished or was superseded by a different
+approach, then never cleaned up. Grepping for a suspicious constant's
+usage before assuming it's just leftover cruft is worth doing before
+deleting it as "unused."
 
 ---
 
@@ -539,10 +590,6 @@ before the draw call is issued, not inside one.
 
 ## Open items / known simplifications
 
-- **Bounding sphere radius is a hardcoded constant** (`1.5f`) rather than
-  computed from the actual mesh bounds. Fine for a single mesh type at
-  uniform scale; would need to be computed per-mesh for a scene with
-  varied geometry.
 - **LOD is implemented** (§15) as 3 hardcoded distance buckets
   (`LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`), not derived from mesh detail
   level or screen-space projected size, and not exposed as a tunable.
