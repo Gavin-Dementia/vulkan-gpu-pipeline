@@ -282,22 +282,25 @@ Milestone 3 — PCF softening + tunable bias — implemented:
   directly-lit surfaces (most visible on the grid's top layer, which has
   the least self-occlusion to mask it) in Milestone 2
 
-Two real bugs surfaced and fixed along the way (both in
+Three real bugs surfaced and fixed along the way (all in
 `TECHNICAL_NOTES.md` §22): `objectBuffer_` was missing
 `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT` before it could be reused as an
-instance buffer, and the light's orthographic matrix needed
+instance buffer; the light's orthographic matrix needed
 `glm::orthoRH_ZO()` instead of `glm::ortho()` — this project's default
 GLM depth convention is silently harmless for `Camera`'s perspective
 matrix but was clipping away the near half of the light's frustum
-outright for an orthographic one.
+outright for an orthographic one; and `shadow.vert` never applied the
+grid's spin rotation the way `triangle.vert` does, so the shadow map was
+permanently cast from each mesh's un-rotated rest pose while the visible
+geometry kept spinning — fixed by adding a `model` field to
+`ShadowPushConstants` and pushing the same per-draw rotation
+`GeometryPass` already computes.
 
 Not yet done: light-frustum culling for the shadow pass (draws all
 instances unculled every frame — fine at 343 instances); `lightViewProj()`'s
 `kSceneRadius` is a fixed constant, not re-derived from the live scatter
 state, so an instance blasted far enough away could stop casting a
-shadow; the PCF tap-count/normalization has an open question flagged in
-`TECHNICAL_NOTES.md` (§22 / Open items) from a manual edit made during
-visual tuning.
+shadow.
 
 ---
 

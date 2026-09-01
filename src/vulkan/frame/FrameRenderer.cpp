@@ -93,9 +93,20 @@ void FrameRenderer::init(VulkanContext& ctx)
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->shadowPipeline().get());
 
             glm::mat4 lightVP = context->lightViewProj();
+
+            // Grid: same accumulated spin rotation as GeometryPass's ubo.model
+            // (see below) - the shadow map must be cast from the orientation
+            // the mesh is actually rendered at this frame, not its rest pose.
+            ShadowPushConstants gridPc{};
+            gridPc.lightViewProj = lightVP;
+            gridPc.model = glm::rotate(
+                glm::mat4(1.0f),
+                context->spinAngle(),
+                glm::vec3(0.0f, 1.0f, 0.0f)
+            );
             vkCmdPushConstants(
                 cmd, context->shadowPipeline().layout(), VK_SHADER_STAGE_VERTEX_BIT,
-                0, sizeof(glm::mat4), &lightVP
+                0, sizeof(ShadowPushConstants), &gridPc
             );
 
             context->lod(0).vertexBuffer.bind(cmd);
@@ -112,6 +123,15 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             if (context->projectile().isActive())
             {
+                // Projectile: identity model, matching GeometryPass's projUbo.
+                ShadowPushConstants projPc{};
+                projPc.lightViewProj = lightVP;
+                projPc.model = glm::mat4(1.0f);
+                vkCmdPushConstants(
+                    cmd, context->shadowPipeline().layout(), VK_SHADER_STAGE_VERTEX_BIT,
+                    0, sizeof(ShadowPushConstants), &projPc
+                );
+
                 context->lod(2).vertexBuffer.bind(cmd);
                 context->lod(2).indexBuffer.bind(cmd);
 

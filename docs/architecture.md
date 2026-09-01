@@ -202,7 +202,9 @@ existing bounding spheres.
   `VulkanComputePipeline` (a new `FrameGraph` stage getting its own
   pipeline class is an established pattern here, from when compute
   culling was added). Vertex-only (no fragment stage, no color blend
-  attachment), one push-constant `mat4` (the light's view-projection).
+  attachment), a `ShadowPushConstants` push constant (light view-
+  projection + the same per-draw model rotation `triangle.vert` applies —
+  a grid-spin desync bug without it, see `TECHNICAL_NOTES.md` §22).
 - `FrameGraph::PassStage::Shadow` / `executeShadow()` — a third pass
   stage alongside `Compute`/`Graphics`, mirroring how `executeCompute()`
   already runs outside the main render pass with its own explicit
@@ -423,9 +425,10 @@ Memory Barrier (SHADER_WRITE → VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ)
 Begin Shadow Render Pass (own framebuffer, fixed 2048×2048 resolution)
         │
 Shadow: ShadowPass
-   push lightViewProj → bind LOD0 vertex/index buffers + objectBuffer_
-   (as instance buffer) → vkCmdDrawIndexed, instanceCount = OBJECT_COUNT →
-   if projectile active: bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
+   push {lightViewProj, spin rotation} → bind LOD0 vertex/index buffers +
+   objectBuffer_ (as instance buffer) → vkCmdDrawIndexed, instanceCount =
+   OBJECT_COUNT → if projectile active: push {lightViewProj, identity},
+   bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
         │
 End Shadow Render Pass
         │

@@ -1038,6 +1038,31 @@ shadow-map resolution and scene scale, easier to find by eye than to
 compute) plus 3×3 PCF (averaging 9 depth comparisons smooths single-texel
 noise into a soft result and softens shadow edges as a side effect).
 
+**Addendum — shadow silhouette desynced from the spinning mesh.** After
+the acne fix, a second, unrelated symptom surfaced: shadows on grid
+instances that visibly had nothing occluding them, reported as "not sure
+if this is an algorithm bug or a rendering artifact." The distinguishing
+signal was that this one was *coherent* (a whole stale silhouette,
+tracking with how long the app had been running) rather than *noisy*
+(individual speckled texels, like the acne bug) — same broad symptom
+category, different mechanism, and worth telling apart before reaching
+for bias/PCF again. Root cause: `shadow.vert` never applied `ubo.model`
+(the grid's continuously-accumulating spin) the way `triangle.vert`
+does, so the shadow map was always cast from each mesh's un-rotated rest
+pose while the visible geometry spun independently — the two would only
+ever agree at `spinAngle() == 0`. Fixed by giving the shadow pass's push
+constant a second `mat4 model` field (`ShadowPushConstants`, now in
+`VulkanShadowPipeline.h` so both the pipeline and `FrameRenderer` share
+one definition — 128 bytes total, exactly Vulkan's guaranteed minimum
+push-constant size) and pushing the same per-draw rotation
+`GeometryPass` already computes: `spinAngle()`'s rotation for the grid,
+identity for the projectile. General lesson: any per-draw transform
+applied in the main pass's vertex shader (rotation, and equally scale if
+this project ever adds it) has to be applied identically in *every*
+other pass that transforms the same geometry — a shadow pass is a second,
+independent vertex transform of the same mesh, not a derivative of the
+first one, so nothing keeps them in sync automatically.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -1058,6 +1083,7 @@ noise into a soft result and softens shadow edges as a side effect).
 | New/modified files in `assets/` weren't reflected in the running executable despite a successful rebuild | CMake's `add_custom_command(... COMMAND copy_directory ...)` does not reliably re-copy a file whose name is unchanged but whose *content* changed — incremental build tracking treated the POST_BUILD step as already satisfied | Had to manually delete or `Copy-Item -Force` the stale file in the output directory to force a refresh. This is a real caveat of `copy_directory`-based asset pipelines, not a one-off fluke — worth remembering before re-debugging "my code change isn't taking effect" when the actual change was to a *data* file, not a source file |
 | Shadow pass's `vkCmdBindVertexBuffers` reused `objectBuffer_` without the right usage flag | Buffer was created with only `STORAGE_BUFFER_BIT` (culling.comp's SSBO), never `VERTEX_BUFFER_BIT` — reusing a buffer for a new purpose doesn't retroactively grant it that purpose's usage flag | Caught by re-checking the buffer's creation call, not by an observed validation message — worth doing that check *before* reusing a buffer cross-purpose, since some drivers won't complain even though it's invalid per spec (§22) |
 | Shadow map showed roughly half the grid missing/wrong depending on light angle | `glm::ortho()` defaults to OpenGL's `z_ndc ∈ [-1,1]` (this project never defines `GLM_FORCE_DEPTH_ZERO_TO_ONE`); for an orthographic matrix that linearly clips away the near half of the frustum under Vulkan's `[0,1]` requirement | `Camera`'s existing `glm::perspective()` usage had the same convention mismatch but hid it (only a near-plane sliver is affected for perspective); switched to `glm::orthoRH_ZO()` for the light matrix specifically (§22) — the perspective/orthographic distinction changes whether this bug is invisible or scene-breaking |
+| Shadows appeared on grid instances with nothing actually occluding them, worse the longer the app had been running | `shadow.vert` transformed vertices with only the raw mesh-local `inPosition` — it never applied `ubo.model` (the grid's continuously-accumulating spin rotation) the way `triangle.vert` does, so the shadow map was permanently cast from each mesh's un-rotated *rest pose* while the visible geometry kept spinning independently every frame | Reported as "not sure if it's an algorithm bug or an aliasing artifact"; the deciding clue was that it was pixel-*coherent* (a stale silhouette-shaped mismatch, confirmed by asking whether it tracked with spin over time), not pixel-*noisy* like the earlier acne bug — same failure category ("shadow doesn't match the caster") but a different mechanism, worth distinguishing before reaching for a bias/PCF fix again. Fixed by giving `ShadowPushConstants` a second `mat4 model` field and pushing the same per-draw rotation (grid: `spinAngle()`; projectile: identity) that `GeometryPass` already computes — 128 bytes total, exactly Vulkan's guaranteed minimum push-constant size |
 
 ---
 
@@ -1079,14 +1105,6 @@ noise into a soft result and softens shadow edges as a side effect).
   and the fixed `kSceneRadius` constant in `lightViewProj()` isn't
   re-derived from the live scatter state, so an instance blasted far
   enough outside it would silently stop casting a shadow.
-- **PCF tap count / normalization is an open question as of this
-  writing** — `calcShadow()`'s loop always accumulates a fixed 3×3 (9
-  taps), and it was edited from `litSum / 9.0` to `litSum / 6.0` during
-  visual tuning; dividing a 9-tap sum by 6 lets the shadow factor exceed
-  `1.0` (up to 1.5×) in fully-lit regions, which would over-brighten `Lo`
-  there rather than fix acne. Flagged, not reverted — resolve by either
-  restoring `/9.0` or changing the loop to actually sample 6 taps if a
-  non-square pattern was intended.
 - **LOD is implemented** (§15) as 3 hardcoded distance buckets
   (`LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`), not derived from mesh detail
   level or screen-space projected size, and not exposed as a tunable.

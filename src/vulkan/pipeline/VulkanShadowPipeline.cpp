@@ -7,11 +7,6 @@
 #include <vector>
 #include <stdexcept>
 
-struct ShadowPushConstants
-{
-    glm::mat4 lightViewProj;
-};
-
 void VulkanShadowPipeline::create(
     VkDevice device,
     VkExtent2D extent,
