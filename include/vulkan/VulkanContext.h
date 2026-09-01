@@ -93,6 +93,14 @@ public:
     void updateInstanceSimulation(float deltaTime);
     void resetInstanceFormation();
 
+    // Collision volume, independent of the render/culling bounding
+    // sphere (boundingSphereRadius_) - starts equal to it (a sensible,
+    // mesh-derived default) but can diverge, e.g. a more forgiving hit
+    // radius than the visual mesh. culling.comp is unaffected; only
+    // updateInstanceSimulation()'s hit test reads this.
+    float collisionRadius() const { return collisionRadius_; }
+    void  setCollisionRadius(float r) { collisionRadius_ = r; }
+
     // Manual pause/resume for the grid's shared spin - independent of
     // the scatter system above, only affects the rotation model matrix.
     float spinAngle() const { return spinAngle_; }
@@ -117,6 +125,7 @@ private:
 
     std::array<LODMesh, 3> lods_;
     float boundingSphereRadius_ = 0.0f;   // computed from LOD0's mesh bounds, see initSceneData()
+    float collisionRadius_      = 0.0f;   // independent of boundingSphereRadius_, see accessor comment above
 
     float spinAngle_    = 0.0f;   // accumulated grid rotation angle, replaces raw glfwGetTime()
     bool  spinPaused_   = false;

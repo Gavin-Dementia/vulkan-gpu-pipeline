@@ -200,6 +200,9 @@ Milestone 2 — grid collision + scatter — implemented:
   one explosion per flight
 - Manual **R** key resets the grid to its original formation (no
   automatic spring-back — instances stay scattered until reset)
+- Mutual instance-vs-instance collision (positional pushout, every
+  frame) — fixes scattered instances visually clipping through each
+  other once settled; see `TECHNICAL_NOTES.md` §21
 - Bundled in: manual **T** key pauses/resumes the grid's shared spin,
   useful for observing the scatter without the whole grid also rotating
 
@@ -246,6 +249,10 @@ the per-object-descriptor-set pattern this milestone already proved out.
   checks position once per frame; not observable at the current
   speed/instance-radius ratio, but would need revisiting for a much
   faster projectile or much smaller instances (§20)
+- **Velocity-based mutual collision response** — current fix (§21) is a
+  positional pushout only (no bounce/restitution); instances stop dead
+  on contact with each other rather than deflecting, fine for "no
+  clipping" but not a physically realistic collision
 - **IBL / environment lighting** — current ambient term is a flat
   `0.03 * albedo` constant; no shadows either
 - **Texture sampling reunited with the primary mesh** — implemented and

@@ -874,6 +874,85 @@ live, and this is world-simulation state, not rendering state — keeping
 it there avoids threading a `deltaTime` parameter through
 `FrameRenderer::drawFrame()`, which currently takes none.
 
+**Addendum — collision radius separated from the render/culling
+radius:** §20's original hit test reused `boundingSphereRadius_` (the
+same value `culling.comp` uses for frustum/LOD tests) for collision
+too, conflating two conceptually different things: a render/culling
+bound must stay geometrically accurate to the mesh or objects visibly
+clip/pop, while a collision bound is a gameplay-feel parameter that
+teams routinely tune independently (a more forgiving hit radius than
+the visible mesh is a standard pattern). Added a separate
+`collisionRadius_`, initialized equal to `boundingSphereRadius_` at
+startup (a sensible, mesh-derived default — not an arbitrary guess) but
+free to diverge via `setCollisionRadius()`. `culling.comp` and the
+`objectBuffer_` upload are untouched; only `updateInstanceSimulation()`'s
+hit test now reads `collisionRadius_`. Zero behavior change with the
+default value — this is groundwork for tuning hit-feel independently of
+visuals, not a fix for an observed problem.
+
+---
+
+### 21. Mutual instance collision — fixing post-scatter clipping
+
+**Bug reported:** after a blast, scattered instances that came to rest
+near each other visibly clipped through one another ("穿模"). Root
+cause: §20's simulation only ever modeled projectile-vs-instance
+interaction — instances never collided with *each other*, so nothing
+stopped two of them from settling at overlapping positions. This was
+latent from the start, not introduced by anything since §20; it just
+wasn't visible until instances actually landed close together.
+
+**Why the margin is this tight:** the grid's rest spacing is 3.0 units;
+`boundingSphereRadius_` ≈ 1.49, so two axis-adjacent resting instances
+sit only `3.0 - 2×1.49 ≈ 0.02` units apart at closest — already almost
+touching before anything scatters. Any small drift toward a neighbor
+(from a blast, or from a second explosion pushing one instance into
+another) crosses that razor-thin margin immediately.
+
+**Fix:** a new pass in `updateInstanceSimulation()`, after velocity
+integration and the blast check, before the `objectBuffer_` upload — a
+positional pushout over every unique instance pair (`i < j`, so each
+pair is checked once, not twice): if two instances are closer than
+`minSeparation`, push them apart along the line between their centers.
+Deliberately **positional, not velocity-based** — no momentum/
+restitution model, no bounce — because the goal is "stop visibly
+clipping," not a physically accurate collision response.
+
+**Tuned loose on purpose, not a strict non-overlap constraint** (visual
+tuning pass after the initial fix): `minSeparation = 1.5 ×
+boundingSphereRadius_`, not the geometrically "just touching"
+`2 × boundingSphereRadius_` — this deliberately tolerates some visual
+overlap for a denser-looking scatter rather than enforcing that spheres
+never touch. Each side of a pair only closes 30% of the overlap per
+frame (not an even 50/50 full close), for a softer settle instead of a
+hard snap. Runs every frame unconditionally (not just on the impact
+frame, unlike the blast), so this partial, repeated correction is
+sufficient even when 3+ instances are mutually overlapping: whatever one
+frame's partial pass doesn't resolve keeps converging over subsequent
+frames rather than needing an iterative in-frame solver.
+
+**Cost, honestly accounted for:** this is `O(n²)` — `343×342/2 ≈ 58,653`
+unique pairs, checked *every frame* (not once per explosion, unlike
+§20's blast application). Each pair is a `glm::vec3` subtract + `length`
++ compare — trivial per-pair cost, and 58k of them is still comfortably
+sub-millisecond on any modern CPU, but this is a real standing per-frame
+cost now, not a one-off spike. Consistent with this project's existing
+posture at this instance count (the culling shader is itself a flat
+343-thread scan, no spatial partitioning) — flagged here rather than
+silently accepted, since unlike the blast application, this cost is paid
+every single frame regardless of whether anything is currently
+scattered.
+
+**Interview-relevant:** *"Why positional correction instead of swapping/
+reflecting velocities on collision?"* — a velocity-based response needs
+a restitution coefficient, mass assumptions, and angular effects to look
+right; a positional pushout is the minimum viable fix for the actual
+reported symptom (visual interpenetration), and running every frame
+means it's self-correcting rather than needing to be perfectly right in
+one pass. Worth revisiting with real impulse response if the scatter
+should look more like an actual explosion with bouncing debris rather
+than objects that stop dead on contact.
+
 ---
 
 ## Bugs encountered (and what they taught)

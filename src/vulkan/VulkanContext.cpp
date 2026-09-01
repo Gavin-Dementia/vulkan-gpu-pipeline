@@ -150,7 +150,14 @@ void VulkanContext::initSceneData()
         // representative object radius for the (LOD-independent) culling
         // test - LOD1/2 are decimated versions of the same shape and are
         // never larger than LOD0.
-        if (i == 0) boundingSphereRadius_ = mesh.boundingRadius;
+        if (i == 0)
+        {
+            boundingSphereRadius_ = mesh.boundingRadius;
+            // Collision volume starts equal to the render/culling bounds
+            // (a sensible, mesh-derived default) but is a separate value -
+            // see the accessor comment in VulkanContext.h.
+            collisionRadius_ = boundingSphereRadius_;
+        }
     }
 
     // 7x7x7 grid, spacing 3.0, centered on origin
@@ -294,7 +301,7 @@ void VulkanContext::updateInstanceSimulation(float deltaTime)
     if (projectile_.isActive())
     {
         glm::vec3 projPos = projectile_.position();
-        float hitDist = boundingSphereRadius_ + kProjectileRadius;
+        float hitDist = collisionRadius_ + kProjectileRadius;   // collision volume, not the render/culling radius
 
         for (uint32_t i = 0; i < OBJECT_COUNT; i++)
         {
@@ -316,6 +323,40 @@ void VulkanContext::updateInstanceSimulation(float deltaTime)
                 }
                 projectile_.stop();
                 break;   // one explosion per flight
+            }
+        }
+    }
+
+    // Mutual collision: resolve overlaps between instances themselves,
+    // not just projectile-vs-instance. Without this, scattered instances
+    // that drift close to each other (or to still-resting neighbors -
+    // grid spacing is only 3.0 against a ~1.49 bounding radius, so
+    // resting instances already sit just 0.03 units apart at closest)
+    // visibly clip through each other once their blast velocity settles.
+    // Positional pushout along the line between centers, not a velocity
+    // impulse. Deliberately tuned loose, not a strict non-overlap
+    // constraint: minSeparation (1.5x radius, not the geometrically
+    // "just touching" 2x) tolerates some visual overlap for a denser
+    // scatter look, and each side only closes 30% of the gap per frame
+    // (not an even 50/50 full-close) for a softer settle rather than a
+    // hard snap. Runs every frame (not just on impact), so this partial,
+    // repeated correction converges over a few frames rather than fully
+    // resolving in one pass - intentional, not a missed 0.5/1.0 factor.
+    {
+        float minSeparation = 1.5f * boundingSphereRadius_;
+        for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+        {
+            for (uint32_t j = i + 1; j < OBJECT_COUNT; j++)
+            {
+                glm::vec3 delta = instanceCurrentPositions_[j] - instanceCurrentPositions_[i];
+                float dist = glm::length(delta);
+                if (dist < minSeparation)
+                {
+                    glm::vec3 pushDir = (dist > 0.001f) ? (delta / dist) : glm::vec3(0.0f, 1.0f, 0.0f);
+                    float overlap = minSeparation - dist;
+                    instanceCurrentPositions_[i] -= pushDir * (overlap * 0.3f);
+                    instanceCurrentPositions_[j] += pushDir * (overlap * 0.3f);
+                }
             }
         }
     }

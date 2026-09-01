@@ -104,10 +104,18 @@ collision tradeoff.
   lambda — this is world-simulation state, not rendering state, and
   keeps `deltaTime` where it already lives). Integrates
   `instanceVelocities_` into `instanceCurrentPositions_` with damping,
-  checks the active projectile against every instance (cheap `O(343)`),
-  and on the first touch applies a radial blast impulse (falloff by
-  distance, `+=`'d so overlapping blasts compound) to every instance
-  within a blast radius, then stops the projectile.
+  checks the active projectile against every instance (cheap `O(343)`,
+  using `collisionRadius_` — a gameplay-tunable value independent of
+  `boundingSphereRadius_`, the render/culling radius `culling.comp`
+  uses; they start equal but can diverge), and on the first touch
+  applies a radial blast impulse (falloff by distance, `+=`'d so
+  overlapping blasts compound) to every instance within a blast radius,
+  then stops the projectile. Also resolves **mutual instance-vs-instance
+  overlap** every frame (positional pushout, `O(n²)` unique pairs, single
+  pass) — without it, scattered instances settling near each other or
+  near still-resting neighbors visibly clip through one another, since
+  the grid's rest spacing leaves only ~0.02 units of margin between
+  adjacent instances to begin with. See `TECHNICAL_NOTES.md` §21.
 - `VulkanContext::resetInstanceFormation()` — restores
   `instanceCurrentPositions_` from the permanent `cachedInstances_` rest
   formation and zeroes all velocities. Triggered by an edge-detected
