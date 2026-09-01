@@ -35,28 +35,35 @@ void VulkanBuffer::create(
         throw std::runtime_error("Failed to allocate buffer memory");
 
     vkBindBufferMemory(device, buffer_, memory_, 0);
+
+    // Map once up front for HOST_VISIBLE buffers instead of mapping on
+    // every upload()/download() call - safe because HOST_COHERENT is
+    // always requested alongside HOST_VISIBLE in this codebase, so no
+    // explicit flush/invalidate is needed between CPU writes and GPU reads.
+    if (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+        vkMapMemory(device, memory_, 0, size, 0, &mapped_);
 }
 
 void VulkanBuffer::destroy(VkDevice device)
 {
+    if (mapped_)
+    {
+        vkUnmapMemory(device, memory_);
+        mapped_ = nullptr;
+    }
+
     vkDestroyBuffer(device, buffer_, nullptr);
     vkFreeMemory(device, memory_, nullptr);
 }
 
 void VulkanBuffer::upload(VkDevice device, const void* data, VkDeviceSize size)
 {
-    void* mapped;
-    vkMapMemory(device, memory_, 0, size, 0, &mapped);
-    memcpy(mapped, data, size);
-    vkUnmapMemory(device, memory_);
+    memcpy(mapped_, data, size);
 }
 
 void VulkanBuffer::download(VkDevice device, void* outData, VkDeviceSize size)
 {
-    void* mapped;
-    vkMapMemory(device, memory_, 0, size, 0, &mapped);
-    memcpy(outData, mapped, size);
-    vkUnmapMemory(device, memory_);
+    memcpy(outData, mapped_, size);
 }
 
 uint32_t VulkanBuffer::findMemoryType(
