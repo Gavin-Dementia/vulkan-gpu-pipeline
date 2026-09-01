@@ -254,7 +254,9 @@ see `TECHNICAL_NOTES.md` §22.
 Milestone 1 — shadow render target + depth-only pass — implemented:
 - `VulkanShadowMap` (fixed 2048×2048, sampled `D32_SFLOAT`), depth-only
   variants of `VulkanRenderPass`/`VulkanFramebuffer`, and a new
-  `VulkanShadowPipeline` (vertex-only, one push-constant `mat4`)
+  `VulkanShadowPipeline` (vertex-only, a `ShadowPushConstants` push
+  constant — grew a second `mat4` field after the spin-rotation bug
+  below was found)
 - `FrameGraph` gained a third pass stage, `PassStage::Shadow` /
   `executeShadow()`, alongside `Compute`/`Graphics` — mirrors how
   `executeCompute()` already runs outside the main render pass with its

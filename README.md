@@ -36,8 +36,8 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Mouse-Fired Projectile | ✅ |
 | Grid Collision + Scatter (mutual instance collision) | ✅ |
 | PBR Lighting (Cook-Torrance BRDF) | ✅ |
+| Shadow Mapping (depth-only pass, 3×3 PCF) | ✅ |
 | Texture-based PBR Materials | ⏳ planned |
-| Shadow Mapping | ⏳ planned |
 
 ---
 
@@ -51,14 +51,17 @@ Application               input polling, deltaTime, world-sim tick
     │                     PBR lighting (SceneData UBO + material push
     │                     constants), grid collision/scatter simulation
     └── FrameRenderer     per-frame sync, command recording
-        └── FrameGraph    DAG of render passes
+        └── FrameGraph    DAG of render passes across 3 stages
             ├── GPUCullingPass  [Compute] frustum culling + LOD selection
+            ├── ShadowPass      [Shadow, own render pass] depth-only draw
+            │                   of all instances from the light's view
             ├── GeometryPass    [Graphics] grid (3× indirect draw, one
             │                   per LOD) + projectile (1× direct draw),
-            │                   Cook-Torrance shading
+            │                   Cook-Torrance shading + shadow sampling
             ├── LightingPass    (placeholder, not yet used)
             ├── PostProcess     (placeholder, not yet used)
-            └── ImGuiPass       stats overlay + live lighting sliders
+            └── ImGuiPass       stats overlay + live lighting/shadow
+                                sliders + shadow map debug preview
 ```
 
 The FrameGraph resolves pass execution order via **Kahn's algorithm** at build time,
@@ -198,6 +201,6 @@ Application mainLoop
 ```
 
 A window opens rendering the Suzanne model with GPU-driven frustum culling, dynamic LOD
-switching, Cook-Torrance PBR lighting, and a mouse-fired projectile that scatters the grid
-on impact.
+switching, Cook-Torrance PBR lighting with shadow mapping, and a mouse-fired projectile
+that scatters the grid on impact.
 

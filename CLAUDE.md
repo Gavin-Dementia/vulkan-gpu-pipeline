@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-A GPU-driven Vulkan renderer built from scratch in C++17, centered on a `FrameGraph` DAG (Kahn's algorithm) that separates Compute and Graphics passes. The rendering core is compute-shader frustum culling + distance-based LOD selection via GPU-side atomic compaction into indirect draw buffers — the CPU submits `vkCmdDrawIndexedIndirect` without ever reading back which instances are visible or how many. On top of that core, the project has grown an interactive layer (a mouse-fired projectile that collides with and scatters a 343-instance grid) and a PBR lighting direction (Cook-Torrance BRDF, currently push-constant materials with no textures yet).
+A GPU-driven Vulkan renderer built from scratch in C++17, centered on a `FrameGraph` DAG (Kahn's algorithm) that separates Compute, Shadow, and Graphics passes. The rendering core is compute-shader frustum culling + distance-based LOD selection via GPU-side atomic compaction into indirect draw buffers — the CPU submits `vkCmdDrawIndexedIndirect` without ever reading back which instances are visible or how many. On top of that core, the project has grown an interactive layer (a mouse-fired projectile that collides with and scatters a 343-instance grid), a PBR lighting direction (Cook-Torrance BRDF, currently push-constant materials with no textures yet), and shadow mapping for the single directional light (depth-only `ShadowPass`, 3×3 PCF, tunable bias — see `docs/roadmap.md` Phase 9 and `docs/TECHNICAL_NOTES.md` §22).
 
 ## Build & run
 
@@ -23,7 +23,7 @@ cmake --build build
 
 ## Controls (the app is interactive, not just a passive demo)
 
-WASD move, mouse-look (window captures the cursor by default), left-click fires the projectile at the grid, **R** resets the grid to its rest formation, **T** pauses/resumes the grid's spin, hold **Ctrl** to reveal the cursor and interact with the ImGui windows (stats overlay + live lighting sliders), **Esc** quits.
+WASD move, mouse-look (window captures the cursor by default), left-click fires the projectile at the grid, **R** resets the grid to its rest formation, **T** pauses/resumes the grid's spin, hold **Ctrl** to reveal the cursor and interact with the ImGui windows (stats overlay + live lighting/shadow-bias sliders + a shadow map debug preview), **Esc** quits.
 
 ## Architecture
 
@@ -36,8 +36,11 @@ Application (owns the GLFW window, the main loop, deltaTime, input polling)
 └── VulkanContext — split into 3 init phases specifically to avoid a god-function:
     ├── initCore()              — instance → device → swapchain → depth → renderpass →
     │                              pipeline (+ a push-constant range for material params) →
-    │                              framebuffer; also creates sceneDataBuffer_ and the
-    │                              grid's + projectile's descriptor sets (both reference it)
+    │                              framebuffer; also creates sceneDataBuffer_, the shadow
+    │                              map's image/view/sampler (before both descriptor sets,
+    │                              which bind it) plus its own depth-only render pass/
+    │                              framebuffer/pipeline, and the grid's + projectile's
+    │                              descriptor sets (both reference sceneDataBuffer_ + shadow map)
     ├── initSceneData()         — loads 3 LOD meshes via ObjLoader, builds the 7×7×7
     │                              instance grid, creates the projectile's 1-entry instance buffer
     └── initCullingResources()  — shared object bounding-sphere buffer (re-uploaded every
@@ -45,9 +48,12 @@ Application (owns the GLFW window, the main loop, deltaTime, input polling)
                                    {visible-instance, indirect-draw} buffer pairs + compute
                                    descriptor/pipeline
         └── FrameRenderer — per-frame sync (fence/semaphore), owns the FrameGraph
-            └── FrameGraph — DAG of passes; executeCompute() runs outside the render pass,
-                              executeGraphics() runs inside it; GeometryPass declares GPUCullingPass
-                              as a read dependency so the topological sort enforces ordering
+            └── FrameGraph — DAG of passes across 3 stages (Compute/Shadow/Graphics);
+                              executeCompute() and executeShadow() each run outside the main
+                              render pass with their own explicit wrapper in drawFrame(),
+                              executeGraphics() runs inside it; GeometryPass declares
+                              GPUCullingPass + ShadowPass as read dependencies so the
+                              topological sort documents the real ordering
 ```
 
 Each frame, `Application::mainLoop()` does world-simulation work **before** calling `FrameRenderer::drawFrame()`: polls input, updates the projectile, runs `VulkanContext::updateInstanceSimulation(deltaTime)` (grid physics + collision, below), and updates the grid's spin angle. None of that lives inside a `FrameRenderer` pass lambda — it's not rendering state, and keeping it in `Application` avoids threading a `deltaTime` parameter through `drawFrame()`, which takes none.
@@ -64,3 +70,4 @@ Things that aren't obvious from any single file:
 - **`VulkanBuffer` persistently maps `HOST_VISIBLE` memory at creation** rather than mapping per `upload()`/`download()` call — several buffers (UBOs, frustum, all 3 indirect-draw buffers, `objectBuffer_`, `sceneDataBuffer_`) are touched every frame. This relies on every `HOST_VISIBLE` buffer in the codebase also being created `HOST_COHERENT`; don't add a `HOST_VISIBLE`-only buffer without also handling that.
 - **The grid's rest formation (`cachedInstances_`) is kept alive for the app's lifetime**, not freed after init — it's the reference the **R**-key reset restores from. If you see code treating it as disposable scratch data, that's stale.
 - A `VkMemoryBarrier` between `executeCompute()` and `vkCmdBeginRenderPass` (`SHADER_WRITE` → `VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ`) is what makes the compute-write-then-graphics-read sequence actually safe — Vulkan does not implicitly order this across pipeline stages just because commands were recorded sequentially.
+- **A second render pass that transforms the same geometry needs the same per-draw transform applied a second time — nothing keeps two vertex shaders in sync automatically.** `ShadowPass` (`shadow.vert`) is an independent vertex transform of the grid's mesh, not a derivative of `GeometryPass`'s (`triangle.vert`); it originally omitted the grid's spin rotation entirely, so the shadow map was cast from each mesh's un-rotated rest pose while the visible geometry spun independently, drifting out of sync every frame. `ShadowPushConstants` now carries the same `model` matrix `GeometryPass` computes (`spinAngle()`'s rotation for the grid, identity for the projectile) — see TECHNICAL_NOTES §22.
