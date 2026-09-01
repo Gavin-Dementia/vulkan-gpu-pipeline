@@ -1,6 +1,7 @@
 #pragma once
 
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 #include <vector>
 #include "core/Camera.h"
 #include "core/Projectile.h"
@@ -25,6 +26,7 @@
 #include "vulkan/instance/InstanceData.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
 #include "vulkan/texture/VulkanTexture.h"
+#include "vulkan/lighting/SceneData.h"
 
 
 class VulkanContext
@@ -74,6 +76,15 @@ public:
     UniformBuffer&         projectileUniformBuffer()  { return projectileUniformBuffer_; }
     VulkanDescriptor&      projectileDescriptor()     { return projectileDescriptor_; }
 
+    VulkanBuffer&          sceneDataBuffer()   { return sceneDataBuffer_; }
+
+    glm::vec3 lightDirection() const { return lightDirection_; }
+    glm::vec3 lightColor()     const { return lightColor_; }
+    float     lightIntensity() const { return lightIntensity_; }
+    void setLightDirection(const glm::vec3& d) { lightDirection_ = d; }
+    void setLightColor(const glm::vec3& c)     { lightColor_ = c; }
+    void setLightIntensity(float i)            { lightIntensity_ = i; }
+
     LODMesh& lod(int level) { return lods_[level]; }
 
 
@@ -112,5 +123,10 @@ private:
     VulkanBuffer          projectileInstanceBuffer_;
     UniformBuffer         projectileUniformBuffer_;
     VulkanDescriptor      projectileDescriptor_;
+
+    VulkanBuffer          sceneDataBuffer_;
+    glm::vec3             lightDirection_ = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f));
+    glm::vec3             lightColor_     = glm::vec3(1.0f, 1.0f, 1.0f);
+    float                 lightIntensity_ = 3.0f;
 };
 

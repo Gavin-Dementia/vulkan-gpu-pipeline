@@ -65,7 +65,9 @@ before this split — see `TECHNICAL_NOTES.md` §11):
   render pass, graphics pipeline, framebuffer, plus a second UBO +
   descriptor set (`projectileUniformBuffer_`/`projectileDescriptor_`)
   for the mouse-fired projectile — see `TECHNICAL_NOTES.md` §17 for why
-  it can't share the grid's UBO
+  it can't share the grid's UBO — and a shared `sceneDataBuffer_`
+  (light + camera data, `TECHNICAL_NOTES.md` §19) created *before* both
+  descriptor sets, since both reference it at binding 2
 - `initSceneData()` — OBJ mesh loading + deduplication for 3 LOD meshes
   (`suzanne.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`), vertex/index
   buffer upload per LOD, 7×7×7 instance grid generation, plus a 1-entry
@@ -87,6 +89,26 @@ one value a future milestone reads to add that. Rendered by reusing
 LOD2's mesh + its own UBO/descriptor set/instance buffer (see
 `TECHNICAL_NOTES.md` §17); drawn with a plain `vkCmdDrawIndexed` inside
 `GeometryPass`, guarded by `isActive()` — no new `FrameGraph` pass.
+
+### Lighting (PBR milestone 1)
+
+Cook-Torrance BRDF (GGX distribution, Smith geometry, Fresnel-Schlick),
+one directional light, no textures beyond the existing shared one. Two
+pieces of data, two different mechanisms — see `TECHNICAL_NOTES.md` §19
+for why:
+- `SceneData` (light direction, light color+intensity, camera position)
+  — a UBO at **binding 2** on the existing graphics descriptor set,
+  shared by every material (both `descriptor_` and `projectileDescriptor_`
+  reference the same `sceneDataBuffer_`), updated once per frame.
+- `MaterialPushConstants` (albedo, metallic, roughness) — a fragment-
+  stage **push constant**, re-issued via `vkCmdPushConstants` right
+  before each draw call, since it's pipeline state that persists across
+  draws in the same command buffer rather than per-draw-scoped like a
+  descriptor set.
+
+Tunable at runtime via an ImGui "Lighting" window (direction/color/
+intensity sliders) — `FrameRenderer`'s `ImGuiPass` lambda mutates
+`VulkanContext`'s light state directly.
 
 ### FrameRenderer
 
@@ -188,11 +210,13 @@ Application
     ├── VulkanRenderPass
     ├── VulkanPipeline (graphics)
     ├── VulkanComputePipeline
-    ├── VulkanDescriptor (graphics, UBO + combined-image-sampler)
+    ├── VulkanDescriptor (graphics, 3 bindings: UBO / combined-image-sampler / SceneData)
     ├── ComputeDescriptor (compute, 8 bindings: object / 3×visible / 3×indirect / frustum)
     ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
     ├── ObjectBuffer (shared, 343 entries) / FrustumBuffer
     ├── VulkanTexture
+    ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos —
+    │     bound at binding 2 on both descriptor_ and projectileDescriptor_)
     ├── Projectile (plain C++, position/direction/speed/lifetime)
     ├── projectileUniformBuffer_ / projectileDescriptor_ / projectileInstanceBuffer_
     │     (own UBO+descriptor+1-entry instance buffer — reuses lods_[2]'s mesh)
@@ -200,7 +224,9 @@ Application
         └── FrameRenderer
             └── FrameGraph
                 ├── GPUCullingPass (Compute) — frustum test + LOD fan-out
-                └── GeometryPass (Graphics) — 3× vkCmdDrawIndexedIndirect
+                └── GeometryPass (Graphics) — per-draw push constant
+                                              (MaterialPushConstants: albedo/metallic/roughness)
+                                              + 3× vkCmdDrawIndexedIndirect
                                               + 1× vkCmdDrawIndexed (projectile, if active)
 ```
 

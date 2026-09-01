@@ -3,6 +3,7 @@
 #include "vulkan/resource/ShaderLoader.h"
 #include "vulkan/device/VulkanDevice.h"
 #include "vulkan/instance/InstanceData.h"
+#include "vulkan/lighting/SceneData.h"
 #include <vector>
 #include <stdexcept>
 
@@ -139,10 +140,17 @@ void VulkanPipeline::create(
     // =========================================================
     // 8. Pipeline layout
     // =========================================================
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushRange.offset     = 0;
+    pushRange.size       = sizeof(MaterialPushConstants);
+
     VkPipelineLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount = 1;                   
-    layoutInfo.pSetLayouts    = &descriptorLayout;   
+    layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount         = 1;
+    layoutInfo.pSetLayouts            = &descriptorLayout;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges    = &pushRange;
 
     if (vkCreatePipelineLayout(
             device,

@@ -9,7 +9,8 @@ public:
         VkDevice device,
         VkBuffer uniformBuffer,
         VkImageView textureView,
-        VkSampler textureSampler
+        VkSampler textureSampler,
+        VkBuffer sceneDataBuffer
     );
     void destroy(VkDevice device);
 
@@ -24,10 +25,11 @@ private:
     void createLayout(VkDevice device);
     void createPool(VkDevice device);
     void allocateAndWrite(
-        VkDevice device, 
+        VkDevice device,
         VkBuffer uniformBuffer,
         VkImageView textureView,
-        VkSampler textureSampler  
+        VkSampler textureSampler,
+        VkBuffer sceneDataBuffer
     );
 };
 

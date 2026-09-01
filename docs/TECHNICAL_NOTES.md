@@ -679,6 +679,88 @@ every mouse-look camera depends on.
 
 ---
 
+### 19. PBR milestone 1: Cook-Torrance lighting, no new textures
+
+**Decision:** Replaced the fully unlit fragment shader (texture sample ×
+a flat `normalize(normal)*0.3+0.7` tint) with a real Cook-Torrance BRDF
+(GGX distribution, Smith geometry, Fresnel-Schlick), driven by one
+directional light. Material parameters (`albedo`, `metallic`,
+`roughness`) are a **push constant**, not a texture or a new descriptor
+binding — texture-based materials are an explicit later milestone. This
+is the first step toward the project's stated PBR direction, scoped
+narrowly on purpose: verify the lighting math is correct before spending
+any effort on material/texture infrastructure.
+
+**Why `SceneData` (light + camera position) is a UBO on a shared
+binding, not a push constant:** unlike material params, which differ
+per draw call, light and camera data are identical for every draw in a
+given frame. `VulkanDescriptor::create()` is already called twice
+(`descriptor_` for the grid, `projectileDescriptor_` for the projectile)
+with an identical binding layout — adding binding 2 (`UNIFORM_BUFFER`,
+fragment stage) to that one shared function means every material gets
+scene data through the same mechanism automatically, with no new
+pipeline-layout set index and no extra `vkCmdBindDescriptorSets` call.
+One buffer (`VulkanContext::sceneDataBuffer_`), updated once per frame,
+referenced by both descriptor sets. Note this had to be a raw
+`VulkanBuffer`, not the `UniformBuffer` class — that class is hardcoded
+to `UBOData`'s type and size, not reusable for a different struct.
+
+**Why material params are a push constant, not a 4th descriptor
+binding:** the whole point of this milestone is proving the grid and the
+projectile can look visually different (rough dielectric vs. shiny
+metal) without any texture work. A push constant is the cheapest
+mechanism for "value that changes every draw call" — `vkCmdPushConstants`
+right before each draw, no descriptor-set churn, and at 32 bytes it's
+nowhere near the guaranteed-minimum 128-byte Vulkan push constant
+budget. The tradeoff: because the grid and the projectile share one
+pipeline layout and record into the same command buffer, the push
+constant must be **re-issued before each draw** — it's pipeline state
+that persists until overwritten, not per-draw-call scoped the way a
+descriptor set binding is.
+
+**The sRGB-swapchain double-gamma trap:** `VulkanSwapchain.cpp`'s
+`chooseFormat()` picks `VK_FORMAT_B8G8R8A8_SRGB` — confirmed by reading
+the code, not assumed. This means the GPU automatically linear→sRGB
+encodes on write to the swapchain image. A shader that *also* applies
+`pow(color, 1.0/2.2)` at the end would double-gamma-correct and produce
+a washed-out, too-bright image — a classic and easy-to-miss PBR bug.
+The fragment shader does a Reinhard tonemap (`color/(color+1)`, a
+different step from gamma encoding) and stops there, leaving the actual
+gamma encoding to the hardware. Same category of format-awareness as
+the texture format decision in §13 (`R8G8B8A8_SRGB` chosen so *sampling*
+auto-converts to linear) — this is the *output* side of the same
+concern.
+
+**A previously-invisible bug, surfaced by adding real lighting:**
+`triangle.vert` output `fragNormal = inNormal;` — the object-**local**-
+space normal, never transformed by `ubo.model`'s rotation. Under the old
+flat unlit tint this was never visibly wrong (the tint didn't depend on
+a real light direction). Once lighting depends on `N·L`/`N·V`, the
+grid's existing per-frame spin would have made the lit appearance visibly
+swim independently of the mesh instead of rotating rigidly with it.
+Fixed with `mat3(ubo.model) * inNormal` — sufficient (rather than a full
+inverse-transpose normal matrix) specifically because `ubo.model` is
+always a pure rotation with no scale in this codebase; that assumption
+would need revisiting if non-uniform scale is ever introduced per-object.
+
+**Verification approach:** added ImGui sliders (`Direction`/`Color`/
+`Intensity` under a new "Lighting" window) that mutate
+`VulkanContext`'s light state directly, so the lighting result is
+interactively checkable in real time — dragging the light direction and
+watching the lit side of the grid change immediately — rather than a
+one-time eyeball check. Same "verify experimentally" instinct as the
+`sin(time)` oscillation test for culling in §7.
+
+**Interview-relevant:** *"Why does the projectile need to re-push its
+material constants right before its draw call instead of once at the
+start of the frame?"* — because push constants are pipeline state, not
+per-draw-call data; the grid's `vkCmdPushConstants` call earlier in the
+same command buffer already overwrote whatever was there, so the
+projectile's draw would otherwise silently render with the grid's
+material values.
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |
@@ -700,6 +782,18 @@ every mouse-look camera depends on.
 
 ## Open items / known simplifications
 
+- **PBR lighting (§19) has no textures yet** — albedo/metallic/roughness
+  are a push constant, shared by all 343 grid instances (the projectile
+  gets its own distinct values, but still one flat set, not per-instance
+  variation). Texture-based materials (albedo/normal/metallic-roughness/
+  AO maps) and a formal `Material` class are the next PBR milestone.
+- **No IBL/environment lighting** — the ambient term is a flat
+  `0.03 * albedo` constant, not derived from any environment map. Faces
+  fully turned away from the single directional light are nearly black
+  except for this flat term.
+- **Single directional light, no shadows** — fine for validating the
+  BRDF math; a real scene would need shadow mapping before the lighting
+  reads as physically grounded rather than just shaded.
 - **LOD is implemented** (§15) as 3 hardcoded distance buckets
   (`LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`), not derived from mesh detail
   level or screen-space projected size, and not exposed as a tunable.

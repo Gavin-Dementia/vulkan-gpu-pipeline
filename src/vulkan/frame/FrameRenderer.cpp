@@ -93,6 +93,14 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             context->uniformBuffer().update(context->device().get(), ubo);
 
+            // Shared per-frame scene/light data - one upload, read by every
+            // material's descriptor set at binding 2 (see SceneData.h).
+            SceneData scene{};
+            scene.lightDirection = glm::vec4(glm::normalize(context->lightDirection()), 0.0f);
+            scene.lightColor     = glm::vec4(context->lightColor(), context->lightIntensity());
+            scene.cameraPos      = glm::vec4(context->camera().position(), 1.0f);
+            context->sceneDataBuffer().upload(context->device().get(), &scene, sizeof(SceneData));
+
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
 
             // bind DescriptorSet（notify where GPU uniform buffer is）
@@ -103,6 +111,15 @@ void FrameRenderer::init(VulkanContext& ctx)
                 context->pipeline().getLayout(),
                 0, 1, &ds,
                 0, nullptr
+            );
+
+            // Grid material - rough dielectric. Pushed before the loop since
+            // the grid and projectile share this pipeline's push-constant
+            // range in the same command buffer and must each set it fresh.
+            MaterialPushConstants gridMat{ glm::vec4(1.0f), glm::vec4(0.0f, 0.5f, 0.0f, 0.0f) };
+            vkCmdPushConstants(
+                cmd, context->pipeline().getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+                0, sizeof(MaterialPushConstants), &gridMat
             );
 
             for (int i = 0; i < 3; i++)
@@ -146,6 +163,14 @@ void FrameRenderer::init(VulkanContext& ctx)
                     context->pipeline().getLayout(),
                     0, 1, &projDs,
                     0, nullptr
+                );
+
+                // Shiny metal - visually distinct from the grid's rough
+                // dielectric, proving the push constant varies per-draw.
+                MaterialPushConstants projMat{ glm::vec4(1.0f), glm::vec4(1.0f, 0.2f, 0.0f, 0.0f) };
+                vkCmdPushConstants(
+                    cmd, context->pipeline().getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+                    0, sizeof(MaterialPushConstants), &projMat
                 );
 
                 context->lod(2).vertexBuffer.bind(cmd);
@@ -211,6 +236,23 @@ void FrameRenderer::init(VulkanContext& ctx)
                 context->camera().position().y,
                 context->camera().position().z
             );
+            ImGui::End();
+
+            // Interactive lighting tuning - turns "does the lighting look
+            // right" into something verifiable in real time rather than a
+            // one-time eyeball check.
+            ImGui::Begin("Lighting");
+            glm::vec3 lightDir = context->lightDirection();
+            if (ImGui::SliderFloat3("Direction", &lightDir.x, -1.0f, 1.0f))
+                context->setLightDirection(lightDir);
+
+            glm::vec3 lightColor = context->lightColor();
+            if (ImGui::ColorEdit3("Color", &lightColor.x))
+                context->setLightColor(lightColor);
+
+            float lightIntensity = context->lightIntensity();
+            if (ImGui::SliderFloat("Intensity", &lightIntensity, 0.0f, 10.0f))
+                context->setLightIntensity(lightIntensity);
             ImGui::End();
 
             context->imguiLayer().render(cmd);

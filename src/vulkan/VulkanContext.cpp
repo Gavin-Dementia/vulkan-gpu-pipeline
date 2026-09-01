@@ -69,11 +69,21 @@ void VulkanContext::initCore()
         "assets/test_texture.png"
     );
 
+    // Shared per-frame scene/light data (SceneData.h) - one buffer bound
+    // as binding 2 on every material's descriptor set, not duplicated
+    // per object, since it's identical for every draw in a given frame.
+    sceneDataBuffer_.create(
+        device_.getPhysical(), device_.get(), sizeof(SceneData),
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+
     descriptor_.create(
         device_.get(),
         uniformBuffer_.get(),
         texture_.view(),
-        texture_.sampler()
+        texture_.sampler(),
+        sceneDataBuffer_.get()
     );
 
     // Projectile gets its own UBO + descriptor set (same shared texture) -
@@ -87,7 +97,8 @@ void VulkanContext::initCore()
         device_.get(),
         projectileUniformBuffer_.get(),
         texture_.view(),
-        texture_.sampler()
+        texture_.sampler(),
+        sceneDataBuffer_.get()
     );
 
     pipeline_.create(
@@ -277,6 +288,7 @@ void VulkanContext::cleanup()
     projectileDescriptor_.destroy(device_.get());
     projectileUniformBuffer_.destroy(device_.get());
     projectileInstanceBuffer_.destroy(device_.get());
+    sceneDataBuffer_.destroy(device_.get());
     descriptor_.destroy(device_.get());
     uniformBuffer_.destroy(device_.get());
 

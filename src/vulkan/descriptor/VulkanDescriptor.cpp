@@ -3,14 +3,15 @@
 #include <array>
 
 void VulkanDescriptor::create(
-    VkDevice device, 
+    VkDevice device,
     VkBuffer uniformBuffer,
     VkImageView textureView,
-    VkSampler textureSampler  )
+    VkSampler textureSampler,
+    VkBuffer sceneDataBuffer)
 {
     createLayout(device);
     createPool(device);
-    allocateAndWrite(device, uniformBuffer, textureView, textureSampler);
+    allocateAndWrite(device, uniformBuffer, textureView, textureSampler, sceneDataBuffer);
 }
 
 void VulkanDescriptor::destroy(VkDevice device)
@@ -22,7 +23,7 @@ void VulkanDescriptor::destroy(VkDevice device)
 void VulkanDescriptor::createLayout(VkDevice device)
 {
     // notify Vulkan：binding 0 is a uniform buffer use for vertex shader
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
 
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -33,6 +34,13 @@ void VulkanDescriptor::createLayout(VkDevice device)
     bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Shared per-frame scene/light data (see SceneData.h) - one binding
+    // reused by every material's descriptor set, not duplicated per object.
+    bindings[2].binding         = 2;
+    bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -47,7 +55,7 @@ void VulkanDescriptor::createPool(VkDevice device)
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = 1;
+    poolSizes[0].descriptorCount = 2;   // binding 0 (MVP) + binding 2 (SceneData)
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = 1;
 
@@ -62,10 +70,11 @@ void VulkanDescriptor::createPool(VkDevice device)
 }
 
 void VulkanDescriptor::allocateAndWrite(
-    VkDevice device, 
+    VkDevice device,
     VkBuffer uniformBuffer,
     VkImageView textureView,
-    VkSampler textureSampler  
+    VkSampler textureSampler,
+    VkBuffer sceneDataBuffer
 )
 {
     //  let pool distribute set
@@ -88,7 +97,12 @@ void VulkanDescriptor::allocateAndWrite(
     imgInfo.imageView   = textureView;
     imgInfo.sampler     = textureSampler;
 
-    std::array<VkWriteDescriptorSet, 2> writes{};
+    VkDescriptorBufferInfo sceneInfo{};
+    sceneInfo.buffer = sceneDataBuffer;
+    sceneInfo.offset = 0;
+    sceneInfo.range  = VK_WHOLE_SIZE;
+
+    std::array<VkWriteDescriptorSet, 3> writes{};
 
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = set_;
@@ -103,6 +117,13 @@ void VulkanDescriptor::allocateAndWrite(
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
     writes[1].pImageInfo      = &imgInfo;
+
+    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet          = set_;
+    writes[2].dstBinding      = 2;
+    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[2].descriptorCount = 1;
+    writes[2].pBufferInfo     = &sceneInfo;
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }

@@ -193,6 +193,39 @@ already the value that milestone needs to read each frame.
 
 ---
 
+## Phase 8 — PBR Lighting
+
+**Status: Milestone 1 complete**
+
+First concrete PBR step, scoped narrowly on purpose: get real lighting
+math on screen before touching materials/textures at all.
+
+Milestone 1 — Cook-Torrance BRDF — implemented:
+- GGX distribution, Smith geometry, Fresnel-Schlick, one directional
+  light — see `TECHNICAL_NOTES.md` §19
+- `SceneData` (light + camera data) added as a 3rd binding on the
+  existing graphics descriptor set, shared by every material (grid and
+  projectile both reference the same buffer) — no new descriptor set
+- Material params (albedo/metallic/roughness) as a fragment-stage push
+  constant, re-issued per draw call — grid and projectile now render
+  with visibly different materials (rough dielectric vs. shiny metal),
+  proving the mechanism actually varies per-draw
+- Fixed a previously-invisible bug surfaced by adding real lighting:
+  `triangle.vert` wasn't rotating normals by the model matrix
+  (`fragNormal = inNormal` instead of `mat3(ubo.model) * inNormal`) —
+  invisible under the old flat unlit tint, would have made the lit
+  appearance swim independently of the grid's existing spin
+- Avoided a double-gamma bug: swapchain is `VK_FORMAT_B8G8R8A8_SRGB`
+  (GPU auto-converts linear→sRGB on write), so the shader does a
+  Reinhard tonemap only, no manual `pow(1/2.2)` gamma step
+- ImGui "Lighting" window: real-time direction/color/intensity sliders
+
+Milestone 2 (not started) — texture-based materials (albedo/normal/
+metallic-roughness/AO maps) and a formal `Material` class, generalizing
+the per-object-descriptor-set pattern this milestone already proved out.
+
+---
+
 ## Open / not yet started
 
 - **Grid collision + scatter reaction** (Phase 7, milestone 2) — needs
@@ -200,13 +233,16 @@ already the value that milestone needs to read each frame.
   current write-once `ObjectBuffer` upload with a per-frame CPU
   simulation re-uploaded each frame (cheap now that `VulkanBuffer` is
   persistently mapped)
-- **Texture sampling** — implemented and validated in isolation (§13),
-  but not yet reunited with the primary Suzanne LOD chain, which has no
+- **Texture-based PBR materials** (Phase 8, milestone 2) — albedo/
+  normal/metallic-roughness/AO maps, a formal `Material` class
+- **IBL / environment lighting** — current ambient term is a flat
+  `0.03 * albedo` constant; no shadows either
+- **Texture sampling reunited with the primary mesh** — implemented and
+  validated in isolation (§13), but the Suzanne LOD chain still has no
   texcoord data on any of its 3 variants
 - **Performance instrumentation** — GPU timestamp queries to quantify
   culling's (and now LOD selection's) actual frame-time impact
   (currently demonstrated functionally, not yet measured numerically)
-- **PBR material model**
 - **Multi-pass / hierarchical culling** — current design is a flat
   343-thread scan; fine at this scale, would need a coarser first pass
   at much higher instance counts
@@ -222,7 +258,9 @@ already the value that milestone needs to read each frame.
   culling + LOD pipeline; candidate next steps: hierarchical/multi-pass
   culling, neural-rendering hybrid approaches under consideration for
   graduate study direction)
-- PBR material model, approached incrementally starting with interactive
-  objects (Phase 7) rather than jumping straight to a material system
+- PBR material model, approached incrementally: interactive objects
+  (Phase 7) first, then lighting math (Phase 8 milestone 1, complete),
+  texture-based materials next, rather than jumping straight to a full
+  material system
 - Foundation for future rendering experiments
 

@@ -36,7 +36,7 @@ struct Vertex
         attrs[1].offset   = offsetof(Vertex, normal);
 
         attrs[2].binding  = 0;
-        attrs[2].location = 2;   // ← location=2（check instance position ）
+        attrs[2].location = 2;   // uv
         attrs[2].format   = VK_FORMAT_R32G32_SFLOAT;
         attrs[2].offset   = offsetof(Vertex, uv);
 
