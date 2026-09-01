@@ -5,15 +5,31 @@
 #include <iostream>
 #include <unordered_map>
 
+// boost::hash_combine-style mix: plain XOR is commutative, so e.g.
+// position (1,2,3) and (2,1,3) would hash identically under
+// h(x)^h(y)^h(z). The magic constant (fractional part of the golden
+// ratio, in Q32 fixed point) plus the shifts make the combine
+// order-dependent and spread bits more evenly.
+static void hashCombine(size_t& seed, size_t value)
+{
+    seed ^= value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+}
+
 // put Vertex into unordered_map to compare with self_define hash
 struct VertexHash
 {
     size_t operator()(const Vertex& v) const
     {
-        size_t h1 = std::hash<float>()(v.position.x) ^ std::hash<float>()(v.position.y) ^ std::hash<float>()(v.position.z);
-        size_t h2 = std::hash<float>()(v.normal.x)   ^ std::hash<float>()(v.normal.y)   ^ std::hash<float>()(v.normal.z);
-        size_t h3 = std::hash<float>()(v.uv.x)       ^ std::hash<float>()(v.uv.y);
-        return h1 ^ (h2 << 1) ^ (h3 << 2);
+        size_t seed = 0;
+        hashCombine(seed, std::hash<float>()(v.position.x));
+        hashCombine(seed, std::hash<float>()(v.position.y));
+        hashCombine(seed, std::hash<float>()(v.position.z));
+        hashCombine(seed, std::hash<float>()(v.normal.x));
+        hashCombine(seed, std::hash<float>()(v.normal.y));
+        hashCombine(seed, std::hash<float>()(v.normal.z));
+        hashCombine(seed, std::hash<float>()(v.uv.x));
+        hashCombine(seed, std::hash<float>()(v.uv.y));
+        return seed;
     }
 };
 

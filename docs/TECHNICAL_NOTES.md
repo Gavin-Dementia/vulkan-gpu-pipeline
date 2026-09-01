@@ -245,19 +245,27 @@ directly.
 Suzanne (~83% reduction) — expected for a closed mesh where most vertices
 are shared across many adjacent faces.
 
-**Known fragility:** The hash combines `position`/`normal` floats via XOR
-(`hash(x) ^ hash(y) ^ hash(z)`), which is a textbook *bad* hash-combining
-strategy — XOR is commutative, so distinct coordinate permutations can
-collide. It happened not to cause an observed bug here (Suzanne's vertex
-density didn't surface a collision), but this should be replaced with a
-proper combining function (e.g. `boost::hash_combine`-style bit rotation)
-before reusing this loader for denser meshes.
+**Known fragility (fixed):** The hash originally combined `position`/
+`normal`/`uv` floats via plain XOR (`hash(x) ^ hash(y) ^ hash(z)`), a
+textbook *bad* hash-combining strategy — XOR is commutative, so distinct
+coordinate permutations could collide. It never caused an observed bug
+here (Suzanne's vertex density didn't surface a collision — and
+correctness was never actually at risk, since `unordered_map` always
+falls back to the `VertexEqual` functor to resolve any hash collision;
+a worse hash only means more collisions to resolve, not incorrect
+merging). Replaced with a `boost::hash_combine`-style mix (golden-ratio
+constant + bit shifts, order-dependent) so it degrades gracefully on
+denser meshes instead of relying on this mesh's vertex layout happening
+not to trigger a collision.
 
-**Interview-relevant:** Worth volunteering proactively — *"I'm aware
-the current hash-combine is a known anti-pattern; it didn't bite here but
-I'd fix it before trusting this on denser meshes."* Identifying a latent
-bug nobody asked about is a stronger signal than pretending the code is
-flawless.
+**Interview-relevant:** Worth volunteering proactively even before it's
+fixed — *"I'm aware the current hash-combine is a known anti-pattern;
+it didn't bite here but I'd fix it before trusting this on denser
+meshes."* Identifying a latent bug nobody asked about is a stronger
+signal than pretending the code is flawless — and precisely stating
+*why* it was never actually unsafe (hash quality is a performance
+concern for `unordered_map`, not a correctness one) is stronger still
+than just calling it "a known anti-pattern."
 
 ---
 
@@ -531,9 +539,6 @@ before the draw call is issued, not inside one.
 
 ## Open items / known simplifications
 
-- **Vertex hash-combine (#8)** uses XOR, a known weak combining strategy.
-  Works for Suzanne's vertex density; flagged for replacement before
-  trusting on denser meshes.
 - **Bounding sphere radius is a hardcoded constant** (`1.5f`) rather than
   computed from the actual mesh bounds. Fine for a single mesh type at
   uniform scale; would need to be computed per-mesh for a scene with
