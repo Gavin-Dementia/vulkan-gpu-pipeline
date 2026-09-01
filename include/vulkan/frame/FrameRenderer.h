@@ -29,6 +29,11 @@ private:
 
     uint32_t currentFrame = 0;
 
+    // Monotonic frame count (unlike currentFrame, which wraps) - used to
+    // know whether a given frame slot's query pool has ever actually been
+    // written to before its first readback attempt (see drawFrame()).
+    uint64_t frameCounter_ = 0;
+
     // Debug-only: shadow map registered with ImGui so its "Shadow Map"
     // window can preview the light-space depth image (Milestone 1 -
     // verifies the shadow pass before any shading code depends on it).
@@ -37,5 +42,6 @@ private:
 private:
     void createSyncObjects();
     void createCommandBuffers();
+    void createQueryPools();
 };
 

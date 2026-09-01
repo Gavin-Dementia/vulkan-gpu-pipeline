@@ -306,6 +306,31 @@ shadow.
 
 ---
 
+## Phase 10 — GPU Timestamp Performance Instrumentation
+
+**Status: Complete**
+
+Turns "GPU-driven culling is cheap" from a claim into a number. Closes an
+open item that had been carried since Phase 5 — see `TECHNICAL_NOTES.md`
+§23.
+
+- 4 `vkCmdWriteTimestamp` markers per frame, one at each of the
+  `FrameGraph`'s 3 stage boundaries (frame start, compute end, shadow
+  end, graphics end) plus the implicit start — reported as 3 intervals
+  (Culling / Shadow / Graphics) and a total, shown live in the existing
+  "GPU Culling Stats" ImGui window
+- One `VkQueryPool` per frame-in-flight, reusing the exact safe-readback
+  timing already established for the LOD visible-instance counts: a
+  frame slot's `vkWaitForFences` already guarantees its previous GPU work
+  is done, so reading that slot's query results right there is free —
+  no `VK_QUERY_RESULT_WAIT_BIT`, no extra stall
+- `VulkanDevice` now queries `timestampComputeAndGraphics` /
+  `timestampValidBits` once at device-creation time and degrades
+  gracefully (skips pool creation, shows "N/A" in the UI) rather than
+  assuming every GPU supports timestamp queries
+
+---
+
 ## Open / not yet started
 
 - **Texture-based PBR materials** (Phase 8, milestone 2) — albedo/
@@ -324,9 +349,6 @@ shadow.
 - **Texture sampling reunited with the primary mesh** — implemented and
   validated in isolation (§13), but the Suzanne LOD chain still has no
   texcoord data on any of its 3 variants
-- **Performance instrumentation** — GPU timestamp queries to quantify
-  culling's (and now LOD selection's) actual frame-time impact
-  (currently demonstrated functionally, not yet measured numerically)
 - **Multi-pass / hierarchical culling** — current design is a flat
   343-thread scan; fine at this scale, would need a coarser first pass
   at much higher instance counts

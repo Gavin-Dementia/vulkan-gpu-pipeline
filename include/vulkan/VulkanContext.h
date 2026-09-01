@@ -49,6 +49,20 @@ public:
     void setLastVisibleCount(int lod, uint32_t c)   { lastVisibleCount_[lod] = c; }
     uint32_t getLastVisibleCount(int lod) const     { return lastVisibleCount_[lod]; }
 
+    // GPU timing (ms), read back from the previous use of the current
+    // frame slot's timestamp query pool - see FrameRenderer::drawFrame().
+    // graphicsMs covers GeometryPass + ImGuiPass combined (not split
+    // further - ImGui's own cost isn't worth a 5th timestamp marker).
+    struct GpuTiming
+    {
+        float cullingMs  = 0.0f;
+        float shadowMs   = 0.0f;
+        float graphicsMs = 0.0f;
+        float totalMs    = 0.0f;
+    };
+    void setGpuTiming(const GpuTiming& t) { gpuTiming_ = t; }
+    const GpuTiming& gpuTiming() const    { return gpuTiming_; }
+
     void init(GLFWwindow* window);
     void cleanup();
 
@@ -139,6 +153,8 @@ private:
     // Grid's rest formation (7x7x7 grid positions computed in
     // initSceneData()) - kept alive for the app's lifetime (not cleared
     // after init) as the reference resetInstanceFormation() restores.
+    GpuTiming gpuTiming_;
+
     std::vector<InstanceData> cachedInstances_;
     std::vector<glm::vec3>    instanceCurrentPositions_;  // live simulated position, size OBJECT_COUNT
     std::vector<glm::vec3>    instanceVelocities_;        // per-instance blast velocity, size OBJECT_COUNT

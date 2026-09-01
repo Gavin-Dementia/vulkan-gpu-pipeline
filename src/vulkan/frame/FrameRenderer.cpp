@@ -27,6 +27,7 @@ void FrameRenderer::init(VulkanContext& ctx)
 
     createSyncObjects();
     createCommandBuffers();
+    createQueryPools();
 
     // =====================================================
     // FrameGraph
@@ -313,6 +314,21 @@ void FrameRenderer::init(VulkanContext& ctx)
                 context->camera().position().y,
                 context->camera().position().z
             );
+
+            ImGui::Separator();
+            ImGui::Text("GPU Timing (ms)");
+            if (context->device().supportsTimestampQueries())
+            {
+                const auto& timing = context->gpuTiming();
+                ImGui::Text("Culling (Compute): %.3f", timing.cullingMs);
+                ImGui::Text("Shadow Pass:       %.3f", timing.shadowMs);
+                ImGui::Text("Graphics (Geo+UI): %.3f", timing.graphicsMs);
+                ImGui::Text("Total GPU:         %.3f", timing.totalMs);
+            }
+            else
+            {
+                ImGui::Text("N/A - GPU does not support timestamp queries");
+            }
             ImGui::End();
 
             // Interactive lighting tuning - turns "does the lighting look
@@ -381,6 +397,33 @@ void FrameRenderer::drawFrame()
             context->lod(i).indirectDrawBuffer.getVisibleCount(context->device().get())
         );
     }
+
+    // GPU timing: this frame slot's fence wait above already guarantees
+    // its previous use finished, so its query pool results are ready -
+    // same safe-readback reasoning as the LOD counts just above. Skipped
+    // until this slot has actually been written to once (frameCounter_ <
+    // frames.size() means this is one of the first MAX_FRAMES calls).
+    if (context->device().supportsTimestampQueries() && frameCounter_ >= frames.size())
+    {
+        uint64_t timestamps[4];
+        VkResult qr = vkGetQueryPoolResults(
+            device.get(), frame.queryPool, 0, 4,
+            sizeof(timestamps), timestamps, sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT
+        );
+
+        if (qr == VK_SUCCESS)
+        {
+            float toMs = context->device().timestampPeriodNs() / 1e6f;
+            VulkanContext::GpuTiming timing{};
+            timing.cullingMs  = (timestamps[1] - timestamps[0]) * toMs;
+            timing.shadowMs   = (timestamps[2] - timestamps[1]) * toMs;
+            timing.graphicsMs = (timestamps[3] - timestamps[2]) * toMs;
+            timing.totalMs    = (timestamps[3] - timestamps[0]) * toMs;
+            context->setGpuTiming(timing);
+        }
+    }
+
     vkResetFences(device.get(), 1, &frame.inFlightFence);
 
     uint32_t imageIndex;
@@ -406,10 +449,22 @@ void FrameRenderer::drawFrame()
 
     vkBeginCommandBuffer(frame.commandBuffer, &beginInfo);
 
+    bool timingEnabled = frame.queryPool != VK_NULL_HANDLE;
+    if (timingEnabled)
+    {
+        // Must reset before first use in this recording, and outside any
+        // render pass - both true here, right at the top of the buffer.
+        vkCmdResetQueryPool(frame.commandBuffer, frame.queryPool, 0, 4);
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, frame.queryPool, 0);
+    }
+
     // ===== Compute：outside RenderPass =====
     graph->executeCompute(frame.commandBuffer);
 
-    // Barrier：insure compute COMPLETE visibility buffer 
+    if (timingEnabled)
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queryPool, 1);
+
+    // Barrier：insure compute COMPLETE visibility buffer
     // then let graphics read
     VkMemoryBarrier barrier{};
     barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -443,6 +498,9 @@ void FrameRenderer::drawFrame()
     vkCmdBeginRenderPass(frame.commandBuffer, &shadowRp, VK_SUBPASS_CONTENTS_INLINE);
     graph->executeShadow(frame.commandBuffer);
     vkCmdEndRenderPass(frame.commandBuffer);
+
+    if (timingEnabled)
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queryPool, 2);
 
     // Barrier: the shadow pass's depth write must finish (and become
     // visible) before the main render pass's fragment shader samples it
@@ -493,6 +551,9 @@ void FrameRenderer::drawFrame()
 
     vkCmdEndRenderPass(frame.commandBuffer);
 
+    if (timingEnabled)
+        vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queryPool, 3);
+
     vkEndCommandBuffer(frame.commandBuffer);
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -533,6 +594,7 @@ void FrameRenderer::drawFrame()
     vkQueuePresentKHR(device.getPresentQueue(), &present);
 
     currentFrame = (currentFrame + 1) % frames.size();
+    frameCounter_++;
 }
 
 void FrameRenderer::cleanup()
@@ -550,6 +612,9 @@ void FrameRenderer::cleanup()
             device,
             frame.imageAvailableSemaphore,
             nullptr);
+
+        if (frame.queryPool != VK_NULL_HANDLE)
+            vkDestroyQueryPool(device, frame.queryPool, nullptr);
     }
 
     for (auto semaphore : imageRenderFinished)
@@ -629,6 +694,25 @@ void FrameRenderer::createCommandBuffers()
         {
             throw std::runtime_error("Failed to allocate command buffer");
         }
+    }
+}
+
+void FrameRenderer::createQueryPools()
+{
+    if (!context->device().supportsTimestampQueries())
+        return;   // frame.queryPool stays VK_NULL_HANDLE - drawFrame()/cleanup() skip it
+
+    VkDevice device = context->device().get();
+
+    VkQueryPoolCreateInfo info{};
+    info.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    info.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = 4;   // frame start, compute end, shadow end, graphics end
+
+    for (auto& frame : frames)
+    {
+        if (vkCreateQueryPool(device, &info, nullptr, &frame.queryPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create timestamp query pool");
     }
 }
 

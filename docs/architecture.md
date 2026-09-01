@@ -242,21 +242,30 @@ and the `FrameGraph` instance. `drawFrame()`:
 1. Waits on the current frame's fence; reads back the *previous*
    frame's 3 LOD instance counts for the ImGui overlay (see
    `TECHNICAL_NOTES.md` §11 for why this happens here and not
-   right after dispatch); acquires the next swapchain image
-2. Records `executeCompute()` — runs outside any render pass; resets
-   all 3 `IndirectDrawBuffer.instanceCount` to 0, uploads the current
-   frame's frustum, dispatches the culling + LOD-select compute shader
-   (reading whatever `Application::mainLoop()` already wrote into
-   `objectBuffer_` this frame via `updateInstanceSimulation()`)
+   right after dispatch) and, if the GPU supports timestamp queries, that
+   same frame slot's 4 GPU timestamps (converted to Culling/Shadow/
+   Graphics/Total ms) — same safe-readback timing as the LOD counts,
+   since the fence wait already guarantees the slot's prior GPU work is
+   done (see `TECHNICAL_NOTES.md` §23); acquires the next swapchain image
+2. Resets this frame's timestamp query pool and writes timestamp 0
+   (`TOP_OF_PIPE`), then records `executeCompute()` — runs outside any
+   render pass; resets all 3 `IndirectDrawBuffer.instanceCount` to 0,
+   uploads the current frame's frustum, dispatches the culling +
+   LOD-select compute shader (reading whatever `Application::mainLoop()`
+   already wrote into `objectBuffer_` this frame via
+   `updateInstanceSimulation()`); writes timestamp 1 (`BOTTOM_OF_PIPE`)
 3. Inserts a memory barrier (compute write → vertex/indirect read)
-4. Begins the render pass, records `executeGraphics()`: uploads
-   `SceneData` (light + camera), pushes the grid's material constants,
-   binds each LOD's own vertex/index/visible-instance buffers and issues
-   one `vkCmdDrawIndexedIndirect` per LOD (3 draw calls/frame); if the
-   projectile is active, pushes its own (distinct) material constants
-   and issues one `vkCmdDrawIndexed`; runs `ImGuiPass` last — ends the
-   render pass
-5. Submits, presents
+4. Begins the shadow render pass, records `executeShadow()` (see "Shadow
+   mapping" above), ends it, writes timestamp 2; inserts the shadow→main
+   image barrier (depth write → fragment-shader read)
+5. Begins the main render pass, records `executeGraphics()`: uploads
+   `SceneData` (light + camera + shadow data), pushes the grid's
+   material constants, binds each LOD's own vertex/index/
+   visible-instance buffers and issues one `vkCmdDrawIndexedIndirect`
+   per LOD (3 draw calls/frame); if the projectile is active, pushes its
+   own (distinct) material constants and issues one `vkCmdDrawIndexed`;
+   runs `ImGuiPass` last — ends the render pass, writes timestamp 3
+6. Submits, presents
 
 Note: the input polling, `Projectile::update()`, `updateInstanceSimulation()`
 (grid collision/scatter/mutual-collision), and `updateSpin()` steps all
@@ -410,15 +419,21 @@ VulkanContext::updateSpin(dt)       — accumulated angle, skipped if paused
         │
 ════════ FrameRenderer::drawFrame() ════════
         │
-Wait Fence → Read back previous frame's 3 LOD instance counts (debug overlay)
+Wait Fence → Read back previous frame's 3 LOD instance counts (debug
+overlay) + this frame slot's 4 GPU timestamps → Culling/Shadow/Graphics/
+Total ms (if the GPU supports timestamp queries — see TECHNICAL_NOTES §23)
         │
 Acquire Swapchain Image
         │
 Reset IndirectLOD0/1/2.instanceCount = 0   (3× CPU write)
         │
+Reset this frame's VkQueryPool → write timestamp 0 (TOP_OF_PIPE)
+        │
 Compute: GPUCullingPass
    (sphere-frustum test using this frame's objectBuffer_, 343 threads,
     distance-based LOD bucketing, atomic compaction per bucket)
+        │
+Write timestamp 1 (BOTTOM_OF_PIPE) — closes the Culling interval
         │
 Memory Barrier (SHADER_WRITE → VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ)
         │
@@ -431,6 +446,8 @@ Shadow: ShadowPass
    bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
         │
 End Shadow Render Pass
+        │
+Write timestamp 2 (BOTTOM_OF_PIPE) — closes the Shadow interval
         │
 Image Memory Barrier (LATE_FRAGMENT_TESTS write → FRAGMENT_SHADER read)
         │
@@ -448,6 +465,8 @@ Graphics: ImGuiPass — stats overlay + live lighting/shadow sliders +
    shadow map debug preview
         │
 End Render Pass
+        │
+Write timestamp 3 (BOTTOM_OF_PIPE) — closes the Graphics interval
         │
 Queue Submit → Present
 ```

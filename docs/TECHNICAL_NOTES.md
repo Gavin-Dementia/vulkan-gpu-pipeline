@@ -957,7 +957,7 @@ one pass. Worth revisiting with real impulse response if the scatter
 should look more like an actual explosion with bouncing debris rather
 than objects that stop dead on contact.
 
-### 22. Shadow mapping: a third render pass, and two bugs that only show up geometrically
+### 22. Shadow mapping: a third render pass, and bugs that only show up geometrically
 
 **Why shadow mapping, not the ray-sphere alternative considered first:**
 `culling.comp` already computes a bounding sphere per instance every frame
@@ -1062,6 +1062,57 @@ this project ever adds it) has to be applied identically in *every*
 other pass that transforms the same geometry — a shadow pass is a second,
 independent vertex transform of the same mesh, not a derivative of the
 first one, so nothing keeps them in sync automatically.
+
+### 23. GPU timestamp performance instrumentation: reusing an existing safe-readback pattern
+
+Closes an open item carried since Phase 5 ("demonstrated functionally,
+not yet measured numerically" — see the roadmap's old "Open / not yet
+started" entry). The instrumentation itself is small; the interesting
+part is that every design choice in it was already established by
+earlier work rather than invented fresh.
+
+**Query timing reuses the LOD visible-count readback's exact safe
+window, not a new one.** `FrameRenderer::drawFrame()` already reads back
+the previous frame's 3 LOD counts right after `vkWaitForFences` for that
+frame slot (§11: this is safe specifically because the fence wait just
+proved that slot's prior GPU work is fully complete). A frame slot's
+`VkQueryPool` results become valid at exactly the same moment, for
+exactly the same reason — so the GPU timing readback was added as a
+second block right next to the LOD-count one, not a new mechanism. No
+`VK_QUERY_RESULT_WAIT_BIT`, no extra stall: the wait already happened.
+
+**One timestamp write per `FrameGraph` stage boundary, not a granular
+profiler.** 4 `vkCmdWriteTimestamp` calls (frame start, compute end,
+shadow end, graphics end) map exactly onto the 3 `PassStage` values
+(`Compute`/`Shadow`/`Graphics`) `FrameRenderer::drawFrame()` already
+wraps individually (§4, §22). Splitting `Graphics` further into
+`GeometryPass` vs. `ImGuiPass` would need a 5th marker for a number
+nobody asked for (ImGui's own cost) — the roadmap's stated goal was
+quantifying culling/LOD/shadow cost, and 3 intervals + a total answers
+that directly.
+
+**`TOP_OF_PIPE`-start / `BOTTOM_OF_PIPE`-end, not a stage-specific bit
+per boundary.** A `BOTTOM_OF_PIPE` timestamp only fires once *everything*
+submitted before it in the command buffer has finished — which is
+exactly "the end of this interval" for a boundary marker, regardless of
+which pipeline stages happen to be involved on either side of it. Picking
+a narrower stage bit per boundary (e.g. `COMPUTE_SHADER_BIT` for the
+compute/shadow boundary) would require reasoning about exactly which
+stages could still be in flight at each point — `BOTTOM_OF_PIPE` sidesteps
+that by construction, at the cost of nothing here since these are
+already hard synchronization points (render pass boundaries, barriers).
+
+**Timestamp support is queried once and degraded gracefully, not
+assumed.** `VkPhysicalDeviceLimits::timestampComputeAndGraphics` covers
+the common case; a GPU where that's false still might support timestamps
+on the graphics queue specifically (`VkQueueFamilyProperties::
+timestampValidBits`), so `VulkanDevice::queryTimestampSupport()` checks
+both before concluding timestamps aren't available. When they aren't,
+`FrameContext::queryPool` stays `VK_NULL_HANDLE` and every downstream
+step (`createQueryPools()`, the writes in `drawFrame()`, the readback,
+the ImGui display) checks for that and no-ops or shows "N/A" — consistent
+with this project's existing posture of not crashing on unusual hardware
+without adding speculative complexity for cases that can't be tested here.
 
 ---
 

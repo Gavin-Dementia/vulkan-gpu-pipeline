@@ -37,6 +37,13 @@ public:
     uint32_t getGraphicsQueueFamily() const
     {  return graphicsQueueFamilyIndex; }
 
+    // Nanoseconds per timestamp tick (VkPhysicalDeviceLimits::timestampPeriod)
+    // and whether the graphics queue supports vkCmdWriteTimestamp at all -
+    // both queried once in create(), not assumed, since not every GPU
+    // supports timestamp queries on every queue family.
+    float timestampPeriodNs() const     { return timestampPeriodNs_; }
+    bool  supportsTimestampQueries() const { return supportsTimestampQueries_; }
+
 private:
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -48,6 +55,9 @@ private:
 
     uint32_t graphicsQueueFamilyIndex = 0;
 
+    float timestampPeriodNs_ = 0.0f;
+    bool  supportsTimestampQueries_ = false;
+
 private:
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
 
@@ -58,4 +68,6 @@ private:
     void pickPhysicalDevice(VkInstance instance);
 
     void createLogicalDevice();
+
+    void queryTimestampSupport();
 };

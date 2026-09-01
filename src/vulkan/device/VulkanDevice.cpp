@@ -4,6 +4,7 @@
 #include <set>
 #include <stdexcept>
 #include <cstring>
+#include <iostream>
 
 const std::vector<const char*> VulkanDevice::deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
@@ -15,6 +16,7 @@ void VulkanDevice::create(VkInstance instance, VkSurfaceKHR surface)
 
     pickPhysicalDevice(instance);
     createLogicalDevice();
+    queryTimestampSupport();
 }
 
 void VulkanDevice::destroy()
@@ -166,5 +168,34 @@ void VulkanDevice::createLogicalDevice()
 
     vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
     vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+}
+
+void VulkanDevice::queryTimestampSupport()
+{
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &props);
+    timestampPeriodNs_ = props.limits.timestampPeriod;
+
+    // timestampComputeAndGraphics covers every queue, including the
+    // graphics queue used here - if false, fall back to checking the
+    // specific queue family's own timestampValidBits rather than
+    // assuming support (not every GPU/queue combination has it).
+    bool supported = props.limits.timestampComputeAndGraphics == VK_TRUE;
+
+    if (!supported)
+    {
+        uint32_t count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, families.data());
+
+        if (graphicsQueueFamilyIndex < families.size())
+            supported = families[graphicsQueueFamilyIndex].timestampValidBits != 0;
+    }
+
+    supportsTimestampQueries_ = supported && timestampPeriodNs_ > 0.0f;
+
+    if (!supportsTimestampQueries_)
+        std::cout << "[VulkanDevice] GPU does not support timestamp queries; GPU timing disabled\n";
 }
 
