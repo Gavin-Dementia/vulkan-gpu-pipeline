@@ -3,6 +3,7 @@
 #include <vector>
 #include <set>
 #include <stdexcept>
+#include <cstring>
 
 const std::vector<const char*> VulkanDevice::deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
@@ -89,29 +90,29 @@ QueueFamilyIndices VulkanDevice::findQueueFamilies(VkPhysicalDevice dev)
     return indices;
 }
 
-bool VulkanDevice::checkDeviceExtensionSupport(VkPhysicalDevice device) 
+bool VulkanDevice::checkDeviceExtensionSupport(VkPhysicalDevice device)
 {
-    // uint32_t count;
-    // vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
+    uint32_t count;
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
 
-    // std::vector<VkExtensionProperties> available(count);
-    // vkEnumerateDeviceExtensionProperties(device, nullptr, &count, available.data());
+    std::vector<VkExtensionProperties> available(count);
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &count, available.data());
 
-    // for (const char* required : deviceExtensions) 
-    // {
-    //     bool found = false;
+    for (const char* required : deviceExtensions)
+    {
+        bool found = false;
 
-    //     for (const auto& ext : available) 
-    //     {
-    //         if (strcmp(ext.extensionName, required) == 0) 
-    //         {
-    //             found = true;
-    //             break;
-    //         }
-    //     }
+        for (const auto& ext : available)
+        {
+            if (strcmp(ext.extensionName, required) == 0)
+            {
+                found = true;
+                break;
+            }
+        }
 
-    //     if (!found) return false;
-    // }
+        if (!found) return false;
+    }
 
     return true;
 }
