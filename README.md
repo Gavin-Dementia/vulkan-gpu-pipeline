@@ -13,7 +13,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 
 ### Projectile with collision
 
-![Projectile Collision Demo](docs/assets/lod_demo_02.gif)
+![Projectile Collision Demo](docs/assets/projectile_demo_01.gif)
 
 ---
 
