@@ -11,25 +11,39 @@ This document describes the high-level architecture of the renderer.
 ## Current Architecture
 
 ```
-Application
+Application                     — input polling, deltaTime, world-sim tick
+├── Camera::processInput()        WASD + mouse-look (Ctrl reveals cursor for UI)
+├── Projectile::launch()/update() left-click fires, straight-line flight
+├── VulkanContext::updateInstanceSimulation()
+│                                  velocity+damping integration, projectile-
+│                                  vs-grid blast, mutual instance pushout,
+│                                  re-uploads objectBuffer_ every frame
+├── VulkanContext::updateSpin()   accumulated angle, T pauses/resumes
 └── VulkanContext
     ├── initCore()              instance → device → swapchain → depth →
-    │                            renderpass → pipeline → framebuffer
+    │                            renderpass → pipeline (+ push-constant
+    │                            range) → framebuffer; sceneDataBuffer_ +
+    │                            2 descriptor sets (grid, projectile)
     ├── initSceneData()         3× OBJ load (LOD0/1/2), vertex/index
-    │                            buffer per LOD, 7×7×7 instance grid
+    │                            buffer per LOD, 7×7×7 instance grid,
+    │                            1-entry projectile instance buffer
     └── initCullingResources()  shared object buffer (343 bounding
-                                 spheres), 3× {visible-instance buffer,
-                                 indirect draw buffer} — one pair per
-                                 LOD, frustum uniform buffer, compute
-                                 descriptor set (8 bindings), compute
-                                 pipeline
+                                 spheres, re-uploaded every frame — see
+                                 "Grid collision + scatter" below), 3×
+                                 {visible-instance buffer, indirect draw
+                                 buffer} — one pair per LOD, frustum
+                                 uniform buffer, compute descriptor set
+                                 (8 bindings), compute pipeline
         └── FrameRenderer
             └── FrameGraph (DAG, Kahn's algorithm)
                 ├── GPUCullingPass   [Compute stage] — frustum test +
                 │                     distance-based LOD fan-out
-                └── GeometryPass     [Graphics stage, depends on
-                                       CullingPass] — 1 indexed-indirect
-                                       draw per LOD
+                ├── GeometryPass     [Graphics stage, depends on
+                │                     CullingPass] — per-draw material
+                │                     push constant + 3 indirect draws
+                │                     (grid LODs) + 1 direct draw
+                │                     (projectile, if active)
+                └── ImGuiPass        stats overlay + live lighting sliders
 ```
 
 > The 3-LOD fan-out (one `{visible-instance, indirect draw}` pair per
@@ -169,12 +183,23 @@ and the `FrameGraph` instance. `drawFrame()`:
 2. Records `executeCompute()` — runs outside any render pass; resets
    all 3 `IndirectDrawBuffer.instanceCount` to 0, uploads the current
    frame's frustum, dispatches the culling + LOD-select compute shader
+   (reading whatever `Application::mainLoop()` already wrote into
+   `objectBuffer_` this frame via `updateInstanceSimulation()`)
 3. Inserts a memory barrier (compute write → vertex/indirect read)
-4. Begins the render pass, records `executeGraphics()` — binds each
-   LOD's own vertex/index/visible-instance buffers and issues one
-   `vkCmdDrawIndexedIndirect` per LOD (3 draw calls/frame) — ends the
+4. Begins the render pass, records `executeGraphics()`: uploads
+   `SceneData` (light + camera), pushes the grid's material constants,
+   binds each LOD's own vertex/index/visible-instance buffers and issues
+   one `vkCmdDrawIndexedIndirect` per LOD (3 draw calls/frame); if the
+   projectile is active, pushes its own (distinct) material constants
+   and issues one `vkCmdDrawIndexed`; runs `ImGuiPass` last — ends the
    render pass
 5. Submits, presents
+
+Note: the input polling, `Projectile::update()`, `updateInstanceSimulation()`
+(grid collision/scatter/mutual-collision), and `updateSpin()` steps all
+happen in `Application::mainLoop()` **before** `drawFrame()` is called —
+see "Grid collision + scatter" above for why that world-simulation state
+lives there rather than inside a `FrameRenderer` pass.
 
 ### FrameGraph
 
@@ -284,19 +309,37 @@ Application
                                               + 1× vkCmdDrawIndexed (projectile, if active)
 ```
 
-> **Known dead resource:** `VulkanContext::instanceBuffer_` (the
-> original static, CPU-uploaded-once instance buffer from the
-> pre-culling design) is still created and destroyed but is no longer
-> bound anywhere in the draw path — every LOD's `visibleInstanceBuffer`
-> is what actually gets bound at binding 1 now. Same category of
-> leftover as `visibilityBuffer_` in §12; flagged for removal alongside
-> the other dead-code cleanup pass.
+> **Resolved:** `VulkanContext::instanceBuffer_` (the original static,
+> CPU-uploaded-once instance buffer from the pre-culling design) used to
+> be dead weight here — created/destroyed but never bound anywhere,
+> since every LOD's `visibleInstanceBuffer` is what actually gets bound
+> at binding 1. It and the now-orphaned `InstanceBuffer` class have
+> since been deleted entirely (same cleanup pass that removed
+> `RGPass::pipeline`). Kept as a historical note, same category as the
+> `visibilityBuffer_` find in §12.
 
 ---
 
 ## Frame pipeline (as implemented)
 
 ```
+Application::mainLoop()  (before FrameRenderer::drawFrame() is even called)
+        │
+Poll input: WASD/mouse-look, click (fire projectile), R (reset grid),
+            T (toggle spin), Ctrl (reveal cursor for ImGui), Esc (quit)
+        │
+Projectile::update(dt)              — flight, lifetime expiry
+        │
+VulkanContext::updateInstanceSimulation(dt)
+   ├─ integrate velocity + damping into instanceCurrentPositions_
+   ├─ projectile-vs-grid blast check (one explosion per flight)
+   ├─ mutual instance-vs-instance overlap pushout (O(n²), every frame)
+   └─ re-upload objectBuffer_ from the updated positions
+        │
+VulkanContext::updateSpin(dt)       — accumulated angle, skipped if paused
+        │
+════════ FrameRenderer::drawFrame() ════════
+        │
 Wait Fence → Read back previous frame's 3 LOD instance counts (debug overlay)
         │
 Acquire Swapchain Image
@@ -304,16 +347,21 @@ Acquire Swapchain Image
 Reset IndirectLOD0/1/2.instanceCount = 0   (3× CPU write)
         │
 Compute: GPUCullingPass
-   (sphere-frustum test, 343 threads, distance-based LOD bucketing,
-    atomic compaction per bucket)
+   (sphere-frustum test using this frame's objectBuffer_, 343 threads,
+    distance-based LOD bucketing, atomic compaction per bucket)
         │
 Memory Barrier (SHADER_WRITE → VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ)
         │
 Begin Render Pass
         │
 Graphics: GeometryPass
-   (for each LOD: bind that LOD's vertex/index/visible-instance buffers,
-    vkCmdDrawIndexedIndirect — GPU-supplied instance count)
+   upload SceneData (light + camera) → push grid material constants →
+   for each LOD: bind vertex/index/visible-instance buffers,
+   vkCmdDrawIndexedIndirect (GPU-supplied instance count) →
+   if projectile active: push its own material constants,
+   bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
+        │
+Graphics: ImGuiPass — stats overlay + live lighting sliders
         │
 End Render Pass
         │

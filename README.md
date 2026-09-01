@@ -11,9 +11,9 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 
 ![LOD Demo](docs/assets/lod_demo_01.gif)
 
-### Screenshot
+### Projectile with collision
 
-![LOD Screenshot](docs/assets/lod_demo_01.png)
+![Projectile Collision Demo](docs/assets/lod_demo_02.gif)
 
 ---
 
@@ -33,28 +33,38 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | GPU LOD Selection | ✅ |
 | Multi-LOD Mesh Rendering | ✅ |
 | Indirect Draw Buffer | ✅ |
+| Mouse-Fired Projectile | ✅ |
+| Grid Collision + Scatter (mutual instance collision) | ✅ |
+| PBR Lighting (Cook-Torrance BRDF) | ✅ |
+| Texture-based PBR Materials | ⏳ planned |
+| Shadow Mapping | ⏳ planned |
 
 ---
 
 ## Architecture
 
 ```
-Application
-└── VulkanContext          device, swapchain, renderpass, pipeline
-    └── FrameRenderer      per-frame sync, command recording
-        └── FrameGraph     DAG of render passes
-            ├── Compute Pass
-            │      ├── Frustum Culling
-            │      └── LOD Selection
-            ├── Graphics Pass
-            │      └── Indirect Draw
-            ├── GeometryPass   →  bind VB, draw
-            ├── LightingPass   → (depends on Geometry)
-            └── PostProcess    → (depends on Lighting)
+Application               input polling, deltaTime, world-sim tick
+├── Camera                WASD + mouse-look
+├── Projectile            mouse-fired, collides with the grid
+└── VulkanContext         device, swapchain, renderpass, pipeline,
+    │                     PBR lighting (SceneData UBO + material push
+    │                     constants), grid collision/scatter simulation
+    └── FrameRenderer     per-frame sync, command recording
+        └── FrameGraph    DAG of render passes
+            ├── GPUCullingPass  [Compute] frustum culling + LOD selection
+            ├── GeometryPass    [Graphics] grid (3× indirect draw, one
+            │                   per LOD) + projectile (1× direct draw),
+            │                   Cook-Torrance shading
+            ├── LightingPass    (placeholder, not yet used)
+            ├── PostProcess     (placeholder, not yet used)
+            └── ImGuiPass       stats overlay + live lighting sliders
 ```
 
 The FrameGraph resolves pass execution order via **Kahn's algorithm** at build time,
-catching dependency cycles before the first frame runs.
+catching dependency cycles before the first frame runs. See `docs/architecture.md`
+for the full per-frame breakdown, including the world-simulation steps that run in
+`Application::mainLoop()` before `FrameRenderer::drawFrame()` is even called.
 
 ---
 
@@ -116,7 +126,7 @@ cmake -S . -B build
 cmake --build build
 ```
 
-Executable: `build/bin/app.exe`
+Executable: `build/bin/app.exe` (MSVC's multi-config generator actually places it at `build/bin/Debug/app.exe`; a Visual Studio + CMake-presets workflow may instead output to `out/build/<preset>/bin/app.exe`)
 
 Shaders are compiled automatically via `glslc` during the build step.
 Assets are copied to `build/bin/assets/` automatically.
@@ -156,6 +166,20 @@ The Vulkan SDK must be installed on the system. All other dependencies are bundl
 
 ---
 
+## Controls
+
+| Input | Action |
+|---|---|
+| `W` `A` `S` `D` | Move |
+| Mouse | Look around (cursor is captured by default) |
+| Left click | Fire the projectile at the grid |
+| `R` | Reset the grid to its original formation |
+| `T` | Pause / resume the grid's spin |
+| Hold `Ctrl` | Reveal the cursor to interact with the ImGui windows (stats overlay, lighting sliders) |
+| `Esc` | Quit |
+
+---
+
 ## Expected output
 
 ```
@@ -163,9 +187,9 @@ The Vulkan SDK must be installed on the system. All other dependencies are bundl
 [Vulkan] Surface created successfully
 [Vulkan] Swapchain created successfully
 Image count: 3
-[ObjLoader] 507 unique vertices, 2904 indices (from assets/suzanne.obj)
-[ObjLoader] 165 unique vertices, 867 indices (from assets/suzanne_lod1.obj)
-[ObjLoader] 34 unique vertices, 141 indices (from assets/suzanne_lod2.obj)
+[ObjLoader] 507 unique vertices, 2904 indices (from assets/suzanne.obj), recentered by (...), bounding radius ...
+[ObjLoader] 165 unique vertices, 867 indices (from assets/suzanne_lod1.obj), recentered by (...), bounding radius ...
+[ObjLoader] 34 unique vertices, 141 indices (from assets/suzanne_lod2.obj), recentered by (...), bounding radius ...
 ...
 Vulkan Context initialized
 [FrameRenderer] initialized (FrameGraph Stage B)
@@ -173,5 +197,7 @@ Application initialized
 Application mainLoop
 ```
 
-A window opens rendering the Suzanne model with GPU-driven frustum culling and dynamic LOD switching.
+A window opens rendering the Suzanne model with GPU-driven frustum culling, dynamic LOD
+switching, Cook-Torrance PBR lighting, and a mouse-fired projectile that scatters the grid
+on impact.
 

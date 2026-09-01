@@ -65,7 +65,9 @@ What happens during build:
 - GLFW is compiled from source (submodule)
 - Shaders in `shaders/` are compiled to SPIR-V via `glslc` and placed in `build/bin/shaders/compiled/`
 - Assets in `assets/` are copied to `build/bin/assets/`
-- Executable is placed at `build/bin/app.exe`
+- Executable is placed at `build/bin/app.exe` (MSVC's multi-config generator
+  actually places it at `build/bin/Debug/app.exe`; a Visual Studio + CMake-presets
+  workflow may instead output to `out/build/<preset>/bin/app.exe`)
 
 To rebuild shaders after editing `.vert` or `.frag` files, re-run `cmake --build build`.
 
@@ -75,23 +77,30 @@ To rebuild shaders after editing `.vert` or `.frag` files, re-run `cmake --build
 
 ```
 vulkan-gpu-pipeline/
-├── assets/                    OBJ meshes
+├── assets/                    OBJ meshes, textures
 ├── include/
-│   ├── core/                  Application
+│   ├── core/                  Application, Camera, Projectile
+│   ├── ui/                    ImGuiLayer
 │   └── vulkan/
-│       ├── buffer/            VulkanBuffer, VertexBuffer
+│       ├── buffer/            VulkanBuffer, VertexBuffer, IndexBuffer,
+│       │                      UniformBuffer, IndirectDrawBuffer
 │       ├── command/           VulkanCommandPool
 │       ├── core/              VulkanInstance
+│       ├── culling/           Frustum (Gribb-Hartmann plane extraction)
+│       ├── descriptor/        VulkanDescriptor, ComputeDescriptor
 │       ├── device/            VulkanDevice
 │       ├── frame/             FrameContext, FrameRenderer, FrameGraph
-│       ├── pipeline/          VulkanPipeline
+│       ├── instance/          InstanceData (per-instance vertex attribute)
+│       ├── lighting/          SceneData, MaterialPushConstants
+│       ├── pipeline/          VulkanPipeline, VulkanComputePipeline
 │       ├── platform/          VulkanSurface
-│       ├── renderpass/        VulkanRenderPass, VulkanFramebuffer
+│       ├── renderpass/        VulkanRenderPass, VulkanFramebuffer, VulkanDepthBuffer
 │       ├── resource/          ShaderLoader, ObjLoader
-│       └── swapchain/         VulkanSwapchain
-├── shaders/                   GLSL source
-├── src/                       Implementation (.cpp)
-└── third_party/               GLFW, GLM, tinyobjloader
+│       ├── swapchain/         VulkanSwapchain
+│       └── texture/           VulkanTexture
+├── shaders/                   GLSL source (triangle.vert/frag, culling.comp)
+├── src/                       Implementation (.cpp), mirrors include/
+└── third_party/               GLFW, GLM, ImGui, stb, tinyobjloader
 ```
 
 ---
