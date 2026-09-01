@@ -57,17 +57,6 @@ void FrameGraph::build()
         throw std::runtime_error("FrameGraph has cycle!");
 }
 
-void FrameGraph::execute(VkCommandBuffer cmd)
-{
-    for (int idx : executionOrder)
-    {
-        auto& pass = passes[idx];
-
-        if (pass.execute)
-            pass.execute(cmd);
-    }
-}
-
 void FrameGraph::executeCompute(VkCommandBuffer cmd)
 {
     for (int idx : executionOrder)

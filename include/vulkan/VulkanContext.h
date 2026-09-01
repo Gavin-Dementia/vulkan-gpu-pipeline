@@ -21,7 +21,7 @@
 #include "vulkan/pipeline/VulkanPipeline.h"
 #include "vulkan/pipeline/VulkanComputePipeline.h"
 #include "vulkan/buffer/IndexBuffer.h"
-#include "vulkan/buffer/InstanceBuffer.h"
+#include "vulkan/instance/InstanceData.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
 #include "vulkan/texture/VulkanTexture.h"
 
@@ -66,7 +66,6 @@ public:
     ComputeDescriptor&     computeDescriptor() { return computeDescriptor_; }
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
-    InstanceBuffer&        instanceBuffer()    { return instanceBuffer_; }
     VulkanTexture&         texture()           { return texture_; }
 
     LODMesh& lod(int level) { return lods_[level]; }
@@ -78,7 +77,6 @@ private:
     void initSceneData();
     void initCullingResources();
 
-    uint32_t meshIndexCount_ = 0;
     std::vector<InstanceData> cachedInstances_;
     std::array<LODMesh, 3> lods_;
 
@@ -101,7 +99,6 @@ private:
     ComputeDescriptor     computeDescriptor_;
     VulkanComputePipeline computePipeline_;
     VulkanBuffer          frustumBuffer_;
-    InstanceBuffer        instanceBuffer_;
     VulkanTexture         texture_;
 
 

@@ -118,9 +118,6 @@ void VulkanContext::initSceneData()
             commandPool_.get(), device_.getGraphicsQueue(),
             mesh.indices
         );
-
-        // ONLY give LOD0's indexCount to indirectDrawBuffer
-        if (i == 0) meshIndexCount_ = static_cast<uint32_t>(mesh.indices.size());
     }
 
     // 7x7x7 grid, spacing 3.0, centered on origin
@@ -141,12 +138,6 @@ void VulkanContext::initSceneData()
         };
         instances[idx++].position = glm::vec4(pos, 1.0f);
     }
-
-    instanceBuffer_.create(
-        device_.getPhysical(), device_.get(),
-        commandPool_.get(), device_.getGraphicsQueue(),
-        instances
-    );
 
     // Cache instance world positions for object buffer setup
     cachedInstances_ = std::move(instances);
@@ -243,7 +234,6 @@ void VulkanContext::cleanup()
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
     objectBuffer_.destroy(device_.get());
-    instanceBuffer_.destroy(device_.get());
 
     for (int i = 0; i < 3; i++)
     {

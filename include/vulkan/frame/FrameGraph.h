@@ -19,7 +19,6 @@ struct RGPass
     std::string name;
 
     std::vector<int> reads;
-    std::vector<int> writes;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
 
@@ -36,7 +35,6 @@ public:
     int addPass(const RGPass& pass);
 
     void build();   // build DAG order
-    void execute(VkCommandBuffer cmd);
 
     void executeCompute(VkCommandBuffer cmd);   // 在RenderPass外执行
     void executeGraphics(VkCommandBuffer cmd);  // 在RenderPass内执行
@@ -46,7 +44,5 @@ private:
 
     std::vector<RGPass> passes;
     std::vector<int> executionOrder;
-
-    void topologicalSort(){};
 };
 

@@ -46,7 +46,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     int cullingPass = graph->addPass({
         "GPUCullingPass",
         {},
-        {},
         mainPipeline,
         [this](VkCommandBuffer cmd)
         {  
@@ -89,7 +88,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     int geometryPass = graph->addPass(RGPass{
         "GeometryPass",
         {cullingPass},
-        {},
         mainPipeline,
         [this](VkCommandBuffer cmd)
         {
@@ -151,7 +149,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     int lightingPass = graph->addPass(RGPass{
         "LightingPass",
         { geometryPass },
-        {},
         VK_NULL_HANDLE,
         [](VkCommandBuffer cmd)
         {
@@ -166,7 +163,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     graph->addPass(RGPass{
         "PostProcess",
         { lightingPass },
-        {},
         VK_NULL_HANDLE,
         [](VkCommandBuffer cmd)
         {
@@ -180,7 +176,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     graph->addPass({
         "ImGuiPass",
         { geometryPass },   // 依赖GeometryPass，确保UI画在最上层
-        {},
         mainPipeline,
         [this](VkCommandBuffer cmd)
         {
