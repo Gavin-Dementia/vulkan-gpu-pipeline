@@ -57,8 +57,7 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             // 2. update frustum
             glm::mat4 view = context->camera().getViewMatrix();
-            glm::mat4 proj = glm::perspective(glm::radians(45.0f), 1280.0f/720.0f, 0.1f, 200.0f);
-            proj[1][1] *= -1;
+            glm::mat4 proj = context->camera().getProjectionMatrix();
 
             glm::vec3 camPos = context->camera().position();
             FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view, camPos);
@@ -96,13 +95,7 @@ void FrameRenderer::init(VulkanContext& ctx)
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
             ubo.view = context->camera().getViewMatrix();
-            ubo.proj = glm::perspective(
-                glm::radians(45.0f),
-                1280.0f / 720.0f,
-                0.1f, 200.0f
-            );// increace far plane
-            
-            ubo.proj[1][1] *= -1;// Vulkan 的 Y 轴和 OpenGL 相反
+            ubo.proj = context->camera().getProjectionMatrix();
 
             context->uniformBuffer().update(context->device().get(), ubo);
 
