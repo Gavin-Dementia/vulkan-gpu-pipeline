@@ -20,8 +20,6 @@ struct RGPass
 
     std::vector<int> reads;
 
-    VkPipeline pipeline = VK_NULL_HANDLE;
-
     // GPU command
     std::function<void(VkCommandBuffer)> execute;
     PassStage stage = PassStage::Graphics;  

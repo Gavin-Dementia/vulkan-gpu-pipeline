@@ -38,15 +38,12 @@ void FrameRenderer::init(VulkanContext& ctx)
     graph = new FrameGraph();
     graph->init(context);
 
-    VkPipeline mainPipeline = context->pipeline().get();
-    
     // =====================================================
     // GPUCulling
     // =====================================================
     int cullingPass = graph->addPass({
         "GPUCullingPass",
         {},
-        mainPipeline,
         [this](VkCommandBuffer cmd)
         {  
             // 1. reset instanceCount=0（CPU directe write, HOST_VISIBLE）
@@ -88,7 +85,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     int geometryPass = graph->addPass(RGPass{
         "GeometryPass",
         {cullingPass},
-        mainPipeline,
         [this](VkCommandBuffer cmd)
         {
             // update MVP each frame
@@ -149,7 +145,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     int lightingPass = graph->addPass(RGPass{
         "LightingPass",
         { geometryPass },
-        VK_NULL_HANDLE,
         [](VkCommandBuffer cmd)
         {
             // Stage B: logic placeholder
@@ -163,7 +158,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     graph->addPass(RGPass{
         "PostProcess",
         { lightingPass },
-        VK_NULL_HANDLE,
         [](VkCommandBuffer cmd)
         {
             // Stage B: placeholder
@@ -176,7 +170,6 @@ void FrameRenderer::init(VulkanContext& ctx)
     graph->addPass({
         "ImGuiPass",
         { geometryPass },   // 依赖GeometryPass，确保UI画在最上层
-        mainPipeline,
         [this](VkCommandBuffer cmd)
         {
             context->imguiLayer().beginFrame();

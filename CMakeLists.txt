@@ -107,8 +107,7 @@ set(VULKAN_BUFFER_SRC
     src/vulkan/buffer/VertexBuffer.cpp
     src/vulkan/buffer/VulkanBuffer.cpp
     src/vulkan/buffer/UniformBuffer.cpp
-    src/vulkan/buffer/IndexBuffer.cpp    
-    src/vulkan/buffer/InstanceBuffer.cpp
+    src/vulkan/buffer/IndexBuffer.cpp
     src/vulkan/buffer/IndirectDrawBuffer.cpp
 )
 
