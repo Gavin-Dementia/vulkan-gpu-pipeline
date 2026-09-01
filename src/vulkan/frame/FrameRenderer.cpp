@@ -122,6 +122,41 @@ void FrameRenderer::init(VulkanContext& ctx)
                     sizeof(DrawIndirectCommand)
                 );
             }
+
+            // Mouse-fired projectile: reuses LOD2's mesh, its own UBO
+            // (identity model - no spin) and its own descriptor set/
+            // instance buffer, since the grid's UBO/instance buffer are
+            // already claimed by the loop above this frame.
+            if (context->projectile().isActive())
+            {
+                UBOData projUbo{};
+                projUbo.model = glm::mat4(1.0f);
+                projUbo.view  = context->camera().getViewMatrix();
+                projUbo.proj  = context->camera().getProjectionMatrix();
+                context->projectileUniformBuffer().update(context->device().get(), projUbo);
+
+                InstanceData projInstance{ glm::vec4(context->projectile().position(), 0.0f) };
+                context->projectileInstanceBuffer().upload(
+                    context->device().get(), &projInstance, sizeof(InstanceData));
+
+                VkDescriptorSet projDs = context->projectileDescriptor().set();
+                vkCmdBindDescriptorSets(
+                    cmd,
+                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    context->pipeline().getLayout(),
+                    0, 1, &projDs,
+                    0, nullptr
+                );
+
+                context->lod(2).vertexBuffer.bind(cmd);
+                context->lod(2).indexBuffer.bind(cmd);
+
+                VkBuffer projInstanceBuf = context->projectileInstanceBuffer().get();
+                VkDeviceSize projOffset = 0;
+                vkCmdBindVertexBuffers(cmd, 1, 1, &projInstanceBuf, &projOffset);
+
+                vkCmdDrawIndexed(cmd, context->lod(2).indexBuffer.indexCount(), 1, 0, 0, 0);
+            }
         },
         PassStage::Graphics
     });

@@ -1,7 +1,7 @@
 #include "core/Camera.h"
 #include <glm/gtc/matrix_transform.hpp>
 
-glm::vec3 Camera::forward() const
+glm::vec3 Camera::getForward() const
 {
     glm::vec3 dir;
     dir.x = cos(glm::radians(yaw_)) * cos(glm::radians(pitch_));
@@ -12,39 +12,44 @@ glm::vec3 Camera::forward() const
 
 glm::vec3 Camera::right() const
 {
-    return glm::normalize(glm::cross(forward(), glm::vec3(0.0f, 1.0f, 0.0f)));
+    return glm::normalize(glm::cross(getForward(), glm::vec3(0.0f, 1.0f, 0.0f)));
 }
 
 void Camera::processInput(GLFWwindow* window, float deltaTime)
 {
     float moveAmount = moveSpeed_ * deltaTime;
-    float turnAmount = turnSpeed_ * deltaTime;
 
     // WASD movement
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        position_ += forward() * moveAmount;
+        position_ += getForward() * moveAmount;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        position_ -= forward() * moveAmount;
+        position_ -= getForward() * moveAmount;
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
         position_ -= right() * moveAmount;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         position_ += right() * moveAmount;
 
-    // QE 上下
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-        position_.y -= moveAmount;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
-        position_.y += moveAmount;
+    // Mouse look (replaces the old QE-up/down + arrow-key yaw/pitch
+    // controls). Polled here rather than a GLFW callback, same reasoning
+    // as Application's click polling - keeps input handling in one place
+    // per frame instead of split across callbacks and polling.
+    double mouseX, mouseY;
+    glfwGetCursorPos(window, &mouseX, &mouseY);
 
-    // 方向键转向
-    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
-        yaw_ -= turnAmount;
-    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
-        yaw_ += turnAmount;
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-        pitch_ += turnAmount;
-    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-        pitch_ -= turnAmount;
+    if (firstMouseSample_)
+    {
+        lastMouseX_ = (float)mouseX;
+        lastMouseY_ = (float)mouseY;
+        firstMouseSample_ = false;
+    }
+
+    float dx = (float)mouseX - lastMouseX_;
+    float dy = (float)mouseY - lastMouseY_;
+    lastMouseX_ = (float)mouseX;
+    lastMouseY_ = (float)mouseY;
+
+    yaw_   += dx * mouseSensitivity_;
+    pitch_ -= dy * mouseSensitivity_;   // screen Y grows downward; moving the mouse up should look up
 
     // 限制pitch，避免翻转
     pitch_ = glm::clamp(pitch_, -89.0f, 89.0f);
@@ -52,7 +57,7 @@ void Camera::processInput(GLFWwindow* window, float deltaTime)
 
 glm::mat4 Camera::getViewMatrix() const
 {
-    return glm::lookAt(position_, position_ + forward(), glm::vec3(0.0f, 1.0f, 0.0f));
+    return glm::lookAt(position_, position_ + getForward(), glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
 glm::mat4 Camera::getProjectionMatrix() const

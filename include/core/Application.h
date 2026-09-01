@@ -20,5 +20,6 @@ private:
     FrameRenderer* frameRenderer = nullptr;
 
     bool running = true;
+    bool prevLeftMousePressed_ = false;
 };
 

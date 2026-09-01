@@ -569,6 +569,116 @@ deleting it as "unused."
 
 ---
 
+### 17. Mouse-fired projectile needs its own UBO and descriptor set
+
+**Decision:** The first interactive feature — a single object the player
+aims (via the existing keyboard-controlled camera) and fires with a
+left-click, flying in a straight line at constant speed — reuses LOD2's
+existing vertex/index buffers (no new asset), but gets its **own**
+`UniformBuffer` and `VulkanDescriptor`, separate from the grid's.
+
+**Why a second UBO is required, not just cleaner:** `VulkanBuffer::upload()`
+(and `UniformBuffer::update()`, which calls it) writes into persistently
+mapped host memory (§ "persistently map HOST_VISIBLE buffers" commit) at
+command-*recording* time — but the GPU reads that memory at command-
+*execution* time, after the command buffer is submitted. If the grid's
+draws and the projectile's draw shared one UBO, `GeometryPass`'s lambda
+would call `update()` twice per frame (once per model matrix) while
+recording draw calls that reference the *same* buffer — by the time the
+GPU actually executes those draws, the buffer holds whichever value was
+written *last* in recording order, not whichever value was current when
+each draw call was recorded. Both draws would silently end up using the
+same (wrong, for one of them) model matrix. There is no per-draw
+snapshot of a single mutable UBO — this is the same record-vs-execute
+distinction as §11's `vkCmdDispatch` bug, applied to descriptor data
+instead of a readback.
+
+**Why this is safe to do as a second, independently-created
+`VulkanDescriptor`:** Verified directly against `VulkanDescriptor::create()`
+— each instance builds its own `VkDescriptorPool`/`VkDescriptorSetLayout`/
+`VkDescriptorSet` from scratch, so a second instance doesn't collide with
+or share state with the grid's. Vulkan's pipeline-layout-compatibility
+rule (used when binding a descriptor set against `pipeline_.getLayout()`)
+only requires the two layouts have *identical binding structure* (same
+binding indices, descriptor types, counts, stage flags) — not the same
+`VkDescriptorSetLayout` handle — so a structurally-identical second
+descriptor set is valid to bind against the one shared pipeline.
+
+**Reused, not duplicated:** The projectile's world position is carried
+entirely through a new 1-entry instance buffer (binding 1), reusing the
+exact same model-is-rotation + instance-is-translation split the vertex
+shader already does for the grid (`worldPos = (ubo.model * position).xyz
++ inInstancePos.xyz`) — its model matrix is just `mat4(1.0f)` (no spin).
+Mouse input is polled (`glfwGetMouseButton`) from `Application::mainLoop`
+rather than a registered GLFW callback, because ImGui already installs
+its own mouse callbacks (`install_callbacks=true` in `ImGuiLayer::init`)
+— a second registered callback would replace ImGui's rather than compose
+with it. Clicks are also gated on `!ImGui::GetIO().WantCaptureMouse` so
+clicking the debug overlay doesn't also fire a shot.
+
+**Deliberately out of scope for this milestone:** collision detection
+against the 343-instance grid and any "scatter" reaction. The projectile
+just flies in a straight line and expires after a fixed lifetime
+(`Projectile::kMaxLifetime`). `Projectile::position()` is the one value
+a future milestone needs to read each frame to test against the grid.
+
+**Interview-relevant:** *"Why does a single extra object need a whole
+second UBO and descriptor set instead of just calling `update()` twice
+before each draw?"* — because both `update()` calls happen at record
+time, but both draws read the buffer at execute time; recording order
+has no effect on which model matrix "belongs" to which draw once they're
+both reading from the same memory location.
+
+---
+
+### 18. Camera look control: QE + arrow keys replaced with mouse-look
+
+**Decision:** `Camera::processInput()` originally used `Q`/`E` for
+vertical movement and the 4 arrow keys for yaw/pitch, in addition to
+`WASD` for horizontal movement — 6 keys total for look + vertical
+movement. These were removed and replaced with mouse-look: yaw/pitch are
+now driven by `glfwGetCursorPos()` deltas, sampled once per frame inside
+`processInput()` itself (no new public method or call-site change
+needed in `Application::mainLoop()`). `WASD` horizontal movement is
+unchanged; vertical movement (`Q`/`E`) was removed outright rather than
+rebound, since nothing else in the scene requires flying up/down and the
+grid/projectile are both reachable by moving forward/back/strafe alone.
+
+**Why this needed `GLFW_CURSOR_DISABLED`, not just reading cursor
+position:** `glfwGetCursorPos()` in the default `GLFW_CURSOR_NORMAL`
+mode reports a position clamped to the window's client area — the mouse
+hits the screen edge and stops registering further movement in that
+direction, which breaks a continuous look-around control. Setting
+`glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED)` once in
+`Application::init()` hides the cursor and makes GLFW report an
+unbounded virtual position instead, which is what every FPS-style
+mouse-look implementation relies on.
+
+**Why this doesn't fight ImGui:** Checked directly in the vendored
+`third_party/imgui/backends/imgui_impl_glfw.cpp` —
+`ImGui_ImplGlfw_UpdateMouseCursor()` explicitly early-returns when
+`glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED`, so
+ImGui's backend never tries to re-enable the cursor out from under the
+camera. Mouse *buttons* are unaffected by cursor visibility mode either
+way, so the projectile's left-click fire trigger (§17) keeps working
+unchanged.
+
+**First-frame jump, avoided:** `lastMouseX_`/`lastMouseY_` start
+uninitialized relative to wherever the OS cursor happened to be when the
+window gained focus; without a guard, the very first frame's delta would
+be a large (effectively random) jump. A `firstMouseSample_` flag makes
+the first call just record the current position with no yaw/pitch
+change, matching the same "suppress bogus first delta" pattern
+`Application::mainLoop()` already uses for click edge-detection (§17).
+
+**Interview-relevant:** *"Why not just clamp cursor position instead of
+disabling it?"* — clamping still hits the window edge and stops
+registering motion past it; disabling the cursor gives GLFW's unbounded
+virtual-position mode, which is the actual mechanism (not a workaround)
+every mouse-look camera depends on.
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |

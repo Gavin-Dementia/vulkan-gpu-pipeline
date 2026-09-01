@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <vector>
 #include "core/Camera.h"
+#include "core/Projectile.h"
 #include "ui/ImGuiLayer.h"
 
 #include "vulkan/buffer/VertexBuffer.h"
@@ -49,6 +50,7 @@ public:
 
     GLFWwindow* window()     { return window_; }
     Camera&     camera()     { return camera_; }
+    Projectile& projectile() { return projectile_; }
     ImGuiLayer& imguiLayer() { return imguiLayer_; }
 
     VulkanDevice&          device()            { return device_; }
@@ -68,6 +70,10 @@ public:
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
     VulkanTexture&         texture()           { return texture_; }
 
+    VulkanBuffer&          projectileInstanceBuffer() { return projectileInstanceBuffer_; }
+    UniformBuffer&         projectileUniformBuffer()  { return projectileUniformBuffer_; }
+    VulkanDescriptor&      projectileDescriptor()     { return projectileDescriptor_; }
+
     LODMesh& lod(int level) { return lods_[level]; }
 
 
@@ -83,6 +89,7 @@ private:
 
     GLFWwindow* window_ = nullptr;
     Camera camera_;
+    Projectile projectile_;
     ImGuiLayer imguiLayer_;
 
     VulkanInstance        instance_;
@@ -102,7 +109,8 @@ private:
     VulkanBuffer          frustumBuffer_;
     VulkanTexture         texture_;
 
-
-
+    VulkanBuffer          projectileInstanceBuffer_;
+    UniformBuffer         projectileUniformBuffer_;
+    VulkanDescriptor      projectileDescriptor_;
 };
 

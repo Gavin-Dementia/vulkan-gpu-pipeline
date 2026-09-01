@@ -76,6 +76,20 @@ void VulkanContext::initCore()
         texture_.sampler()
     );
 
+    // Projectile gets its own UBO + descriptor set (same shared texture) -
+    // it needs a different model matrix (identity, no spin) than the grid
+    // in the same frame, and a single mutable UBO can't hold two different
+    // values for two draw calls recorded in the same command buffer (the
+    // GPU reads whichever value is in memory at execute time, not at
+    // record time - see TECHNICAL_NOTES.md for the full rationale).
+    projectileUniformBuffer_.create(device_.getPhysical(), device_.get());
+    projectileDescriptor_.create(
+        device_.get(),
+        projectileUniformBuffer_.get(),
+        texture_.view(),
+        texture_.sampler()
+    );
+
     pipeline_.create(
         device_.get(),
         swapchain_.getExtent(),
@@ -147,6 +161,17 @@ void VulkanContext::initSceneData()
 
     // Cache instance world positions for object buffer setup
     cachedInstances_ = std::move(instances);
+
+    // Single-entry instance buffer for the mouse-fired projectile - the
+    // graphics pipeline's vertex input layout always expects something
+    // bound at binding 1 (per-instance position), even for a non-instanced
+    // draw of one object. No STORAGE_BUFFER_BIT needed since nothing
+    // writes it via compute - it's just a CPU-updated translation.
+    projectileInstanceBuffer_.create(
+        device_.getPhysical(), device_.get(), sizeof(InstanceData),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
 }
 
 // =========================================================
@@ -249,6 +274,9 @@ void VulkanContext::cleanup()
     }
 
     texture_.destroy(device_.get());
+    projectileDescriptor_.destroy(device_.get());
+    projectileUniformBuffer_.destroy(device_.get());
+    projectileInstanceBuffer_.destroy(device_.get());
     descriptor_.destroy(device_.get());
     uniformBuffer_.destroy(device_.get());
 

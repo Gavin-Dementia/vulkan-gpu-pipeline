@@ -48,6 +48,9 @@ Responsible for:
 - Main loop, deltaTime computation
 - Window ownership
 - Driving `Camera::processInput()` each frame
+- Polling (not callback-based) left-click input to launch `Projectile`,
+  gated on `!ImGui::GetIO().WantCaptureMouse` — see `Projectile` below
+  for why polling instead of a GLFW callback
 
 Not responsible for:
 - Vulkan resource management
@@ -59,15 +62,31 @@ avoid a single god-function (`init()` originally grew to ~150 lines
 before this split — see `TECHNICAL_NOTES.md` §11):
 
 - `initCore()` — instance, surface, device, swapchain, depth buffer,
-  render pass, graphics pipeline, framebuffer
+  render pass, graphics pipeline, framebuffer, plus a second UBO +
+  descriptor set (`projectileUniformBuffer_`/`projectileDescriptor_`)
+  for the mouse-fired projectile — see `TECHNICAL_NOTES.md` §17 for why
+  it can't share the grid's UBO
 - `initSceneData()` — OBJ mesh loading + deduplication for 3 LOD meshes
   (`suzanne.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`), vertex/index
-  buffer upload per LOD, 7×7×7 instance grid generation
+  buffer upload per LOD, 7×7×7 instance grid generation, plus a 1-entry
+  `projectileInstanceBuffer_` (binding-1 translation for the projectile)
 - `initCullingResources()` — one shared object bounding-sphere buffer
   (343 entries, not duplicated per LOD), 3 parallel sets of
   {visible-instance buffer, indirect draw buffer} — one set per LOD
   level — frustum uniform buffer, compute descriptor set (8 bindings),
   compute pipeline
+
+### Projectile
+
+Plain C++ class (no Vulkan includes), owned as a value member of
+`VulkanContext`, mirroring `Camera`'s shape. `launch(origin, direction,
+speed)` sets it flying; `update(deltaTime)` integrates position at
+constant velocity and deactivates it after a fixed lifetime (~5s). No
+collision detection against the instance grid yet — `position()` is the
+one value a future milestone reads to add that. Rendered by reusing
+LOD2's mesh + its own UBO/descriptor set/instance buffer (see
+`TECHNICAL_NOTES.md` §17); drawn with a plain `vkCmdDrawIndexed` inside
+`GeometryPass`, guarded by `isActive()` — no new `FrameGraph` pass.
 
 ### FrameRenderer
 
@@ -102,11 +121,14 @@ sort using indegree counts), throwing on cycle detection. `executeCompute()`
 
 ### Camera
 
-First-person controller (WASD + QE + arrow keys for yaw/pitch). Exposes
-`getViewMatrix()`, called once per frame and shared identically by both
-the culling compute pass (frustum construction) and the geometry pass
-(vertex transform) — see `TECHNICAL_NOTES.md` §10 for why this single-
-source-of-truth matters.
+First-person controller: WASD for movement, mouse-look for yaw/pitch
+(the window is set to `GLFW_CURSOR_DISABLED` once in `Application::init()`
+so the cursor is hidden and reports an unbounded virtual position — see
+`TECHNICAL_NOTES.md` §18 for why this replaced the original QE/arrow-key
+scheme). Exposes `getViewMatrix()`, called once per frame and shared
+identically by both the culling compute pass (frustum construction) and
+the geometry pass (vertex transform) — see `TECHNICAL_NOTES.md` §10 for
+why this single-source-of-truth matters.
 
 ### ObjLoader
 
@@ -171,11 +193,15 @@ Application
     ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
     ├── ObjectBuffer (shared, 343 entries) / FrustumBuffer
     ├── VulkanTexture
+    ├── Projectile (plain C++, position/direction/speed/lifetime)
+    ├── projectileUniformBuffer_ / projectileDescriptor_ / projectileInstanceBuffer_
+    │     (own UBO+descriptor+1-entry instance buffer — reuses lods_[2]'s mesh)
     └── Camera
         └── FrameRenderer
             └── FrameGraph
                 ├── GPUCullingPass (Compute) — frustum test + LOD fan-out
                 └── GeometryPass (Graphics) — 3× vkCmdDrawIndexedIndirect
+                                              + 1× vkCmdDrawIndexed (projectile, if active)
 ```
 
 > **Known dead resource:** `VulkanContext::instanceBuffer_` (the

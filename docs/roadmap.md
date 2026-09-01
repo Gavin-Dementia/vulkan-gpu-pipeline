@@ -81,8 +81,10 @@ ordering and per-fragment normal coloring.
 Originally planned: Camera, Transform, Material, Scene Graph.
 
 Actually implemented:
-- Camera (first-person, WASD + QE + arrow keys, shared view matrix
-  between culling and rendering)
+- Camera (first-person, WASD movement, shared view matrix between
+  culling and rendering). Originally used QE + arrow keys for
+  up/down/yaw/pitch; switched to mouse-look in Phase 7 (§18) once
+  mouse input was already needed for the projectile's fire trigger.
 - Transform: handled inline via per-instance position data rather than
   a general Transform component (no rotation/scale per-instance yet —
   all instances share the model matrix's rotation)
@@ -157,8 +159,47 @@ camera moves toward/away from them (see `docs/assets/lod_demo_01.gif`).
 
 ---
 
+## Phase 7 — Interactive Objects (toward PBR)
+
+**Status: Milestone 1 complete**
+
+Stated long-term direction: PBR material model. First concrete step
+toward it is an interactive object the player can aim and fire, which
+will eventually collide with and scatter the instance grid — that
+collision/scatter behavior is deliberately its own future milestone, not
+part of this one.
+
+Milestone 1 — mouse-fired projectile — implemented:
+- `Projectile` (plain C++ class, no Vulkan) — `launch()`/`update()`,
+  constant-velocity straight-line motion, fixed lifetime expiry
+- Left-click (polled, not a GLFW callback — ImGui already owns those)
+  fires along the camera's existing look direction; gated on
+  `ImGui::GetIO().WantCaptureMouse` so clicking the debug overlay
+  doesn't also fire a shot
+- Renders by reusing LOD2's existing mesh + its own UBO/descriptor
+  set/instance buffer — see `TECHNICAL_NOTES.md` §17 for why a second
+  UBO is required (not just cleaner) once two different model matrices
+  need to coexist in one frame's command buffer
+- No new material/texture — reuses the single shared texture, since
+  material/texture choices are explicitly deferred to the PBR work
+- Camera aiming switched from QE + arrow keys to mouse-look (window set
+  to `GLFW_CURSOR_DISABLED`) — see `TECHNICAL_NOTES.md` §18. Coexists
+  with the projectile's left-click fire trigger since mouse buttons are
+  independent of cursor visibility mode.
+
+Milestone 2 (not started) — collision detection against the 343-instance
+grid and a scatter reaction on impact. `Projectile::position()` is
+already the value that milestone needs to read each frame.
+
+---
+
 ## Open / not yet started
 
+- **Grid collision + scatter reaction** (Phase 7, milestone 2) — needs
+  per-instance dynamic position/velocity state, replacing the grid's
+  current write-once `ObjectBuffer` upload with a per-frame CPU
+  simulation re-uploaded each frame (cheap now that `VulkanBuffer` is
+  persistently mapped)
 - **Texture sampling** — implemented and validated in isolation (§13),
   but not yet reunited with the primary Suzanne LOD chain, which has no
   texcoord data on any of its 3 variants
@@ -181,5 +222,7 @@ camera moves toward/away from them (see `docs/assets/lod_demo_01.gif`).
   culling + LOD pipeline; candidate next steps: hierarchical/multi-pass
   culling, neural-rendering hybrid approaches under consideration for
   graduate study direction)
+- PBR material model, approached incrementally starting with interactive
+  objects (Phase 7) rather than jumping straight to a material system
 - Foundation for future rendering experiments
 
