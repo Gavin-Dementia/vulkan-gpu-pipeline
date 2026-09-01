@@ -19,9 +19,11 @@
 #include "vulkan/renderpass/VulkanDepthBuffer.h"
 #include "vulkan/renderpass/VulkanFramebuffer.h"
 #include "vulkan/renderpass/VulkanRenderPass.h"
+#include "vulkan/renderpass/VulkanShadowMap.h"
 #include "vulkan/swapchain/VulkanSwapchain.h"
 #include "vulkan/pipeline/VulkanPipeline.h"
 #include "vulkan/pipeline/VulkanComputePipeline.h"
+#include "vulkan/pipeline/VulkanShadowPipeline.h"
 #include "vulkan/buffer/IndexBuffer.h"
 #include "vulkan/instance/InstanceData.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
@@ -78,12 +80,30 @@ public:
 
     VulkanBuffer&          sceneDataBuffer()   { return sceneDataBuffer_; }
 
+    VulkanShadowMap&        shadowMap()          { return shadowMap_; }
+    VulkanRenderPass&       shadowRenderPass()   { return shadowRenderPass_; }
+    VulkanFramebuffer&      shadowFramebuffer()  { return shadowFramebuffer_; }
+    VulkanShadowPipeline&   shadowPipeline()     { return shadowPipeline_; }
+
+    // Directional light's orthographic view-projection matrix, framed
+    // around a fixed scene-radius constant covering the 7x7x7 grid's
+    // footprint plus scatter margin - single source of truth, same
+    // discipline as Camera::getProjectionMatrix() (see architecture.md).
+    glm::mat4 lightViewProj() const;
+
     glm::vec3 lightDirection() const { return lightDirection_; }
     glm::vec3 lightColor()     const { return lightColor_; }
     float     lightIntensity() const { return lightIntensity_; }
     void setLightDirection(const glm::vec3& d) { lightDirection_ = d; }
     void setLightColor(const glm::vec3& c)     { lightColor_ = c; }
     void setLightIntensity(float i)            { lightIntensity_ = i; }
+
+    // Base shadow bias (triangle.frag scales it by 1-dot(N,L), see
+    // calcShadow()) - runtime-tunable via the "Lighting" ImGui window
+    // instead of a shader constant, since the right value depends on
+    // shadow map resolution/scene scale and is easiest to find by eye.
+    float shadowBias() const          { return shadowBias_; }
+    void  setShadowBias(float b)      { shadowBias_ = b; }
 
     // Grid collision + scatter (Phase 7 milestone 2). Re-uploads
     // objectBuffer_ every frame from CPU-simulated positions - no compute
@@ -157,8 +177,15 @@ private:
     VulkanDescriptor      projectileDescriptor_;
 
     VulkanBuffer          sceneDataBuffer_;
+
+    VulkanShadowMap       shadowMap_;
+    VulkanRenderPass      shadowRenderPass_;
+    VulkanFramebuffer     shadowFramebuffer_;
+    VulkanShadowPipeline  shadowPipeline_;
+
     glm::vec3             lightDirection_ = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f));
     glm::vec3             lightColor_     = glm::vec3(1.0f, 1.0f, 1.0f);
     float                 lightIntensity_ = 3.0f;
+    float                 shadowBias_     = 0.002f;
 };
 

@@ -1,6 +1,7 @@
 #include "vulkan/VulkanContext.h"
 #include "vulkan/resource/ObjLoader.h"
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -80,12 +81,20 @@ void VulkanContext::initCore()
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
+    // Shadow map created here (before both descriptor sets below, which
+    // both bind it at binding 3) even though its render pass/framebuffer/
+    // pipeline are set up later in this function - only the image/view/
+    // sampler need to exist yet.
+    shadowMap_.create(device_.getPhysical(), device_.get());
+
     descriptor_.create(
         device_.get(),
         uniformBuffer_.get(),
         texture_.view(),
         texture_.sampler(),
-        sceneDataBuffer_.get()
+        sceneDataBuffer_.get(),
+        shadowMap_.view(),
+        shadowMap_.sampler()
     );
 
     // Projectile gets its own UBO + descriptor set (same shared texture) -
@@ -100,7 +109,9 @@ void VulkanContext::initCore()
         projectileUniformBuffer_.get(),
         texture_.view(),
         texture_.sampler(),
-        sceneDataBuffer_.get()
+        sceneDataBuffer_.get(),
+        shadowMap_.view(),
+        shadowMap_.sampler()
     );
 
     pipeline_.create(
@@ -116,6 +127,25 @@ void VulkanContext::initCore()
         swapchain_.getImageViews(),
         depthBuffer_.view(),
         swapchain_.getExtent()
+    );
+
+    // Shadow map's image/view/sampler were already created above (before
+    // descriptor_/projectileDescriptor_, which both bind it at binding 3);
+    // its render pass/framebuffer/pipeline are independent of that and are
+    // created here alongside the main pipeline/framebuffer.
+    shadowRenderPass_.createDepthOnly(device_.get(), VulkanShadowMap::FORMAT);
+
+    shadowFramebuffer_.createDepthOnly(
+        device_.get(),
+        shadowRenderPass_.get(),
+        shadowMap_.view(),
+        shadowMap_.extent()
+    );
+
+    shadowPipeline_.create(
+        device_.get(),
+        shadowMap_.extent(),
+        shadowRenderPass_.get()
     );
 }
 
@@ -214,9 +244,14 @@ void VulkanContext::initCullingResources()
 
     VkDeviceSize objSize = sizeof(ComputeObjectData) * OBJECT_COUNT;
 
+    // VERTEX_BUFFER_BIT alongside STORAGE_BUFFER_BIT: the shadow pass
+    // (FrameRenderer.cpp) binds this same buffer directly as its
+    // per-instance vertex input, reusing culling.comp's per-frame
+    // bounding-sphere data instead of a separate buffer - see
+    // architecture.md's shadow mapping notes.
     objectBuffer_.create(
         device_.getPhysical(), device_.get(), objSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
     objectBuffer_.upload(device_.get(), objects.data(), objSize);
@@ -379,6 +414,49 @@ void VulkanContext::resetInstanceFormation()
     std::fill(instanceVelocities_.begin(), instanceVelocities_.end(), glm::vec3(0.0f));
 }
 
+glm::mat4 VulkanContext::lightViewProj() const
+{
+    // Scene bounding radius: the 7x7x7 grid has a half-extent of
+    // (GRID_SIZE-1)*spacing*0.5 = 9.0 per axis (spacing=3.0, see
+    // initSceneData()), so a ~15.6-unit half-diagonal, plus per-instance
+    // bounding radius and blast-scatter drift margin. A hardcoded
+    // constant, same spirit as culling.comp's hardcoded LOD distance
+    // thresholds - not derived from the live scatter state.
+    constexpr float kSceneRadius = 24.0f;
+
+    glm::vec3 dir = glm::normalize(lightDirection_);
+    glm::vec3 center(0.0f);
+    glm::vec3 eye = center - dir * (kSceneRadius * 2.0f);
+
+    // glm::lookAt degenerates when the view direction is parallel to the
+    // up vector - the default light direction points mostly straight
+    // down, so fall back to a different up axis in that case.
+    glm::vec3 up = (std::abs(dir.y) > 0.99f)
+        ? glm::vec3(0.0f, 0.0f, 1.0f)
+        : glm::vec3(0.0f, 1.0f, 0.0f);
+
+    glm::mat4 view = glm::lookAt(eye, center, up);
+
+    // orthoRH_ZO (not the plain glm::ortho()/Camera::getProjectionMatrix()
+    // convention) - Vulkan needs z_ndc in [0,1], not OpenGL's [-1,1]. For a
+    // *perspective* matrix that distinction only shifts the near plane by
+    // a fraction of a unit (harmless, and why Camera's perspective gets
+    // away with plain glm::perspective + a Y-flip) - but for an
+    // *orthographic* matrix the mapping is linear, so using the [-1,1]
+    // convention here would clip away the near half of the light's
+    // frustum outright. This project doesn't define
+    // GLM_FORCE_DEPTH_ZERO_TO_ONE globally, so the explicit *_ZO variant
+    // is used instead of changing GLM's project-wide default.
+    glm::mat4 proj = glm::orthoRH_ZO(
+        -kSceneRadius, kSceneRadius,
+        -kSceneRadius, kSceneRadius,
+        0.1f, kSceneRadius * 4.0f
+    );
+    proj[1][1] *= -1;   // Vulkan Y-flip, same as Camera::getProjectionMatrix()
+
+    return proj * view;
+}
+
 void VulkanContext::cleanup()
 {
     imguiLayer_.destroy(device_.get());
@@ -407,6 +485,11 @@ void VulkanContext::cleanup()
     framebuffer_.destroy(device_.get());
     depthBuffer_.destroy(device_.get());
     renderPass_.destroy(device_.get());
+
+    shadowPipeline_.destroy(device_.get());
+    shadowFramebuffer_.destroy(device_.get());
+    shadowRenderPass_.destroy(device_.get());
+    shadowMap_.destroy(device_.get());
 
     swapchain_.destroy(device_.get());
     commandPool_.destroy(device_.get());

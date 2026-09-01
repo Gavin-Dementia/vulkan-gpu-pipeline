@@ -33,8 +33,12 @@ Application
         └── FrameRenderer
             └── FrameGraph (DAG)
                 ├── GPUCullingPass   [Compute] — frustum test + LOD fan-out
-                └── GeometryPass     [Graphics, depends on CullingPass]
-                                      — 1 indexed-indirect draw per LOD
+                ├── ShadowPass       [Shadow, own render pass] — depth-only,
+                │                     draws all instances from the light's
+                │                     view (see §22)
+                └── GeometryPass     [Graphics, depends on CullingPass +
+                                      ShadowPass] — 1 indexed-indirect draw
+                                      per LOD, samples the shadow map
 ```
 
 The split into `initCore` / `initSceneData` / `initCullingResources` was a
@@ -953,6 +957,87 @@ one pass. Worth revisiting with real impulse response if the scatter
 should look more like an actual explosion with bouncing debris rather
 than objects that stop dead on contact.
 
+### 22. Shadow mapping: a third render pass, and two bugs that only show up geometrically
+
+**Why shadow mapping, not the ray-sphere alternative considered first:**
+`culling.comp` already computes a bounding sphere per instance every frame
+(`objectBuffer_`), which made an analytic ray-vs-sphere occlusion test in
+the fragment shader an appealing zero-new-render-pass option. Rejected in
+favor of classic shadow mapping because sphere-approximated occluders
+would give blobby, geometrically-wrong shadow edges (visibly wrong against
+Suzanne's actual silhouette — horns, ears), whereas shadow mapping shadows
+the real rasterized geometry. The tradeoff accepted: a second render pass,
+a second pipeline, and a new descriptor binding.
+
+**FrameGraph needed a third pass "stage", not just a third pass.**
+Before this, `FrameGraph` had exactly two: `Compute` (runs outside any
+render pass, `executeCompute()`) and `Graphics` (all passes sharing the
+*one* render pass `FrameRenderer::drawFrame()` already begins/ends). The
+shadow pass needs its own render pass (different attachment — a sampled
+depth image, not the swapchain's color+depth) and its own fixed-resolution
+framebuffer, so a `Graphics`-stage pass couldn't express it — it would run
+inside the wrong render pass. Added `PassStage::Shadow` and
+`FrameGraph::executeShadow()`, mirroring `executeCompute()`'s existing
+precedent of "a stage gets its own explicit wrapper in `drawFrame()`"
+rather than trying to make one `RGPass` struct carry per-pass render-pass/
+framebuffer state (a real generalization, but not needed at 2→3 passes).
+
+**`objectBuffer_` reused directly as the shadow pass's instance buffer.**
+It already holds `vec4(position.xyz, radius)` per instance, re-uploaded
+every frame by `updateInstanceSimulation()` (§20) — byte-identical to
+`InstanceData`'s single-`vec4` layout. The shadow pass binds it straight
+as its per-instance vertex input and draws all `OBJECT_COUNT` instances
+unculled (no light-frustum culling — unnecessary at 343 instances). Zero
+new buffer, zero compute changes — same "the shader/buffer never had a
+concept of static vs. dynamic" reasoning as §20's original write-once→
+per-frame pivot.
+
+**Bug 1 — `objectBuffer_` was missing `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT`.**
+It was created with only `STORAGE_BUFFER_BIT` (culling.comp's SSBO
+binding). Reusing it as a vertex buffer via `vkCmdBindVertexBuffers`
+without also declaring that usage bit is invalid per spec regardless of
+whether a given driver happens to tolerate it silently — caught by
+re-reading the buffer's creation flags before assuming the reuse was
+free, not by a validation-layer message actually being observed. Fixed
+by OR-ing in `VK_BUFFER_USAGE_VERTEX_BUFFER_BIT` at creation.
+
+**Bug 2 — `glm::ortho()` uses the wrong depth convention for Vulkan, and
+it's *silent* for a perspective matrix but *geometrically wrong* for an
+orthographic one.** This project never defines
+`GLM_FORCE_DEPTH_ZERO_TO_ONE`, so every GLM projection defaults to
+OpenGL's `z_ndc ∈ [-1,1]` convention, not Vulkan's `[0,1]`.
+`Camera::getProjectionMatrix()` has used plain `glm::perspective()` since
+Phase 3 with no apparent ill effect, which made it easy to assume
+`glm::ortho()` would be equally safe for the new light-space matrix — it
+is not. For a *perspective* matrix the mismatch only shifts where
+`z_ndc = 0` falls to a point very close to the near plane (worked out
+numerically for this project's near/far of 0.1/200: the invalid `z_ndc<0`
+region is only the eye-space sliver from distance 0.1 to ≈0.2 — invisible
+at any camera distance this scene actually uses). For an *orthographic*
+matrix the near→far mapping is linear, so the same wrong convention
+clips away the near **half** of the light's frustum outright — roughly
+whichever half of the grid sits closer to the light in a given frame
+would have silently failed the primitive clip test and never made it
+into the shadow map at all. Fixed by calling `glm::orthoRH_ZO(...)`
+directly (GLM exposes explicit-convention variants independent of the
+global force-macro) instead of either changing GLM's project-wide default
+or the plain `glm::ortho()`. Lesson: "it's worked fine elsewhere in this
+codebase" doesn't transfer between a perspective and an orthographic use
+of the same underlying convention mismatch — the failure mode is
+different in kind, not just degree.
+
+**Shadow acne on directly-lit surfaces, worse-looking from a distance.**
+Milestone 2's single-tap depth comparison showed pixel-level speckling on
+the grid's top layer (the layer with the least self-occlusion, so
+otherwise-uniform lit patches make any noise most visible) — classic
+shadow acne, confirmed by the noise being per-pixel/grainy rather than a
+solid mis-shaped region (which would have pointed at the light matrix
+instead). Fixed with the standard pairing: a runtime-tunable base bias
+(`SceneData.shadowParams.x`, an ImGui slider — right value depends on
+shadow-map resolution and scene scale, easier to find by eye than to
+compute) plus 3×3 PCF (averaging 9 depth comparisons smooths single-texel
+noise into a soft result and softens shadow edges as a side effect).
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -971,6 +1056,8 @@ than objects that stop dead on contact.
 | `stbi_load` returned `nullptr`, "unknown image type" | The specific PNG file used for testing had some non-standard encoding stb_image couldn't parse — confirmed by checking `stbi_failure_reason()` rather than guessing | Always surface the library's own error reason before assuming the bug is in your code; a generic "load failed" could mean a dozen different things, the library usually already knows which one |
 | Texture loaded successfully but Suzanne rendered with no visible texture (looked like a flat color) | `suzanne.obj`'s vertex data had no texcoord entries at all — confirmed by instrumenting the loader to count vertices with `uv == (0,0)`, which came back 507/507 | Don't assume a downloaded test asset has every vertex attribute you need; verify with a count, not a glance. Isolated the texture *pipeline* from the *asset* problem by switching to a hand-written cube OBJ with explicit `vt` coordinates — this confirmed the Vulkan-side code (descriptor, shader, layout transitions) was correct *before* spending more time on the unrelated asset issue |
 | New/modified files in `assets/` weren't reflected in the running executable despite a successful rebuild | CMake's `add_custom_command(... COMMAND copy_directory ...)` does not reliably re-copy a file whose name is unchanged but whose *content* changed — incremental build tracking treated the POST_BUILD step as already satisfied | Had to manually delete or `Copy-Item -Force` the stale file in the output directory to force a refresh. This is a real caveat of `copy_directory`-based asset pipelines, not a one-off fluke — worth remembering before re-debugging "my code change isn't taking effect" when the actual change was to a *data* file, not a source file |
+| Shadow pass's `vkCmdBindVertexBuffers` reused `objectBuffer_` without the right usage flag | Buffer was created with only `STORAGE_BUFFER_BIT` (culling.comp's SSBO), never `VERTEX_BUFFER_BIT` — reusing a buffer for a new purpose doesn't retroactively grant it that purpose's usage flag | Caught by re-checking the buffer's creation call, not by an observed validation message — worth doing that check *before* reusing a buffer cross-purpose, since some drivers won't complain even though it's invalid per spec (§22) |
+| Shadow map showed roughly half the grid missing/wrong depending on light angle | `glm::ortho()` defaults to OpenGL's `z_ndc ∈ [-1,1]` (this project never defines `GLM_FORCE_DEPTH_ZERO_TO_ONE`); for an orthographic matrix that linearly clips away the near half of the frustum under Vulkan's `[0,1]` requirement | `Camera`'s existing `glm::perspective()` usage had the same convention mismatch but hid it (only a near-plane sliver is affected for perspective); switched to `glm::orthoRH_ZO()` for the light matrix specifically (§22) — the perspective/orthographic distinction changes whether this bug is invisible or scene-breaking |
 
 ---
 
@@ -985,9 +1072,21 @@ than objects that stop dead on contact.
   `0.03 * albedo` constant, not derived from any environment map. Faces
   fully turned away from the single directional light are nearly black
   except for this flat term.
-- **Single directional light, no shadows** — fine for validating the
-  BRDF math; a real scene would need shadow mapping before the lighting
-  reads as physically grounded rather than just shaded.
+- **Shadow mapping is implemented** (§22) for the single directional
+  light — depth-only `ShadowPass`, 3×3 PCF, tunable bias. Not yet done:
+  light-frustum culling for the shadow pass (currently draws all 343
+  instances unculled every frame — fine at this instance count, see §22),
+  and the fixed `kSceneRadius` constant in `lightViewProj()` isn't
+  re-derived from the live scatter state, so an instance blasted far
+  enough outside it would silently stop casting a shadow.
+- **PCF tap count / normalization is an open question as of this
+  writing** — `calcShadow()`'s loop always accumulates a fixed 3×3 (9
+  taps), and it was edited from `litSum / 9.0` to `litSum / 6.0` during
+  visual tuning; dividing a 9-tap sum by 6 lets the shadow factor exceed
+  `1.0` (up to 1.5×) in fully-lit regions, which would over-brighten `Lo`
+  there rather than fix acne. Flagged, not reverted — resolve by either
+  restoring `/9.0` or changing the loop to actually sample 6 taps if a
+  non-square pattern was intended.
 - **LOD is implemented** (§15) as 3 hardcoded distance buckets
   (`LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`), not derived from mesh detail
   level or screen-space projected size, and not exposed as a tunable.

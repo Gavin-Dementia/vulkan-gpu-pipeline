@@ -8,12 +8,23 @@ layout(location = 3) in vec4 inInstancePos;
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragWorldPos;
+layout(location = 3) out vec4 fragLightSpacePos;
 
 layout(binding = 0) uniform UBO {
     mat4 model;
     mat4 view;
     mat4 proj;
 } ubo;
+
+// Same buffer as triangle.frag's binding 2 (see SceneData.h) - only
+// lightViewProj is needed here, but the block's layout must still match
+// the shared buffer's offsets.
+layout(binding = 2) uniform SceneData {
+    vec4 lightDirection;
+    vec4 lightColor;
+    vec4 cameraPos;
+    mat4 lightViewProj;
+} scene;
 
 void main()
 {
@@ -22,9 +33,10 @@ void main()
     // ubo.model is a pure rotation (no scale) for every draw using this
     // shader, so mat3(model) correctly rotates normals; a full inverse-
     // transpose normal matrix is only needed with non-uniform scale.
-    fragNormal   = mat3(ubo.model) * inNormal;
-    fragUV       = inUV;
-    fragWorldPos = worldPos;
+    fragNormal        = mat3(ubo.model) * inNormal;
+    fragUV            = inUV;
+    fragWorldPos      = worldPos;
+    fragLightSpacePos = scene.lightViewProj * vec4(worldPos, 1.0);
 
     gl_Position = ubo.proj * ubo.view * vec4(worldPos, 1.0);
 }

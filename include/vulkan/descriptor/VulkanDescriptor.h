@@ -10,7 +10,9 @@ public:
         VkBuffer uniformBuffer,
         VkImageView textureView,
         VkSampler textureSampler,
-        VkBuffer sceneDataBuffer
+        VkBuffer sceneDataBuffer,
+        VkImageView shadowMapView,
+        VkSampler shadowMapSampler
     );
     void destroy(VkDevice device);
 
@@ -29,7 +31,9 @@ private:
         VkBuffer uniformBuffer,
         VkImageView textureView,
         VkSampler textureSampler,
-        VkBuffer sceneDataBuffer
+        VkBuffer sceneDataBuffer,
+        VkImageView shadowMapView,
+        VkSampler shadowMapSampler
     );
 };
 

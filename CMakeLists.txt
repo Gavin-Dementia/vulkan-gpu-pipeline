@@ -58,6 +58,7 @@ set(SHADER_SRC
     ${CMAKE_SOURCE_DIR}/shaders/triangle.vert
     ${CMAKE_SOURCE_DIR}/shaders/triangle.frag
     ${CMAKE_SOURCE_DIR}/shaders/culling.comp
+    ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
 )
 
 set(SHADER_OUT_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/compiled)
@@ -136,7 +137,8 @@ set(VULKAN_FRAME_SRC
 
 set(VULKAN_PIPELINE_SRC
     src/vulkan/pipeline/VulkanPipeline.cpp
-    src/vulkan/pipeline/VulkanComputePipeline.cpp 
+    src/vulkan/pipeline/VulkanComputePipeline.cpp
+    src/vulkan/pipeline/VulkanShadowPipeline.cpp
 )
 
 set(VULKAN_RESOURCE_SRC
@@ -145,9 +147,10 @@ set(VULKAN_RESOURCE_SRC
 )
 
 set(VULKAN_RENDERPASS_SRC
-    src/vulkan/renderpass/VulkanDepthBuffer.cpp 
+    src/vulkan/renderpass/VulkanDepthBuffer.cpp
     src/vulkan/renderpass/VulkanRenderPass.cpp
     src/vulkan/renderpass/VulkanFramebuffer.cpp
+    src/vulkan/renderpass/VulkanShadowMap.cpp
 )
 
 set(VULKAN_SWAPCHAIN_SRC

@@ -32,6 +32,27 @@ void VulkanFramebuffer::create(
     }
 }
 
+void VulkanFramebuffer::createDepthOnly(
+    VkDevice device,
+    VkRenderPass renderPass,
+    VkImageView depthView,
+    VkExtent2D extent)
+{
+    framebuffers.resize(1);
+
+    VkFramebufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    info.renderPass = renderPass;
+    info.attachmentCount = 1;
+    info.pAttachments = &depthView;
+    info.width = extent.width;
+    info.height = extent.height;
+    info.layers = 1;
+
+    if (vkCreateFramebuffer(device, &info, nullptr, &framebuffers[0]) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create depth-only framebuffer");
+}
+
 void VulkanFramebuffer::destroy(VkDevice device)
 {
     for (auto fb : framebuffers)

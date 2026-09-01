@@ -7,11 +7,13 @@ void VulkanDescriptor::create(
     VkBuffer uniformBuffer,
     VkImageView textureView,
     VkSampler textureSampler,
-    VkBuffer sceneDataBuffer)
+    VkBuffer sceneDataBuffer,
+    VkImageView shadowMapView,
+    VkSampler shadowMapSampler)
 {
     createLayout(device);
     createPool(device);
-    allocateAndWrite(device, uniformBuffer, textureView, textureSampler, sceneDataBuffer);
+    allocateAndWrite(device, uniformBuffer, textureView, textureSampler, sceneDataBuffer, shadowMapView, shadowMapSampler);
 }
 
 void VulkanDescriptor::destroy(VkDevice device)
@@ -23,7 +25,7 @@ void VulkanDescriptor::destroy(VkDevice device)
 void VulkanDescriptor::createLayout(VkDevice device)
 {
     // notify Vulkan：binding 0 is a uniform buffer use for vertex shader
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
 
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -37,10 +39,19 @@ void VulkanDescriptor::createLayout(VkDevice device)
 
     // Shared per-frame scene/light data (see SceneData.h) - one binding
     // reused by every material's descriptor set, not duplicated per object.
+    // Also read by the vertex stage now: triangle.vert needs
+    // lightViewProj to compute each vertex's light-space position.
     bindings[2].binding         = 2;
     bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
+
+    // Shadow map (see VulkanShadowMap) - sampled in triangle.frag to
+    // determine per-fragment occlusion from the directional light.
+    bindings[3].binding         = 3;
+    bindings[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -57,7 +68,7 @@ void VulkanDescriptor::createPool(VkDevice device)
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 2;   // binding 0 (MVP) + binding 2 (SceneData)
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 1;
+    poolSizes[1].descriptorCount = 2;   // binding 1 (texture) + binding 3 (shadow map)
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -74,7 +85,9 @@ void VulkanDescriptor::allocateAndWrite(
     VkBuffer uniformBuffer,
     VkImageView textureView,
     VkSampler textureSampler,
-    VkBuffer sceneDataBuffer
+    VkBuffer sceneDataBuffer,
+    VkImageView shadowMapView,
+    VkSampler shadowMapSampler
 )
 {
     //  let pool distribute set
@@ -102,7 +115,12 @@ void VulkanDescriptor::allocateAndWrite(
     sceneInfo.offset = 0;
     sceneInfo.range  = VK_WHOLE_SIZE;
 
-    std::array<VkWriteDescriptorSet, 3> writes{};
+    VkDescriptorImageInfo shadowInfo{};
+    shadowInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    shadowInfo.imageView   = shadowMapView;
+    shadowInfo.sampler     = shadowMapSampler;
+
+    std::array<VkWriteDescriptorSet, 4> writes{};
 
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = set_;
@@ -124,6 +142,13 @@ void VulkanDescriptor::allocateAndWrite(
     writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[2].descriptorCount = 1;
     writes[2].pBufferInfo     = &sceneInfo;
+
+    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet          = set_;
+    writes[3].dstBinding      = 3;
+    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].descriptorCount = 1;
+    writes[3].pImageInfo      = &shadowInfo;
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }

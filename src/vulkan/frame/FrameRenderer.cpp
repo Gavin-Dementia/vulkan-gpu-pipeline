@@ -3,10 +3,12 @@
 #include "vulkan/culling/Frustum.h"
 #include "vulkan/frame/FrameGraph.h"
 #include "imgui.h"
+#include "imgui_impl_vulkan.h"
 
 #include <stdexcept>
 #include <iostream>
 #include <array>
+#include <cstdint>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -73,11 +75,62 @@ void FrameRenderer::init(VulkanContext& ctx)
     });
 
     // =====================================================
+    // ShadowPass - depth-only render from the light's point of view.
+    // Draws every grid instance unculled, straight from objectBuffer_
+    // (already vec4(position, radius) per instance, re-uploaded every
+    // frame by updateInstanceSimulation() - byte-identical to
+    // InstanceData's layout, so it can be bound directly as the instance
+    // buffer with no new buffer or compute/descriptor changes). Runs in
+    // its own render pass (context->shadowRenderPass()/shadowFramebuffer()),
+    // wrapped explicitly in drawFrame() below - not inside the main
+    // color+depth render pass.
+    // =====================================================
+    int shadowPass = graph->addPass(RGPass{
+        "ShadowPass",
+        {},
+        [this](VkCommandBuffer cmd)
+        {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->shadowPipeline().get());
+
+            glm::mat4 lightVP = context->lightViewProj();
+            vkCmdPushConstants(
+                cmd, context->shadowPipeline().layout(), VK_SHADER_STAGE_VERTEX_BIT,
+                0, sizeof(glm::mat4), &lightVP
+            );
+
+            context->lod(0).vertexBuffer.bind(cmd);
+            context->lod(0).indexBuffer.bind(cmd);
+
+            VkBuffer instanceBuf = context->objectBuffer().get();
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &offset);
+
+            vkCmdDrawIndexed(
+                cmd, context->lod(0).indexBuffer.indexCount(),
+                VulkanContext::OBJECT_COUNT, 0, 0, 0
+            );
+
+            if (context->projectile().isActive())
+            {
+                context->lod(2).vertexBuffer.bind(cmd);
+                context->lod(2).indexBuffer.bind(cmd);
+
+                VkBuffer projInstanceBuf = context->projectileInstanceBuffer().get();
+                VkDeviceSize projOffset = 0;
+                vkCmdBindVertexBuffers(cmd, 1, 1, &projInstanceBuf, &projOffset);
+
+                vkCmdDrawIndexed(cmd, context->lod(2).indexBuffer.indexCount(), 1, 0, 0, 0);
+            }
+        },
+        PassStage::Shadow
+    });
+
+    // =====================================================
     // Pass 0: Geometry
     // =====================================================
     int geometryPass = graph->addPass(RGPass{
         "GeometryPass",
-        {cullingPass},
+        {cullingPass, shadowPass},
         [this](VkCommandBuffer cmd)
         {
             // update MVP each frame
@@ -101,6 +154,8 @@ void FrameRenderer::init(VulkanContext& ctx)
             scene.lightDirection = glm::vec4(glm::normalize(context->lightDirection()), 0.0f);
             scene.lightColor     = glm::vec4(context->lightColor(), context->lightIntensity());
             scene.cameraPos      = glm::vec4(context->camera().position(), 1.0f);
+            scene.lightViewProj  = context->lightViewProj();
+            scene.shadowParams   = glm::vec4(context->shadowBias(), 0.0f, 0.0f, 0.0f);
             context->sceneDataBuffer().upload(context->device().get(), &scene, sizeof(SceneData));
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
@@ -255,6 +310,18 @@ void FrameRenderer::init(VulkanContext& ctx)
             float lightIntensity = context->lightIntensity();
             if (ImGui::SliderFloat("Intensity", &lightIntensity, 0.0f, 10.0f))
                 context->setLightIntensity(lightIntensity);
+
+            float shadowBias = context->shadowBias();
+            if (ImGui::SliderFloat("Shadow Bias", &shadowBias, 0.0001f, 0.02f, "%.4f"))
+                context->setShadowBias(shadowBias);
+            ImGui::End();
+
+            // Milestone 1 verification: the grid's silhouette (from the
+            // light's point of view) should be visible here and rotate
+            // with the Direction slider above, before any shading code
+            // depends on the shadow map (see docs/TECHNICAL_NOTES.md).
+            ImGui::Begin("Shadow Map");
+            ImGui::Image((ImTextureID)(intptr_t)shadowMapDebugSet_, ImVec2(256.0f, 256.0f));
             ImGui::End();
 
             context->imguiLayer().render(cmd);
@@ -266,6 +333,12 @@ void FrameRenderer::init(VulkanContext& ctx)
     // Build DAG
     // =====================================================
     graph->build();
+
+    // Debug-only: register the shadow map with ImGui so the "Shadow Map"
+    // window (ImGuiPass, above) can preview it - Milestone 1's
+    // verification step, before any shading code samples it.
+    shadowMapDebugSet_ = ImGui_ImplVulkan_AddTexture(
+        context->shadowMap().view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     std::cout << "[FrameRenderer] initialized (FrameGraph Stage B)\n";
 }
@@ -330,6 +403,53 @@ void FrameRenderer::drawFrame()
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
         0, 1, &barrier, 0, nullptr, 0, nullptr
+    );
+
+    // ===== Shadow：its own render pass, fixed-size shadow map target =====
+    auto& shadowMap = context->shadowMap();
+
+    VkClearValue shadowClear{};
+    shadowClear.depthStencil = { 1.0f, 0 };
+
+    VkRenderPassBeginInfo shadowRp{};
+    shadowRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    shadowRp.renderPass = context->shadowRenderPass().get();
+    shadowRp.framebuffer = context->shadowFramebuffer().get()[0];
+    shadowRp.renderArea.offset = {0, 0};
+    shadowRp.renderArea.extent = shadowMap.extent();
+    shadowRp.clearValueCount = 1;
+    shadowRp.pClearValues = &shadowClear;
+
+    vkCmdBeginRenderPass(frame.commandBuffer, &shadowRp, VK_SUBPASS_CONTENTS_INLINE);
+    graph->executeShadow(frame.commandBuffer);
+    vkCmdEndRenderPass(frame.commandBuffer);
+
+    // Barrier: the shadow pass's depth write must finish (and become
+    // visible) before the main render pass's fragment shader samples it
+    // (ImGui's debug preview this milestone; the geometry pass itself
+    // from Milestone 2 onward). The render pass's finalLayout already
+    // transitions the image to SHADER_READ_ONLY_OPTIMAL - this barrier
+    // only orders the memory access, it isn't a layout transition.
+    VkImageMemoryBarrier shadowBarrier{};
+    shadowBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    shadowBarrier.oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    shadowBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    shadowBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    shadowBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    shadowBarrier.image             = shadowMap.image();
+    shadowBarrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+    shadowBarrier.subresourceRange.baseMipLevel   = 0;
+    shadowBarrier.subresourceRange.levelCount     = 1;
+    shadowBarrier.subresourceRange.baseArrayLayer = 0;
+    shadowBarrier.subresourceRange.layerCount     = 1;
+    shadowBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    shadowBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        frame.commandBuffer,
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &shadowBarrier
     );
 
     // ===== Graphics：inside RenderPass =====

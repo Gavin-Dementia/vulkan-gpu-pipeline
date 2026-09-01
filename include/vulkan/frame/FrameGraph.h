@@ -11,6 +11,7 @@ class VulkanContext;
 enum class PassStage
 {
     Compute,
+    Shadow,
     Graphics
 };
 
@@ -35,7 +36,8 @@ public:
     void build();   // build DAG order
 
     void executeCompute(VkCommandBuffer cmd);   // 在RenderPass外执行
-    void executeGraphics(VkCommandBuffer cmd);  // 在RenderPass内执行
+    void executeShadow(VkCommandBuffer cmd);    // 在shadow RenderPass内执行
+    void executeGraphics(VkCommandBuffer cmd);  // 在主RenderPass内执行
 
 private:
     VulkanContext* context = nullptr;

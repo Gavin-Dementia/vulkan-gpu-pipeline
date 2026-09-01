@@ -67,6 +67,16 @@ void FrameGraph::executeCompute(VkCommandBuffer cmd)
     }
 }
 
+void FrameGraph::executeShadow(VkCommandBuffer cmd)
+{
+    for (int idx : executionOrder)
+    {
+        auto& pass = passes[idx];
+        if (pass.stage == PassStage::Shadow && pass.execute)
+            pass.execute(cmd);
+    }
+}
+
 void FrameGraph::executeGraphics(VkCommandBuffer cmd)
 {
     for (int idx : executionOrder)

@@ -29,6 +29,11 @@ private:
 
     uint32_t currentFrame = 0;
 
+    // Debug-only: shadow map registered with ImGui so its "Shadow Map"
+    // window can preview the light-space depth image (Milestone 1 -
+    // verifies the shadow pass before any shading code depends on it).
+    VkDescriptorSet shadowMapDebugSet_ = VK_NULL_HANDLE;
+
 private:
     void createSyncObjects();
     void createCommandBuffers();

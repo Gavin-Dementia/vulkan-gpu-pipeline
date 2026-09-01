@@ -9,8 +9,15 @@ public:
     void create(VkDevice device,
                 VkRenderPass renderPass,
                 const std::vector<VkImageView>& imageViews,
-                VkImageView depthView, 
+                VkImageView depthView,
                 VkExtent2D extent);
+
+    // Single fixed-size framebuffer with one depth attachment - for the
+    // shadow map, which isn't swapchain-sized and has no color attachment.
+    void createDepthOnly(VkDevice device,
+                          VkRenderPass renderPass,
+                          VkImageView depthView,
+                          VkExtent2D extent);
 
     void destroy(VkDevice device);
 

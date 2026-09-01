@@ -1,15 +1,19 @@
 #pragma once
 #include <glm/glm.hpp>
 
-// std140 layout: every member is vec4 (16-byte aligned, 16-byte sized),
-// so GLM's natural alignment already satisfies std140 with zero padding.
+// std140 layout: vec4s are 16-byte aligned/sized and mat4 is a natural
+// 16-byte-aligned block of 4 vec4 columns, so GLM's layout already
+// satisfies std140 with zero padding - no manual alignment needed even
+// with the vec4/mat4/vec4 mix below.
 struct SceneData
 {
     glm::vec4 lightDirection; // xyz = direction light travels, w unused
     glm::vec4 lightColor;     // rgb = color, a = intensity
     glm::vec4 cameraPos;      // xyz = world-space camera position, w unused
+    glm::mat4 lightViewProj;  // directional light's orthographic view-proj, for shadow sampling
+    glm::vec4 shadowParams;   // x = shadow bias, yzw unused - runtime-tunable via ImGui
 };
-static_assert(sizeof(SceneData) == 48, "SceneData must be 48 bytes (3 x vec4) to match std140 GLSL layout");
+static_assert(sizeof(SceneData) == 128, "SceneData must be 128 bytes (4 x vec4 + mat4) to match std140 GLSL layout");
 
 // Push constant blocks follow Vulkan's extended alignment rules (effectively
 // std430); since every member here is already vec4, std140 and std430 agree

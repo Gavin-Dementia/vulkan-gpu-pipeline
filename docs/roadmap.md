@@ -241,6 +241,66 @@ the per-object-descriptor-set pattern this milestone already proved out.
 
 ---
 
+## Phase 9 — Shadow Mapping
+
+**Status: Complete**
+
+First physical light-occlusion step: classic shadow mapping for the
+existing single directional light, chosen over an analytic
+ray-sphere-occlusion alternative that would have reused `culling.comp`'s
+bounding spheres but given geometrically-wrong (blobby) shadow edges —
+see `TECHNICAL_NOTES.md` §22.
+
+Milestone 1 — shadow render target + depth-only pass — implemented:
+- `VulkanShadowMap` (fixed 2048×2048, sampled `D32_SFLOAT`), depth-only
+  variants of `VulkanRenderPass`/`VulkanFramebuffer`, and a new
+  `VulkanShadowPipeline` (vertex-only, one push-constant `mat4`)
+- `FrameGraph` gained a third pass stage, `PassStage::Shadow` /
+  `executeShadow()`, alongside `Compute`/`Graphics` — mirrors how
+  `executeCompute()` already runs outside the main render pass with its
+  own explicit wrapper in `FrameRenderer::drawFrame()`
+- `ShadowPass` draws all 343 grid instances unculled (no light-frustum
+  culling needed at this instance count) by binding `objectBuffer_`
+  directly as the instance buffer — no new buffer, since it already
+  holds `vec4(position, radius)` per instance every frame, byte-identical
+  to `InstanceData`'s layout
+- Verified via a temporary "Shadow Map" ImGui debug window
+  (`ImGui_ImplVulkan_AddTexture`) before any shading code depended on it
+
+Milestone 2 — sample the shadow map in shading — implemented:
+- `SceneData` gained `lightViewProj`; `triangle.vert` now also reads
+  binding 2 (previously fragment-only) to output `fragLightSpacePos`
+- `VulkanDescriptor` gained binding 3 (shadow map combined-image-sampler)
+  on both `descriptor_` and `projectileDescriptor_`
+- `triangle.frag`'s `calcShadow()` multiplies only the direct `Lo` term —
+  the flat ambient term stays unshadowed
+
+Milestone 3 — PCF softening + tunable bias — implemented:
+- `SceneData.shadowParams.x` (base bias) exposed as an ImGui slider in
+  the existing "Lighting" window
+- 3×3 PCF in `calcShadow()`, fixing the pixel-level shadow acne seen on
+  directly-lit surfaces (most visible on the grid's top layer, which has
+  the least self-occlusion to mask it) in Milestone 2
+
+Two real bugs surfaced and fixed along the way (both in
+`TECHNICAL_NOTES.md` §22): `objectBuffer_` was missing
+`VK_BUFFER_USAGE_VERTEX_BUFFER_BIT` before it could be reused as an
+instance buffer, and the light's orthographic matrix needed
+`glm::orthoRH_ZO()` instead of `glm::ortho()` — this project's default
+GLM depth convention is silently harmless for `Camera`'s perspective
+matrix but was clipping away the near half of the light's frustum
+outright for an orthographic one.
+
+Not yet done: light-frustum culling for the shadow pass (draws all
+instances unculled every frame — fine at 343 instances); `lightViewProj()`'s
+`kSceneRadius` is a fixed constant, not re-derived from the live scatter
+state, so an instance blasted far enough away could stop casting a
+shadow; the PCF tap-count/normalization has an open question flagged in
+`TECHNICAL_NOTES.md` (§22 / Open items) from a manual edit made during
+visual tuning.
+
+---
+
 ## Open / not yet started
 
 - **Texture-based PBR materials** (Phase 8, milestone 2) — albedo/
@@ -254,7 +314,8 @@ the per-object-descriptor-set pattern this milestone already proved out.
   on contact with each other rather than deflecting, fine for "no
   clipping" but not a physically realistic collision
 - **IBL / environment lighting** — current ambient term is a flat
-  `0.03 * albedo` constant; no shadows either
+  `0.03 * albedo` constant (shadow mapping for the direct term is now
+  implemented — see Phase 9)
 - **Texture sampling reunited with the primary mesh** — implemented and
   validated in isolation (§13), but the Suzanne LOD chain still has no
   texcoord data on any of its 3 variants

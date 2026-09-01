@@ -38,12 +38,18 @@ Application                     — input polling, deltaTime, world-sim tick
             └── FrameGraph (DAG, Kahn's algorithm)
                 ├── GPUCullingPass   [Compute stage] — frustum test +
                 │                     distance-based LOD fan-out
+                ├── ShadowPass       [Shadow stage, own render pass +
+                │                     fixed-resolution framebuffer] —
+                │                     depth-only draw of all instances
+                │                     from the light's point of view
                 ├── GeometryPass     [Graphics stage, depends on
-                │                     CullingPass] — per-draw material
-                │                     push constant + 3 indirect draws
-                │                     (grid LODs) + 1 direct draw
-                │                     (projectile, if active)
-                └── ImGuiPass        stats overlay + live lighting sliders
+                │                     CullingPass + ShadowPass] — per-draw
+                │                     material push constant + 3 indirect
+                │                     draws (grid LODs) + 1 direct draw
+                │                     (projectile, if active), sampling
+                │                     the shadow map for occlusion
+                └── ImGuiPass        stats overlay + live lighting/shadow
+                                      sliders + shadow map debug preview
 ```
 
 > The 3-LOD fan-out (one `{visible-instance, indirect draw}` pair per
@@ -88,7 +94,12 @@ before this split — see `TECHNICAL_NOTES.md` §11):
   for the mouse-fired projectile — see `TECHNICAL_NOTES.md` §17 for why
   it can't share the grid's UBO — and a shared `sceneDataBuffer_`
   (light + camera data, `TECHNICAL_NOTES.md` §19) created *before* both
-  descriptor sets, since both reference it at binding 2
+  descriptor sets, since both reference it at binding 2. Also creates the
+  shadow map's image/view/sampler (`shadowMap_`, before both descriptor
+  sets, which bind it at binding 3) and, after the main pipeline/
+  framebuffer, its depth-only render pass, fixed-resolution framebuffer,
+  and pipeline (`shadowRenderPass_`/`shadowFramebuffer_`/
+  `shadowPipeline_`) — see "Shadow mapping" below
 - `initSceneData()` — OBJ mesh loading + deduplication for 3 LOD meshes
   (`suzanne.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`), vertex/index
   buffer upload per LOD, 7×7×7 instance grid generation, plus a 1-entry
@@ -168,8 +179,58 @@ for why:
   descriptor set.
 
 Tunable at runtime via an ImGui "Lighting" window (direction/color/
-intensity sliders) — `FrameRenderer`'s `ImGuiPass` lambda mutates
-`VulkanContext`'s light state directly.
+intensity/shadow-bias sliders) — `FrameRenderer`'s `ImGuiPass` lambda
+mutates `VulkanContext`'s light state directly.
+
+### Shadow mapping
+
+Classic shadow mapping for the single directional light — see
+`TECHNICAL_NOTES.md` §22 for why this was chosen over an analytic
+ray-sphere-occlusion alternative that would have reused `culling.comp`'s
+existing bounding spheres.
+
+- `VulkanShadowMap` — a fixed-resolution (2048×2048), sampled
+  (`D32_SFLOAT`) depth image/view/sampler, independent of swapchain size
+  since it's rendered from the light's point of view, not the camera's.
+  Unlike `VulkanDepthBuffer` (the swapchain's own depth attachment, never
+  sampled), this one is read by the main fragment shader.
+- `VulkanRenderPass::createDepthOnly()` / `VulkanFramebuffer::
+  createDepthOnly()` — depth-only variants (no color attachment, single
+  fixed-size framebuffer rather than one per swapchain image) alongside
+  the existing swapchain-oriented `create()` methods.
+- `VulkanShadowPipeline` — a sibling to `VulkanPipeline`/
+  `VulkanComputePipeline` (a new `FrameGraph` stage getting its own
+  pipeline class is an established pattern here, from when compute
+  culling was added). Vertex-only (no fragment stage, no color blend
+  attachment), one push-constant `mat4` (the light's view-projection).
+- `FrameGraph::PassStage::Shadow` / `executeShadow()` — a third pass
+  stage alongside `Compute`/`Graphics`, mirroring how `executeCompute()`
+  already runs outside the main render pass with its own explicit
+  wrapper in `FrameRenderer::drawFrame()` rather than trying to make one
+  `RGPass` carry per-pass render-pass/framebuffer state.
+- `VulkanContext::lightViewProj()` — the light's orthographic
+  view-projection, single-sourced the same way `Camera::
+  getProjectionMatrix()` is: eye placed opposite the light direction at a
+  fixed `kSceneRadius`-derived distance, looking at the origin, with a
+  degenerate-`lookAt` guard (falls back to a different up-axis when the
+  light points nearly straight down). Uses `glm::orthoRH_ZO()`, not
+  `glm::ortho()` — see `TECHNICAL_NOTES.md` §22 for why the default GLM
+  depth convention is silently wrong specifically for an orthographic
+  matrix in this codebase (it's not `GLM_FORCE_DEPTH_ZERO_TO_ONE`, so
+  `Camera`'s own perspective matrix has the same underlying mismatch, but
+  gets away with it).
+- `ShadowPass` (`FrameRenderer.cpp`) — draws all `OBJECT_COUNT` grid
+  instances unculled (no light-frustum culling at this instance count)
+  plus the projectile if active, binding `objectBuffer_` directly as the
+  per-instance vertex input: it already holds `vec4(position, radius)`
+  per instance, re-uploaded every frame by `updateInstanceSimulation()`,
+  byte-identical to `InstanceData`'s layout — no new buffer needed.
+- `SceneData` gained `lightViewProj` (read by `triangle.vert`, which now
+  also binds binding 2, previously fragment-only) and `shadowParams.x`
+  (base shadow bias, ImGui-tunable). `triangle.frag` samples the shadow
+  map (binding 3 on the graphics descriptor set) with a slope-scaled bias
+  and 3×3 PCF, multiplying only the direct `Lo` term — the flat ambient
+  term stays unshadowed.
 
 ### FrameRenderer
 
@@ -286,7 +347,10 @@ Application
     ├── VulkanRenderPass
     ├── VulkanPipeline (graphics)
     ├── VulkanComputePipeline
-    ├── VulkanDescriptor (graphics, 3 bindings: UBO / combined-image-sampler / SceneData)
+    ├── VulkanShadowMap / VulkanRenderPass (depth-only) / VulkanFramebuffer
+    │     (depth-only) / VulkanShadowPipeline (see "Shadow mapping" module notes)
+    ├── VulkanDescriptor (graphics, 4 bindings: UBO / combined-image-sampler /
+    │     SceneData / shadow-map combined-image-sampler)
     ├── ComputeDescriptor (compute, 8 bindings: object / 3×visible / 3×indirect / frustum)
     ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
     ├── ObjectBuffer (shared, 343 entries, re-uploaded every frame) / FrustumBuffer
@@ -294,8 +358,9 @@ Application
     │     (rest formation / live scatter state, all 343 entries — see
     │      "Grid collision + scatter" module notes)
     ├── VulkanTexture
-    ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos —
-    │     bound at binding 2 on both descriptor_ and projectileDescriptor_)
+    ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos,
+    │     lightViewProj, shadow bias — bound at binding 2 on both descriptor_ and
+    │     projectileDescriptor_, now also read by the vertex stage)
     ├── Projectile (plain C++, position/direction/speed/lifetime)
     ├── projectileUniformBuffer_ / projectileDescriptor_ / projectileInstanceBuffer_
     │     (own UBO+descriptor+1-entry instance buffer — reuses lods_[2]'s mesh)
@@ -303,7 +368,10 @@ Application
         └── FrameRenderer
             └── FrameGraph
                 ├── GPUCullingPass (Compute) — frustum test + LOD fan-out
-                └── GeometryPass (Graphics) — per-draw push constant
+                ├── ShadowPass (Shadow) — depth-only, all instances unculled,
+                │                          objectBuffer_ reused as instance buffer
+                └── GeometryPass (Graphics, reads CullingPass + ShadowPass) —
+                                              per-draw push constant
                                               (MaterialPushConstants: albedo/metallic/roughness)
                                               + 3× vkCmdDrawIndexedIndirect
                                               + 1× vkCmdDrawIndexed (projectile, if active)
@@ -352,16 +420,29 @@ Compute: GPUCullingPass
         │
 Memory Barrier (SHADER_WRITE → VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ)
         │
+Begin Shadow Render Pass (own framebuffer, fixed 2048×2048 resolution)
+        │
+Shadow: ShadowPass
+   push lightViewProj → bind LOD0 vertex/index buffers + objectBuffer_
+   (as instance buffer) → vkCmdDrawIndexed, instanceCount = OBJECT_COUNT →
+   if projectile active: bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
+        │
+End Shadow Render Pass
+        │
+Image Memory Barrier (LATE_FRAGMENT_TESTS write → FRAGMENT_SHADER read)
+        │
 Begin Render Pass
         │
 Graphics: GeometryPass
-   upload SceneData (light + camera) → push grid material constants →
-   for each LOD: bind vertex/index/visible-instance buffers,
-   vkCmdDrawIndexedIndirect (GPU-supplied instance count) →
+   upload SceneData (light + camera + lightViewProj + shadow bias) →
+   push grid material constants → for each LOD: bind vertex/index/
+   visible-instance buffers, vkCmdDrawIndexedIndirect (GPU-supplied
+   instance count, fragment shader samples the shadow map for occlusion) →
    if projectile active: push its own material constants,
    bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
         │
-Graphics: ImGuiPass — stats overlay + live lighting sliders
+Graphics: ImGuiPass — stats overlay + live lighting/shadow sliders +
+   shadow map debug preview
         │
 End Render Pass
         │
