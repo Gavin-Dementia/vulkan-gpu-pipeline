@@ -24,13 +24,17 @@ Application
 └── VulkanContext
     ├── initCore()              instance → device → swapchain → depth →
     │                            renderpass → pipeline → framebuffer
-    ├── initSceneData()         OBJ load, vertex/index buffer, instance grid
-    └── initCullingResources()  object buffer, visible-instance buffer,
-                                 indirect draw buffer, compute descriptor/pipeline
+    ├── initSceneData()         3× OBJ load (LOD0/1/2), vertex/index
+    │                            buffer per LOD, 7×7×7 instance grid
+    └── initCullingResources()  shared object buffer, 3× {visible-
+                                 instance buffer, indirect draw buffer}
+                                 (one pair per LOD — see §15), frustum
+                                 uniform buffer, compute descriptor/pipeline
         └── FrameRenderer
             └── FrameGraph (DAG)
-                ├── GPUCullingPass   [Compute]
+                ├── GPUCullingPass   [Compute] — frustum test + LOD fan-out
                 └── GeometryPass     [Graphics, depends on CullingPass]
+                                      — 1 indexed-indirect draw per LOD
 ```
 
 The split into `initCore` / `initSceneData` / `initCullingResources` was a
@@ -454,6 +458,58 @@ just something to debug into existence after a warning appears.
  
 ---
 
+### 15. LOD pivot: from a single culling output to 3 parallel per-LOD compaction sets
+
+**Decision:** The culling pipeline described in §7 originally had exactly
+one `(VisibleInstanceBuffer, IndirectDrawBuffer)` pair, fed by one mesh.
+This was extended to 3 parallel pairs — `VisibleLOD0/1/2` +
+`IndirectLOD0/1/2` — with `culling.comp` bucketing each passing instance
+into one of the three based on camera distance (`LOD1_DIST = 12.0`,
+`LOD2_DIST = 20.0`, hardcoded in-shader) before doing the same
+`atomicAdd`-based compaction into that bucket's own buffer. `ObjectBuffer`
+itself stayed a single shared 343-entry array — LOD is a per-frame
+*selection* over one set of instances, not a duplicated object per LOD.
+
+**Why 3 full parallel sets instead of 1 buffer with a per-instance LOD
+tag:** A single `VisibleInstanceBuffer` can only feed one
+`vkCmdDrawIndexedIndirect` call, which binds exactly one vertex/index
+buffer pair — but each LOD is a *different mesh* (different vertex/index
+buffer, e.g. Suzanne: 507 vertices at LOD0, 165 at LOD1, 34 at LOD2).
+There's no way to draw "some instances with mesh A, others with mesh B"
+in a single indirect draw call, so 3 draw calls — one per LOD mesh —
+were unavoidable, and each needs its own instance-count/instance-data
+pair to know how many and which instances to draw with that mesh.
+
+**Structural consequences:**
+- `ComputeDescriptor` grew from 4 bindings (object / visible / indirect /
+  frustum) to 8 (object / 3×visible / 3×indirect / frustum) —
+  `ComputeDescriptor::create()`'s signature took `std::array<VkBuffer,3>`
+  for both the visible-instance and indirect-draw buffers.
+- `VulkanContext::LODMesh` groups `{VertexBuffer, IndexBuffer,
+  VisibleInstanceBuffer, IndirectDrawBuffer}` per LOD, replacing the
+  single top-level members those used to be.
+- `FrameRenderer::drawFrame()`'s per-frame reset (§7's "must reset every
+  frame" rule) now loops 3 times, and `GeometryPass` issues 3
+  `vkCmdDrawIndexedIndirect` calls instead of 1 — one full bind+draw per
+  LOD, every frame, regardless of how many instances actually land in
+  that LOD's bucket that frame (an empty bucket still costs a draw call
+  with `instanceCount = 0`).
+
+**Known simplification carried over from this pivot:** The LOD distance
+thresholds are constants baked into `culling.comp`, not derived from
+each mesh's actual detail level, screen-space size, or exposed as a
+tunable — the same category of hardcoded-magic-number tradeoff as the
+`1.5f` bounding-sphere radius in `initCullingResources()`.
+
+**Interview-relevant:** *"Why not just add an `lod` field to the
+instance and branch in the vertex shader?"* — because indirect draw
+parameters (which vertex/index buffer, how many instances) are decided
+at `vkCmdDrawIndexedIndirect` record/dispatch time, not per-vertex in the
+shader; the mesh itself differs per LOD, so the branch has to happen
+before the draw call is issued, not inside one.
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |
@@ -482,22 +538,31 @@ just something to debug into existence after a warning appears.
   computed from the actual mesh bounds. Fine for a single mesh type at
   uniform scale; would need to be computed per-mesh for a scene with
   varied geometry.
-- **No LOD (level of detail) system yet.** Culling currently only answers
-  "draw or don't" — the natural next step is a distance-based LOD
-  selection, reusing the same compute-pass infrastructure (the object
-  buffer already has per-instance position data; LOD just needs a
-  distance-to-camera bucket and a per-LOD index buffer).
+- **LOD is implemented** (§15) as 3 hardcoded distance buckets
+  (`LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`), not derived from mesh detail
+  level or screen-space projected size, and not exposed as a tunable.
+  A bucket with 0 instances this frame still costs a full
+  `vkCmdDrawIndexedIndirect` call — fine at 3 LOD levels, would need
+  revisiting (e.g. skip empty buckets, or a 4th "culled entirely" bucket
+  merge) if the LOD count grows.
 - **Single compute dispatch covers all 343 instances** with no
   multi-pass culling hierarchy (e.g. coarse cell-based culling before
   per-object testing). Acceptable at this instance count; would need
   revisiting at much higher instance counts where the linear scan itself
   becomes the bottleneck.
-- **Texture sampling is implemented and validated** (#13), but currently
-  rendering a hand-written `textured_cube.obj` rather than Suzanne —
-  `suzanne.obj` has no texcoord data (confirmed: 507/507 vertices with
-  `uv == (0,0)`, see bugs table). Next step is either sourcing/exporting
-  a Suzanne variant with UVs, or generating one in Blender, to bring
-  the textured pipeline back to the primary demo mesh.
+- **Texture sampling is implemented and validated** (#13) — the
+  descriptor, sampler, and fragment shader (`texture(texSampler,
+  fragUV)`) are all wired up and bound — but the primary demo mesh
+  (`suzanne.obj`, all 3 LOD variants) still has no texcoord data
+  (confirmed: 507/507 LOD0 vertices with `uv == (0,0)`; still true as of
+  the LOD pivot — `suzanne_lod1.obj`/`suzanne_lod2.obj` inherited the
+  same gap). The earlier workaround of switching to a hand-written
+  `textured_cube.obj` (see bugs table) is no longer wired into
+  `initSceneData()` at all — the LOD loader only loads the 3 Suzanne
+  variants — so the running app currently renders Suzanne sampling a
+  single constant texel (`fragUV == (0,0)` everywhere) rather than a
+  properly mapped texture. Fixing this needs either a UV-mapped Suzanne
+  LOD chain or restoring a textured asset into the LOD array.
 
 ---
 

@@ -129,19 +129,48 @@ moves).
 
 ---
 
+## Phase 6 — GPU-Driven LOD
+
+**Status: Complete**
+
+Originally planned (as a Phase 5 follow-on): distance-based LOD
+selection reusing the existing compute-pass infrastructure.
+
+Actually implemented:
+- 3 LOD mesh variants (`suzanne.obj` / `suzanne_lod1.obj` /
+  `suzanne_lod2.obj`, 507 / 165 / 34 unique vertices)
+- `culling.comp` extended to bucket each frustum-passing instance into
+  one of 3 distance ranges (`< 12.0`, `< 20.0`, `>= 20.0`), each with its
+  own atomic-compaction output pair (`VisibleLODN`, `IndirectLODN`) —
+  see `TECHNICAL_NOTES.md` §15 for why this needed 3 full parallel sets
+  rather than one buffer with a per-instance LOD tag
+- `ComputeDescriptor` grew from 4 to 8 bindings; `GeometryPass` now
+  issues 3 `vkCmdDrawIndexedIndirect` calls per frame, one per LOD mesh
+- ImGui overlay extended to show LOD0/1/2 visible counts individually
+
+Not yet done: LOD distance thresholds are hardcoded constants, not
+derived from mesh detail or screen-space size; texture sampling still
+isn't reunited with the (still UV-less) Suzanne LOD chain.
+
+Milestone reached: instances visibly swap mesh detail level as the
+camera moves toward/away from them (see `docs/assets/lod_demo_01.gif`).
+
+---
+
 ## Open / not yet started
 
-- **Texture sampling** — deprioritized in favor of finishing the
-  GPU-driven culling core first
-- **LOD (level of detail)** — natural extension of the existing compute
-  pass; object buffer already has per-instance distance-computable data
+- **Texture sampling** — implemented and validated in isolation (§13),
+  but not yet reunited with the primary Suzanne LOD chain, which has no
+  texcoord data on any of its 3 variants
 - **Performance instrumentation** — GPU timestamp queries to quantify
-  culling's actual frame-time impact (currently demonstrated
-  functionally, not yet measured numerically)
+  culling's (and now LOD selection's) actual frame-time impact
+  (currently demonstrated functionally, not yet measured numerically)
 - **PBR material model**
 - **Multi-pass / hierarchical culling** — current design is a flat
   343-thread scan; fine at this scale, would need a coarser first pass
   at much higher instance counts
+- **LOD distance thresholds as data, not shader constants** — would let
+  LOD ranges be tuned per mesh/scene without a shader recompile
 
 ---
 
@@ -149,7 +178,8 @@ moves).
 
 - Modern Vulkan architecture (in progress, core patterns established)
 - GPU-driven rendering research direction (demonstrated with working
-  culling pipeline; candidate next steps: LOD, neural-rendering hybrid
-  approaches under consideration for graduate study direction)
+  culling + LOD pipeline; candidate next steps: hierarchical/multi-pass
+  culling, neural-rendering hybrid approaches under consideration for
+  graduate study direction)
 - Foundation for future rendering experiments
 
