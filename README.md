@@ -37,6 +37,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Grid Collision + Scatter (mutual instance collision) | ✅ |
 | PBR Lighting (Cook-Torrance BRDF) | ✅ |
 | Shadow Mapping (depth-only pass, 3×3 PCF) | ✅ |
+| GPU Timestamp Performance Instrumentation | ✅ |
 | Texture-based PBR Materials | ⏳ planned |
 
 ---
@@ -178,7 +179,7 @@ The Vulkan SDK must be installed on the system. All other dependencies are bundl
 | Left click | Fire the projectile at the grid |
 | `R` | Reset the grid to its original formation |
 | `T` | Pause / resume the grid's spin |
-| Hold `Ctrl` | Reveal the cursor to interact with the ImGui windows (stats overlay, lighting sliders) |
+| Hold `Ctrl` | Reveal the cursor to interact with the ImGui windows (stats overlay, lighting/shadow-bias sliders, shadow map debug preview) |
 | `Esc` | Quit |
 
 ---
