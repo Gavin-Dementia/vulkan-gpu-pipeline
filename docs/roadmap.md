@@ -351,10 +351,18 @@ silently produced a near plane that never culls anything, the same
 "silent, not loud" failure shape as the original ortho bug in Milestone 1
 above.
 
-Not yet done: `lightViewProj()`'s `kSceneRadius` is a fixed constant, not
-re-derived from the live scatter state, so an instance blasted far enough
-away would fail both the light-frustum cull and the ortho box's depth
-range, and simply stop casting a shadow.
+Milestone 5 — dynamic scene radius — implemented (`TECHNICAL_NOTES.md`
+§29): `lightViewProj()`'s `kSceneRadius` is no longer a fixed constant.
+It's now computed fresh every frame as the max distance of any grid
+instance from the origin plus `boundingSphereRadius_` margin, floored at
+`kMinSceneRadius = 24.0f` (the old constant, preserved as the rest-
+formation floor so nothing changes until a blast actually scatters the
+grid). A blasted instance now grows the light's frustum to match instead
+of silently falling outside it — and since Milestone 4's light-frustum
+culling reads `lightViewProj()` fresh every frame too, the dynamic sizing
+flows through to the culling test automatically, no extra wiring needed.
+The projectile's own position is deliberately excluded from the radius
+calculation (short-lived, single instance, not worth the coupling).
 
 ---
 

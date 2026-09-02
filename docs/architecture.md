@@ -255,7 +255,14 @@ existing bounding spheres.
 - `VulkanContext::lightViewProj()` — the light's orthographic
   view-projection, single-sourced the same way `Camera::
   getProjectionMatrix()` is: eye placed opposite the light direction at a
-  fixed `kSceneRadius`-derived distance, looking at the origin, with a
+  distance derived from a `sceneRadius` computed fresh every frame from
+  `instanceCurrentPositions_` (max distance from the origin, plus
+  `boundingSphereRadius_` margin, floored at `kMinSceneRadius = 24.0f` —
+  the grid's rest-formation coverage) rather than the fixed constant it
+  used to be, so a projectile blast (`updateInstanceSimulation()`'s
+  scatter) that pushes instances outward grows the light's frustum to
+  match instead of silently clipping them out of the shadow map — see
+  `TECHNICAL_NOTES.md` §29. Looks at the origin, with a
   degenerate-`lookAt` guard (falls back to a different up-axis when the
   light points nearly straight down). Uses `glm::orthoRH_ZO()`, not
   `glm::ortho()` — see `TECHNICAL_NOTES.md` §22 for why the default GLM

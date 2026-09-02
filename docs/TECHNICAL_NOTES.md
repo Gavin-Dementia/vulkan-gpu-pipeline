@@ -1518,6 +1518,84 @@ scoped to specific buffers — it already covers the two new buffers for
 free, since they're written by the same compute dispatch it was already
 ordering against the shadow pass's reads.
 
+### 29. `lightViewProj()`'s scene radius: fixed constant → derived from live scatter state
+
+`kSceneRadius` (`VulkanContext::lightViewProj()`) had been a hardcoded
+`24.0f` since shadow mapping was first implemented (§22) — sized to
+cover the 7×7×7 grid's rest-formation half-diagonal (~15.6 units) plus
+margin. The grid collision + scatter system (§20/§21) can permanently
+push instances outward via a projectile blast impulse — there's no
+automatic return to rest, only a manual **R**-key
+`resetInstanceFormation()`. A blast large enough to push instances past
+the fixed 24-unit box would silently clip them: they'd fall outside the
+ortho box's depth range in the shadow pass's fragment tests, *and*,
+since §28 added light-frustum culling using this same box, fail the
+light-frustum cull and never even get submitted to the shadow pass's
+draw call in the first place. Both known gaps, both closed by the same
+fix.
+
+**Fix: compute the radius from live state, every frame, inline inside
+`lightViewProj()`.** Kept as a self-contained `const` function reading
+existing members (`instanceCurrentPositions_`, `boundingSphereRadius_`)
+— no new state, same "single source of truth, no side channels" shape
+`Camera::getProjectionMatrix()` already uses:
+
+```cpp
+constexpr float kMinSceneRadius = 24.0f;   // the old constant, now a floor
+
+float maxDist = 0.0f;
+for (const auto& p : instanceCurrentPositions_)
+    maxDist = std::max(maxDist, glm::length(p));
+
+float sceneRadius = std::max(kMinSceneRadius, maxDist + boundingSphereRadius_);
+```
+
+`boundingSphereRadius_` margins the *mesh extent* of the outermost
+instance, not just its center point — same reasoning `objectBuffer_`'s
+per-instance bounding sphere already uses everywhere else. The floor
+means this is a true no-op in the rest-formation case: before any blast,
+`maxDist + boundingSphereRadius_` computes to the same value
+`kSceneRadius` used to be a constant at, so nothing visually changes
+until a blast actually happens.
+
+**Three design decisions made explicitly, not by default:**
+
+- **Recomputed fresh every frame, not smoothed or quantized.** A
+  per-frame-varying ortho box size changes the fixed 2048×2048 shadow
+  map's world-space-per-texel ratio, a known cause of shimmering shadow
+  edges ("shadow swimming") even on otherwise-static geometry. Accepted
+  as an explicit tradeoff for staying a simple, stateless function of
+  current positions — this project's existing precedent for "small
+  cosmetic aliasing artifact, not worth the complexity to fully solve"
+  is the shadow acne fix in §22 (bias + PCF, not a perfect solution
+  either). If it ever becomes visually bothersome, the fix would be
+  quantizing `sceneRadius` to a coarse step (e.g. round up to the
+  nearest few units) rather than a full temporal-stabilization scheme —
+  low effort, meaningfully reduces the frequency of resize-driven
+  shimmer without adding state.
+- **Grid instances only — the projectile is excluded.** Its own flight
+  path can carry it far outside the grid's footprint; including it would
+  make `sceneRadius` (and therefore shadow-map resolution density for
+  everything else) swing on a single short-lived, low-visual-priority
+  object. The tradeoff: the projectile's own shadow can get clipped
+  while it's far from the grid. Deliberate, not an oversight — see the
+  "Remaining gap" note in "Open items" below.
+- **Cost is a non-issue.** One O(343) scan per frame is the same order
+  of magnitude as the O(n²) mutual-collision pass
+  `updateInstanceSimulation()` already runs every frame (§21) — adding
+  it to a function already called once per frame from `GPUCullingPass`
+  and `GeometryPass` (§28) isn't a measurable regression.
+
+**No downstream wiring needed.** The light-frustum culling added in §28
+already calls `lightViewProj()` fresh every frame
+(`FrustumPlanes::extractFromMatrix(context->lightViewProj(), ...,
+/*zeroToOne=*/true)`) — the dynamically-sized frustum flows through to
+that culling test automatically, the same way it already flows through
+to the shadow pass's depth test and the `triangle.frag` shadow sample.
+One function change, three consumers updated for free — a direct payoff
+of `lightViewProj()` having stayed a pure, single-sourced function
+instead of accumulating separate per-consumer copies.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -1566,12 +1644,12 @@ ordering against the shadow pass's reads.
 - **Shadow mapping is implemented** (§22) for the single directional
   light — depth-only `ShadowPass`, 3×3 PCF, tunable bias, light-frustum
   culling as of §28 (GPU-culled indirect draw, same shared
-  `culling.comp` dispatch as the camera path). Still not derived from
-  the live scatter state: the fixed `kSceneRadius` constant in
-  `lightViewProj()`, so an instance blasted far enough outside it would
-  silently both fail the light-frustum cull *and* fall outside the
-  ortho box's depth range — it would simply stop casting a shadow
-  rather than rendering one from the wrong position.
+  `culling.comp` dispatch as the camera path), and a scatter-aware scene
+  radius as of §29 (`lightViewProj()`'s frustum size now grows with a
+  projectile blast instead of being a fixed constant). Remaining gap:
+  the scene-radius computation only considers grid instances, not the
+  projectile's own position (§29) — a deliberate, accepted omission, not
+  an oversight.
 - **LOD is implemented** (§15) as 3 distance buckets, runtime-tunable
   since §26 (default `LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`) but still
   not derived from mesh detail level or screen-space projected size - a

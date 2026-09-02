@@ -479,17 +479,37 @@ void VulkanContext::resetInstanceFormation()
 
 glm::mat4 VulkanContext::lightViewProj() const
 {
-    // Scene bounding radius: the 7x7x7 grid has a half-extent of
-    // (GRID_SIZE-1)*spacing*0.5 = 9.0 per axis (spacing=3.0, see
-    // initSceneData()), so a ~15.6-unit half-diagonal, plus per-instance
-    // bounding radius and blast-scatter drift margin. A hardcoded
-    // constant, same spirit as culling.comp's hardcoded LOD distance
-    // thresholds - not derived from the live scatter state.
-    constexpr float kSceneRadius = 24.0f;
+    // Scene bounding radius: derived from the live instance positions
+    // every frame instead of a fixed constant, so a projectile blast
+    // (§20/§21 - permanent scatter, no auto-return to rest) that pushes
+    // instances outward grows the light's frustum to match, rather than
+    // silently clipping them out of the shadow map (and, since §28 added
+    // light-frustum culling, out of the shadow pass's draw entirely).
+    // kMinSceneRadius is the floor this used to be a fixed constant at:
+    // the 7x7x7 grid's rest half-extent is (GRID_SIZE-1)*spacing*0.5 =
+    // 9.0 per axis (spacing=3.0, see initSceneData()), a ~15.6-unit
+    // half-diagonal, plus margin - so the rest-formation case (no blast
+    // yet) computes the exact same 24.0 this constant used to be, making
+    // this change a no-op until a blast actually happens. Recomputed
+    // fresh every frame (an O(343) scan, same order as the O(n^2)
+    // mutual-collision pass updateInstanceSimulation() already runs every
+    // frame) rather than smoothed/quantized - accepted minor shadow-map
+    // texel-density shift ("shadow swimming") in exchange for staying a
+    // simple, stateless function of current positions. Grid instances
+    // only; the projectile isn't included (short-lived, single instance,
+    // not worth the extra coupling if its shadow gets clipped while far
+    // outside the grid's footprint).
+    constexpr float kMinSceneRadius = 24.0f;
+
+    float maxDist = 0.0f;
+    for (const auto& p : instanceCurrentPositions_)
+        maxDist = std::max(maxDist, glm::length(p));
+
+    float sceneRadius = std::max(kMinSceneRadius, maxDist + boundingSphereRadius_);
 
     glm::vec3 dir = glm::normalize(lightDirection_);
     glm::vec3 center(0.0f);
-    glm::vec3 eye = center - dir * (kSceneRadius * 2.0f);
+    glm::vec3 eye = center - dir * (sceneRadius * 2.0f);
 
     // glm::lookAt degenerates when the view direction is parallel to the
     // up vector - the default light direction points mostly straight
@@ -511,9 +531,9 @@ glm::mat4 VulkanContext::lightViewProj() const
     // GLM_FORCE_DEPTH_ZERO_TO_ONE globally, so the explicit *_ZO variant
     // is used instead of changing GLM's project-wide default.
     glm::mat4 proj = glm::orthoRH_ZO(
-        -kSceneRadius, kSceneRadius,
-        -kSceneRadius, kSceneRadius,
-        0.1f, kSceneRadius * 4.0f
+        -sceneRadius, sceneRadius,
+        -sceneRadius, sceneRadius,
+        0.1f, sceneRadius * 4.0f
     );
     proj[1][1] *= -1;   // Vulkan Y-flip, same as Camera::getProjectionMatrix()
 
