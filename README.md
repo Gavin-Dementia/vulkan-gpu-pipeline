@@ -15,6 +15,14 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 
 ![Projectile Collision Demo](docs/assets/projectile_demo_01.gif)
 
+### Shadow mapping
+
+![Shadow mapping Demo](docs/assets/shadow_mapping_01.gif)
+
+### Texture PBR and GPU Timestamp Performance
+
+![Texture PBR Demo](docs/assets/tex_pbr_01.gif)
+
 ---
 
 ## Features
