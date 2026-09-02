@@ -178,6 +178,18 @@ The Vulkan SDK must be installed on the system. All other dependencies are bundl
 
 ---
 
+## Asset Credits
+
+- `assets/suzanne_pbr.obj` (LOD0's mesh as of Phase 8 milestone 2, texture-based
+  PBR materials) is a UV/normal-mapped re-export of Blender's Suzanne mascot
+  primitive, sourced from
+  [opengl-tutorials/ogl](https://github.com/opengl-tutorials/ogl/blob/master/tutorial17_rotations/suzanne.obj)
+  (`tutorial17_rotations/suzanne.obj`) — used because this project's own
+  `suzanne.obj`/LOD1/LOD2 meshes have no UV data. See
+  `docs/TECHNICAL_NOTES.md` §25 for why.
+
+---
+
 ## Controls
 
 | Input | Action |

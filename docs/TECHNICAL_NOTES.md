@@ -1241,14 +1241,16 @@ source file rather than assuming. Asked the user how to unblock this;
 directed to search GitHub rather than switch the demo mesh or hand-roll
 triplanar projection. Found `opengl-tutorials/ogl`'s `suzanne.obj` — the
 same base Blender monkey mesh, real `vt`/`vn` data, from the widely-used
-opengl-tutorial.org series. **Provenance caveat, stated plainly rather
-than papered over:** no explicit LICENSE file in that source repo.
+opengl-tutorial.org series. **Provenance, stated plainly rather than
+papered over:** no explicit LICENSE file exists in that source repo.
 Suzanne itself is Blender's own bundled default primitive, and
 unattributed re-exports of it are ubiquitous across the real-time
 graphics tutorial ecosystem (LearnOpenGL, Sascha Willems' Vulkan
 samples, this exact repo) — a strong convention, but not a documented
-grant, and worth the user's own judgment call before it sits in a public
-portfolio repo.
+grant. Put to the user directly; the resolution chosen was clear
+attribution rather than leaning on that convention silently — both
+`assets/suzanne_pbr.obj`'s own header comment and `README.md`'s "Asset
+Credits" section now name the exact source URL.
 
 **Scoping decision: only LOD0 gets the new mesh.** Generating matching
 UV-preserving LOD1/LOD2 decimations needs a 3D tool (Blender) not

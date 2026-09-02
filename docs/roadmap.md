@@ -260,12 +260,12 @@ Milestone 2 — texture-based materials — implemented:
   real UV data. LOD0 now loads `assets/suzanne_pbr.obj`, a UV/normal-
   mapped re-export of the same base mesh sourced from
   `opengl-tutorials/ogl` (asked the user, who directed a GitHub search
-  over switching demo assets or hand-rolling triplanar projection) —
-  **provenance caveat:** no explicit LICENSE file found in that source
-  repo; Suzanne is Blender's own bundled primitive and unattributed
-  re-exports are a long-standing convention across the graphics-tutorial
-  ecosystem, not a documented grant, worth the user's own call for a
-  public portfolio repo.
+  over switching demo assets or hand-rolling triplanar projection) — no
+  explicit LICENSE file exists in that source repo, so the user's chosen
+  resolution was clear attribution rather than treating the community
+  convention as a substitute for one: both the asset file itself and
+  `README.md`'s new "Asset Credits" section now name the exact source
+  URL.
 - **Known, explicitly accepted gap:** LOD1/LOD2 still use the original
   UV-less meshes (matching UV-preserving decimations need a 3D tool this
   environment doesn't have) — they render exactly as before, not a

@@ -1,5 +1,6 @@
 # Blender3D v249 OBJ File: suzanne.blend
 # www.blender3d.org
+# Sourced from https://github.com/opengl-tutorials/ogl (tutorial17_rotations/suzanne.obj) - UV/normal-mapped re-export of Blender's Suzanne primitive, used for Phase 8 milestone 2 (texture-based PBR materials) since the project's own suzanne.obj has no UV data.
 v 0.437500 0.164063 0.765625
 v -0.437500 0.164063 0.765625
 v 0.500000 0.093750 0.687500
