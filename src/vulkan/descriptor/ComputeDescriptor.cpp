@@ -8,21 +8,27 @@ void ComputeDescriptor::create(
     std::array<VkBuffer, 3> visibleInstanceBuffers,
     std::array<VkBuffer, 3> indirectDrawBuffers,
     VkBuffer frustumBuffer,
+    VkBuffer shadowVisibleInstanceBuffer,
+    VkBuffer shadowIndirectDrawBuffer,
+    VkBuffer lightFrustumBuffer,
     VkDeviceSize objectSize,
     VkDeviceSize visibleInstanceSize,  // single LOD size
     VkDeviceSize indirectDrawSize,
     VkDeviceSize frustumSize
 )
 {
-    // binding 0: objectBuffer        (STORAGE, read)
-    // binding 1: visibleLOD0         (STORAGE, write)
-    // binding 2: visibleLOD1         (STORAGE, write)
-    // binding 3: visibleLOD2         (STORAGE, write)
-    // binding 4: indirectLOD0        (STORAGE, read/write)
-    // binding 5: indirectLOD1        (STORAGE, read/write)
-    // binding 6: indirectLOD2        (STORAGE, read/write)
-    // binding 7: frustumUBO          (UNIFORM, read)
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    // binding 0:  objectBuffer        (STORAGE, read)
+    // binding 1:  visibleLOD0         (STORAGE, write)
+    // binding 2:  visibleLOD1         (STORAGE, write)
+    // binding 3:  visibleLOD2         (STORAGE, write)
+    // binding 4:  indirectLOD0        (STORAGE, read/write)
+    // binding 5:  indirectLOD1        (STORAGE, read/write)
+    // binding 6:  indirectLOD2        (STORAGE, read/write)
+    // binding 7:  frustumUBO          (UNIFORM, read)  - camera frustum
+    // binding 8:  shadowVisible       (STORAGE, write) - light-frustum-culled instances
+    // binding 9:  shadowIndirect      (STORAGE, read/write)
+    // binding 10: lightFrustumUBO     (UNIFORM, read)  - light frustum
+    std::array<VkDescriptorSetLayoutBinding, 11> bindings{};
     for(int i= 0; i < 7; i++)
     {
         bindings[i].binding         = i;
@@ -34,7 +40,20 @@ void ComputeDescriptor::create(
     bindings[7].binding         = 7;
     bindings[7].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[7].descriptorCount = 1;
-    bindings[7].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;    
+    bindings[7].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    for (int i = 8; i <= 9; i++)
+    {
+        bindings[i].binding         = i;
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+
+    bindings[10].binding         = 10;
+    bindings[10].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[10].descriptorCount = 1;
+    bindings[10].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -48,10 +67,10 @@ void ComputeDescriptor::create(
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
 
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 7;
+    poolSizes[0].descriptorCount = 9;
 
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = 1;   
+    poolSizes[1].descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -99,8 +118,23 @@ void ComputeDescriptor::create(
     frustInfo.offset = 0;
     frustInfo.range  = frustumSize;
 
+    VkDescriptorBufferInfo shadowVisInfo{};
+    shadowVisInfo.buffer = shadowVisibleInstanceBuffer;
+    shadowVisInfo.offset = 0;
+    shadowVisInfo.range  = visibleInstanceSize;
+
+    VkDescriptorBufferInfo shadowIndInfo{};
+    shadowIndInfo.buffer = shadowIndirectDrawBuffer;
+    shadowIndInfo.offset = 0;
+    shadowIndInfo.range  = indirectDrawSize;
+
+    VkDescriptorBufferInfo lightFrustInfo{};
+    lightFrustInfo.buffer = lightFrustumBuffer;
+    lightFrustInfo.offset = 0;
+    lightFrustInfo.range  = frustumSize;
+
     // ---- Writes ----
-    std::array<VkWriteDescriptorSet, 8> writes{};
+    std::array<VkWriteDescriptorSet, 11> writes{};
 
     // binding 0: objectBuffer
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -139,6 +173,30 @@ void ComputeDescriptor::create(
     writes[7].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[7].descriptorCount = 1;
     writes[7].pBufferInfo     = &frustInfo;
+
+    // binding 8: shadowVisible
+    writes[8].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[8].dstSet          = set_;
+    writes[8].dstBinding      = 8;
+    writes[8].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[8].descriptorCount = 1;
+    writes[8].pBufferInfo     = &shadowVisInfo;
+
+    // binding 9: shadowIndirect
+    writes[9].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[9].dstSet          = set_;
+    writes[9].dstBinding      = 9;
+    writes[9].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[9].descriptorCount = 1;
+    writes[9].pBufferInfo     = &shadowIndInfo;
+
+    // binding 10: lightFrustumUBO
+    writes[10].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[10].dstSet          = set_;
+    writes[10].dstBinding      = 10;
+    writes[10].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[10].descriptorCount = 1;
+    writes[10].pBufferInfo     = &lightFrustInfo;
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }

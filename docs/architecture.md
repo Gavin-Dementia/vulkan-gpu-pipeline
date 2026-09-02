@@ -263,18 +263,58 @@ existing bounding spheres.
   matrix in this codebase (it's not `GLM_FORCE_DEPTH_ZERO_TO_ONE`, so
   `Camera`'s own perspective matrix has the same underlying mismatch, but
   gets away with it).
-- `ShadowPass` (`FrameRenderer.cpp`) — draws all `OBJECT_COUNT` grid
-  instances unculled (no light-frustum culling at this instance count)
-  plus the projectile if active, binding `objectBuffer_` directly as the
-  per-instance vertex input: it already holds `vec4(position, radius)`
-  per instance, re-uploaded every frame by `updateInstanceSimulation()`,
-  byte-identical to `InstanceData`'s layout — no new buffer needed.
+- `ShadowPass` (`FrameRenderer.cpp`) — draws the grid instances that
+  survive light-frustum culling (see "Light-frustum culling for the
+  shadow pass" below) via `vkCmdDrawIndexedIndirect`, plus the
+  projectile directly (unculled) if active.
 - `SceneData` gained `lightViewProj` (read by `triangle.vert`, which now
   also binds binding 2, previously fragment-only) and `shadowParams.x`
   (base shadow bias, ImGui-tunable). `triangle.frag` samples the shadow
   map (binding 3 on the graphics descriptor set) with a slope-scaled bias
   and 3×3 PCF, multiplying only the direct `Lo` term — the flat ambient
   term stays unshadowed.
+
+### Light-frustum culling for the shadow pass
+
+`ShadowPass` used to draw all `OBJECT_COUNT` instances unculled every
+frame. It now reuses the same `culling.comp` dispatch `GPUCullingPass`
+already runs for the camera path — see `TECHNICAL_NOTES.md` §28 for the
+full rationale, including why the camera path's plane-extraction code
+was re-verified as correct *before* reusing it for the light, and why a
+naive reuse would have introduced a silent bug.
+
+- `culling.comp` runs an independent 6-plane sphere test against the
+  light's orthographic frustum for every object, unconditional on
+  camera visibility (a shadow caster can be off-screen), and compacts
+  survivors into a 4th `{ShadowVisible, ShadowIndirect}` output pair —
+  same atomic-counter compaction shape as the 3 camera-visible LOD
+  buckets.
+- `FrustumPlanes::extractFromMatrix` (`include/vulkan/culling/
+  Frustum.h`) gained a `zeroToOne` parameter (default `false`, camera
+  call site unchanged) selecting the near-plane formula matching the
+  source matrix's depth convention: `m[3]+m[2]` for GLM's default
+  `[-1,1]` (the camera's `glm::perspective()`), `m[2]` alone for
+  Vulkan's native `[0,1]` (the light's `glm::orthoRH_ZO()`, see "Shadow
+  mapping" above). `GPUCullingPass` calls it with `zeroToOne=true` for
+  the light frustum.
+- `ComputeDescriptor` grew from 8 to 11 bindings (8: shadow-visible
+  instance buffer, 9: shadow indirect-draw buffer, 10: light-frustum
+  UBO — reuses the `FrustumPlanes` struct/layout, only `planes[6]` is
+  meaningful for the light).
+- `VulkanContext::shadowVisibleInstanceBuffer()` /
+  `shadowIndirectDrawBuffer()` / `lightFrustumBuffer()` — new buffers,
+  same `{visibleInstanceBuffer, indirectDrawBuffer}` shape a single
+  LOD's already uses, sized for worst case (all `OBJECT_COUNT` visible),
+  indexed by LOD0's index count (the shadow pass always draws LOD0
+  geometry regardless of camera-side LOD selection).
+- `ShadowPass` binds `shadowVisibleInstanceBuffer()` as its per-instance
+  vertex input and issues `vkCmdDrawIndexedIndirect` against
+  `shadowIndirectDrawBuffer()`, replacing the old direct
+  `vkCmdDrawIndexed(..., OBJECT_COUNT, ...)` against `objectBuffer_`.
+  The existing compute→graphics `VkMemoryBarrier` in
+  `FrameRenderer::drawFrame()` already covers these new buffers (it's a
+  blanket `SHADER_WRITE → VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ`,
+  not scoped to specific buffers) — no new barrier needed.
 
 ### Dockable viewport (Phase 11)
 
@@ -337,15 +377,24 @@ and the `FrameGraph` instance. `drawFrame()`:
    done (see `TECHNICAL_NOTES.md` §23); acquires the next swapchain image
 2. Resets this frame's timestamp query pool and writes timestamp 0
    (`TOP_OF_PIPE`), then records `executeCompute()` — runs outside any
-   render pass; resets all 3 `IndirectDrawBuffer.instanceCount` to 0,
-   uploads the current frame's frustum, dispatches the culling +
-   LOD-select compute shader (reading whatever `Application::mainLoop()`
-   already wrote into `objectBuffer_` this frame via
-   `updateInstanceSimulation()`); writes timestamp 1 (`BOTTOM_OF_PIPE`)
-3. Inserts a memory barrier (compute write → vertex/indirect read)
+   render pass; resets all 3 `IndirectDrawBuffer.instanceCount` to 0
+   plus the shadow pass's own `shadowIndirectDrawBuffer_.instanceCount`,
+   uploads the current frame's camera frustum *and* light frustum (see
+   "Light-frustum culling for the shadow pass" above), dispatches the
+   culling + LOD-select compute shader (reading whatever
+   `Application::mainLoop()` already wrote into `objectBuffer_` this
+   frame via `updateInstanceSimulation()`) — which also compacts
+   light-frustum survivors into `shadowVisibleInstanceBuffer_`/
+   `shadowIndirectDrawBuffer_`; writes timestamp 1 (`BOTTOM_OF_PIPE`)
+3. Inserts a memory barrier (compute write → vertex/indirect read) —
+   covers both the camera-side LOD buffers and the shadow pass's new
+   ones, since it's a blanket `VkMemoryBarrier` not scoped to specific
+   buffers
 4. Begins the shadow render pass, records `executeShadow()` (see "Shadow
-   mapping" above), ends it, writes timestamp 2; inserts the shadow→main
-   image barrier (depth write → fragment-shader read)
+   mapping" above — now a `vkCmdDrawIndexedIndirect` against the
+   light-frustum-culled instance set, not an unculled direct draw), ends
+   it, writes timestamp 2; inserts the shadow→main image barrier (depth
+   write → fragment-shader read)
 5. Begins the **offscreen scene render pass** (`sceneRenderPass_`/
    `sceneFramebuffer_`, see "Dockable viewport" above), records
    `executeGraphics()`: uploads `SceneData` (light + camera + shadow
@@ -421,19 +470,24 @@ place).
   duplicated per LOD — LOD level is a *selection* made per-frame, not a
   different object.
 - `culling.comp` — 64 threads/workgroup:
-  1. sphere-vs-6-plane frustum test (unchanged from the original
-     single-LOD design)
-  2. for threads that pass, a distance check against the camera
-     (`frustum.lodDistances.x`/`.y`, runtime-tunable — see "Tunable LOD
-     thresholds" below) buckets the instance into exactly one of 3
-     output sets
-  3. the winning bucket's thread claims a slot via `atomicAdd` on that
+  1. sphere-vs-6-plane test against the light's frustum, unconditional
+     on camera visibility (a shadow caster can be off-screen) — passing
+     threads claim a slot in the shared `ShadowVisible`/`ShadowIndirect`
+     output pair (see "Light-frustum culling for the shadow pass" above)
+  2. sphere-vs-6-plane frustum test against the camera (unchanged from
+     the original single-LOD design)
+  3. for threads that pass the camera test, a distance check against the
+     camera (`frustum.lodDistances.x`/`.y`, runtime-tunable — see
+     "Tunable LOD thresholds" below) buckets the instance into exactly
+     one of 3 output sets
+  4. the winning bucket's thread claims a slot via `atomicAdd` on that
      bucket's own `DrawCommand.instanceCount` and writes into that
      bucket's own `VisibleLODN` buffer
-- 3 parallel output pairs — `(VisibleLOD0, IndirectLOD0)`,
+- 3 parallel camera-side output pairs — `(VisibleLOD0, IndirectLOD0)`,
   `(VisibleLOD1, IndirectLOD1)`, `(VisibleLOD2, IndirectLOD2)` at
-  bindings 1–6, plus `ObjectBuffer` (0) and `FrustumData` (7) — 8
-  bindings total in `ComputeDescriptor`
+  bindings 1–6 — plus `ObjectBuffer` (0), `FrustumData` (7, camera
+  frustum), `ShadowVisible`/`ShadowIndirect` (8–9), and
+  `LightFrustumData` (10) — 11 bindings total in `ComputeDescriptor`
 
 ### Tunable LOD thresholds (Phase 12)
 
@@ -481,9 +535,14 @@ Application
     │     ImGui's "Viewport" window (see "Dockable viewport" module notes)
     ├── VulkanDescriptor (graphics, 7 bindings: UBO / albedo / SceneData /
     │     shadow map / normal / metallic-roughness / AO combined-image-samplers)
-    ├── ComputeDescriptor (compute, 8 bindings: object / 3×visible / 3×indirect / frustum)
+    ├── ComputeDescriptor (compute, 11 bindings: object / 3×visible / 3×indirect /
+    │     camera frustum / shadow-visible / shadow-indirect / light frustum)
     ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
     ├── ObjectBuffer (shared, 343 entries, re-uploaded every frame) / FrustumBuffer
+    ├── shadowVisibleInstanceBuffer_ / shadowIndirectDrawBuffer_ / lightFrustumBuffer_
+    │     (shadow pass's light-frustum-culled instance set, same shape as a
+    │      single LOD's {VisibleInstanceBuffer, IndirectDrawBuffer} - see
+    │      "Light-frustum culling for the shadow pass" module notes)
     ├── cachedInstances_ / instanceCurrentPositions_ / instanceVelocities_
     │     (rest formation / live scatter state, all 343 entries — see
     │      "Grid collision + scatter" module notes)
@@ -498,9 +557,12 @@ Application
     └── Camera
         └── FrameRenderer
             └── FrameGraph
-                ├── GPUCullingPass (Compute) — frustum test + LOD fan-out
-                ├── ShadowPass (Shadow) — depth-only, all instances unculled,
-                │                          objectBuffer_ reused as instance buffer
+                ├── GPUCullingPass (Compute) — camera frustum test + LOD
+                │                    fan-out, plus an independent light-
+                │                    frustum test compacting shadow casters
+                ├── ShadowPass (Shadow) — depth-only, draws the light-
+                │                          frustum-culled instance set via
+                │                          vkCmdDrawIndexedIndirect
                 ├── GeometryPass (Graphics, reads CullingPass + ShadowPass,
                 │   │                       renders into sceneFramebuffer_) —
                 │   │                       per-draw push constant
@@ -553,12 +615,17 @@ Total ms (if the GPU supports timestamp queries — see TECHNICAL_NOTES §23)
 Acquire Swapchain Image
         │
 Reset IndirectLOD0/1/2.instanceCount = 0   (3× CPU write)
+Reset ShadowIndirect.instanceCount = 0     (CPU write, indexed by LOD0)
         │
 Reset this frame's VkQueryPool → write timestamp 0 (TOP_OF_PIPE)
         │
 Compute: GPUCullingPass
-   (sphere-frustum test using this frame's objectBuffer_, 343 threads,
-    distance-based LOD bucketing, atomic compaction per bucket)
+   (upload camera frustum + light frustum (zeroToOne=true, see
+    TECHNICAL_NOTES §28) → sphere test vs. both frustums using this
+    frame's objectBuffer_, 343 threads: light-frustum survivors compact
+    into ShadowVisible/ShadowIndirect unconditionally; camera-frustum
+    survivors additionally get distance-based LOD bucketing, atomic
+    compaction per bucket)
         │
 Write timestamp 1 (BOTTOM_OF_PIPE) — closes the Culling interval
         │
@@ -568,9 +635,10 @@ Begin Shadow Render Pass (own framebuffer, fixed 2048×2048 resolution)
         │
 Shadow: ShadowPass
    push {lightViewProj, spin rotation} → bind LOD0 vertex/index buffers +
-   objectBuffer_ (as instance buffer) → vkCmdDrawIndexed, instanceCount =
-   OBJECT_COUNT → if projectile active: push {lightViewProj, identity},
-   bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
+   shadowVisibleInstanceBuffer_ → vkCmdDrawIndexedIndirect against
+   shadowIndirectDrawBuffer_ (GPU-supplied instance count) → if
+   projectile active: push {lightViewProj, identity}, bind LOD2 mesh +
+   its instance buffer, vkCmdDrawIndexed (unculled - single instance)
         │
 End Shadow Render Pass
         │

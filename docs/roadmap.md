@@ -300,11 +300,9 @@ Milestone 1 — shadow render target + depth-only pass — implemented:
   `executeShadow()`, alongside `Compute`/`Graphics` — mirrors how
   `executeCompute()` already runs outside the main render pass with its
   own explicit wrapper in `FrameRenderer::drawFrame()`
-- `ShadowPass` draws all 343 grid instances unculled (no light-frustum
-  culling needed at this instance count) by binding `objectBuffer_`
-  directly as the instance buffer — no new buffer, since it already
-  holds `vec4(position, radius)` per instance every frame, byte-identical
-  to `InstanceData`'s layout
+- `ShadowPass` originally drew all 343 grid instances unculled by
+  binding `objectBuffer_` directly as the instance buffer; superseded by
+  light-frustum culling (see below)
 - Verified via a temporary "Shadow Map" ImGui debug window
   (`ImGui_ImplVulkan_AddTexture`) before any shading code depended on it
 
@@ -337,11 +335,26 @@ geometry kept spinning — fixed by adding a `model` field to
 `ShadowPushConstants` and pushing the same per-draw rotation
 `GeometryPass` already computes.
 
-Not yet done: light-frustum culling for the shadow pass (draws all
-instances unculled every frame — fine at 343 instances); `lightViewProj()`'s
-`kSceneRadius` is a fixed constant, not re-derived from the live scatter
-state, so an instance blasted far enough away could stop casting a
-shadow.
+Milestone 4 — light-frustum culling — implemented (`TECHNICAL_NOTES.md`
+§28): `culling.comp` now also runs an independent 6-plane sphere test
+against the light's orthographic frustum for every object (unconditional
+on camera visibility, since a shadow caster can be off-screen), compacting
+survivors into a 4th output pair (`ShadowVisible`/`ShadowIndirect`,
+`ComputeDescriptor` bindings 8–9) alongside the 3 camera-side LOD buckets.
+`ShadowPass` switched from an unculled direct draw to
+`vkCmdDrawIndexedIndirect` against that compacted set. Required first
+re-verifying the camera path's `FrustumPlanes::extractFromMatrix` was
+itself correct, then giving it a `zeroToOne` parameter before reusing it
+for the light — naively reusing the camera's `[-1,1]`-convention
+near-plane formula on the light's `[0,1]` `orthoRH_ZO()` matrix would have
+silently produced a near plane that never culls anything, the same
+"silent, not loud" failure shape as the original ortho bug in Milestone 1
+above.
+
+Not yet done: `lightViewProj()`'s `kSceneRadius` is a fixed constant, not
+re-derived from the live scatter state, so an instance blasted far enough
+away would fail both the light-frustum cull and the ortho box's depth
+range, and simply stop casting a shadow.
 
 ---
 

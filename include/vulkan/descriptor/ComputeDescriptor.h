@@ -11,6 +11,11 @@ public:
         std::array<VkBuffer, 3> visibleInstanceBuffers,
         std::array<VkBuffer, 3> indirectDrawBuffers,
         VkBuffer frustumBuffer,
+        // Shadow pass's light-frustum-culled instance set - see
+        // architecture.md's "Shadow mapping" module notes.
+        VkBuffer shadowVisibleInstanceBuffer,
+        VkBuffer shadowIndirectDrawBuffer,
+        VkBuffer lightFrustumBuffer,
         VkDeviceSize objectSize,
         VkDeviceSize visibleInstanceSize,
         VkDeviceSize indirectDrawSize,

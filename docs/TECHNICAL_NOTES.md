@@ -1461,6 +1461,63 @@ ImGui windows. At 3 small floating windows the odds were low enough to
 go unnoticed; at "the entire client area," they round up to "almost
 every time."
 
+### 28. Light-frustum culling for the shadow pass, and re-verifying the camera path's plane extraction first
+
+`ShadowPass` (§22) drew all `OBJECT_COUNT` instances unculled from
+`objectBuffer_` directly — accepted at the time as "fine at this
+instance count." Adding real culling meant first checking whether the
+existing camera-frustum plane extraction (`FrustumPlanes::
+extractFromMatrix`, used by `culling.comp` every frame) was even
+correct to begin with, since a bug there would just get copy-pasted
+into the new light path.
+
+**Camera path re-verified as correct.** `extractFromMatrix` uses the
+standard Gribb-Hartmann trick — `glm::transpose(viewProj)` then
+combining rows (`m[3]±m[i]`) — which assumes GLM's default OpenGL-style
+`z_ndc ∈ [-1,1]` convention. `Camera::getProjectionMatrix()` uses plain
+`glm::perspective()` with no `GLM_FORCE_DEPTH_ZERO_TO_ONE`, so it *is*
+in that convention — the near/far plane formulas (`m[3]+m[2]` /
+`m[3]-m[2]`) match. No bug here.
+
+**Reusing it verbatim for the light would have been wrong.** §22 already
+established that `VulkanContext::lightViewProj()` deliberately uses
+`glm::orthoRH_ZO()` — Vulkan's native `z_ndc ∈ [0,1]` — specifically
+*because* the `[-1,1]` convention geometrically breaks an orthographic
+matrix (clips away the near half). That same fact breaks Gribb-Hartmann
+plane extraction one level up: the near-plane formula for `[0,1]` is
+`m[2]` alone, not `m[3]+m[2]` (far/left/right/top/bottom are convention-
+independent, so those three lines are unaffected). Using the `[-1,1]`
+near-plane formula on the light's `[0,1]` matrix wouldn't crash or
+validation-error — it would silently produce a near plane so permissive
+it never culls anything near the light, the same "silent, not loud"
+failure shape §22's original ortho bug had. Fixed by giving
+`extractFromMatrix` a `zeroToOne` parameter (default `false`, so the
+camera call site is untouched) that switches only that one line.
+
+**Implementation reuses the existing `culling.comp` dispatch rather than
+adding a second one.** The shader already loops over all 343 objects
+once per frame and branches into 3 camera-visible LOD buckets; it now
+also runs an independent light-frustum sphere test per object
+(unconditional — not gated on camera visibility, since a shadow caster
+can be off-screen) and compacts survivors into a 4th
+`{ShadowVisible, ShadowIndirect}` output pair, same atomic-counter
+compaction pattern as the LOD buckets (§7). `ComputeDescriptor` grew
+from 8 to 11 bindings (bindings 8-10: shadow-visible buffer, shadow
+indirect-draw buffer, light-frustum UBO — the light frustum reuses the
+`FrustumPlanes` struct/std140 layout for its buffer even though only
+`planes[6]` is meaningful, avoiding a second GLSL struct definition).
+`ShadowPass` switched from a direct `vkCmdDrawIndexed(..., OBJECT_COUNT,
+...)` reading `objectBuffer_` straight, to a `vkCmdDrawIndexedIndirect`
+reading the new compacted buffer/command — the exact shape
+`GeometryPass`'s per-LOD draws already use.
+
+**No new barrier needed.** The existing compute→graphics
+`VkMemoryBarrier` in `FrameRenderer::drawFrame()` (§5) is a blanket
+`SHADER_WRITE → VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ`, not
+scoped to specific buffers — it already covers the two new buffers for
+free, since they're written by the same compute dispatch it was already
+ordering against the shadow pass's reads.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -1507,12 +1564,14 @@ every time."
   fully turned away from the single directional light are nearly black
   except for this flat term.
 - **Shadow mapping is implemented** (§22) for the single directional
-  light — depth-only `ShadowPass`, 3×3 PCF, tunable bias. Not yet done:
-  light-frustum culling for the shadow pass (currently draws all 343
-  instances unculled every frame — fine at this instance count, see §22),
-  and the fixed `kSceneRadius` constant in `lightViewProj()` isn't
-  re-derived from the live scatter state, so an instance blasted far
-  enough outside it would silently stop casting a shadow.
+  light — depth-only `ShadowPass`, 3×3 PCF, tunable bias, light-frustum
+  culling as of §28 (GPU-culled indirect draw, same shared
+  `culling.comp` dispatch as the camera path). Still not derived from
+  the live scatter state: the fixed `kSceneRadius` constant in
+  `lightViewProj()`, so an instance blasted far enough outside it would
+  silently both fail the light-frustum cull *and* fall outside the
+  ortho box's depth range — it would simply stop casting a shadow
+  rather than rendering one from the wrong position.
 - **LOD is implemented** (§15) as 3 distance buckets, runtime-tunable
   since §26 (default `LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`) but still
   not derived from mesh detail level or screen-space projected size - a

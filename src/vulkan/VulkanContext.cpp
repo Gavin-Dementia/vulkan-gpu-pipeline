@@ -314,9 +314,31 @@ void VulkanContext::initCullingResources()
     }
 
     // Frustum buffer: 6 planes + cameraPos + lodDistances = 8 vec4 = 128 bytes
-    VkDeviceSize frustumSize = sizeof(FrustumPlanes);  
-    
+    VkDeviceSize frustumSize = sizeof(FrustumPlanes);
+
     frustumBuffer_.create(
+        device_.getPhysical(), device_.get(), frustumSize,
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+
+    // Shadow pass's light-frustum-culled instance set - same shapes as a
+    // single LOD's {visibleInstanceBuffer, indirectDrawBuffer} above, plus
+    // its own frustum UBO (only planes[6] is used - camera pos/lodDistances
+    // are meaningless for the light, but reusing FrustumPlanes keeps the
+    // std140 layout identical to the camera frustum's, no separate GLSL
+    // struct needed). Sized for worst case (all OBJECT_COUNT visible),
+    // indexed by LOD0's mesh - the shadow pass always draws LOD0 geometry
+    // regardless of camera distance.
+    shadowVisibleInstanceBuffer_.create(
+        device_.getPhysical(), device_.get(), visibleInstanceSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+    shadowIndirectDrawBuffer_.create(
+        device_.getPhysical(), device_.get(), lods_[0].indexBuffer.indexCount()
+    );
+    lightFrustumBuffer_.create(
         device_.getPhysical(), device_.get(), frustumSize,
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
@@ -339,6 +361,9 @@ void VulkanContext::initCullingResources()
         objectBuffer_.get(),
         visibleBufs, indirectBufs,
         frustumBuffer_.get(),
+        shadowVisibleInstanceBuffer_.get(),
+        shadowIndirectDrawBuffer_.get(),
+        lightFrustumBuffer_.get(),
         objSize, visibleInstanceSize,
         indirectDrawSize, frustumSize
     );
@@ -502,6 +527,9 @@ void VulkanContext::cleanup()
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
     objectBuffer_.destroy(device_.get());
+    lightFrustumBuffer_.destroy(device_.get());
+    shadowIndirectDrawBuffer_.destroy(device_.get());
+    shadowVisibleInstanceBuffer_.destroy(device_.get());
 
     for (int i = 0; i < 3; i++)
     {

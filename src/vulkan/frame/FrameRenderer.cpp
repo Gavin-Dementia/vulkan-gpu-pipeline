@@ -52,6 +52,13 @@ void FrameRenderer::init(VulkanContext& ctx)
                     context->lod(i).indexBuffer.indexCount()
                 );
             }
+            // Shadow pass's light-frustum-culled instance set - always
+            // LOD0's index count, since the shadow pass only ever draws
+            // LOD0 geometry (see ShadowPass below).
+            context->shadowIndirectDrawBuffer().resetInstanceCount(
+                context->device().get(),
+                context->lod(0).indexBuffer.indexCount()
+            );
 
             // 2. update frustum
             glm::mat4 view = context->camera().getViewMatrix();
@@ -63,6 +70,21 @@ void FrameRenderer::init(VulkanContext& ctx)
             context->frustumBuffer().upload(
                 context->device().get(),
                 &frustum,
+                sizeof(FrustumPlanes)
+            );
+
+            // Light frustum - same 6-plane extraction, but from the
+            // light's orthoRH_ZO view-projection (VulkanContext::
+            // lightViewProj()), which uses Vulkan's [0,1] z_ndc
+            // convention rather than the camera's default [-1,1] one.
+            // zeroToOne=true selects the matching near-plane formula -
+            // see Frustum.h. cameraPos/lodDistances are unused by the
+            // light-frustum test in culling.comp, left default.
+            FrustumPlanes lightFrustum = FrustumPlanes::extractFromMatrix(
+                context->lightViewProj(), glm::vec3(0.0f), /*zeroToOne=*/true);
+            context->lightFrustumBuffer().upload(
+                context->device().get(),
+                &lightFrustum,
                 sizeof(FrustumPlanes)
             );
 
@@ -79,14 +101,14 @@ void FrameRenderer::init(VulkanContext& ctx)
 
     // =====================================================
     // ShadowPass - depth-only render from the light's point of view.
-    // Draws every grid instance unculled, straight from objectBuffer_
-    // (already vec4(position, radius) per instance, re-uploaded every
-    // frame by updateInstanceSimulation() - byte-identical to
-    // InstanceData's layout, so it can be bound directly as the instance
-    // buffer with no new buffer or compute/descriptor changes). Runs in
-    // its own render pass (context->shadowRenderPass()/shadowFramebuffer()),
-    // wrapped explicitly in drawFrame() below - not inside the main
-    // color+depth render pass.
+    // Draws the grid instances that survive GPUCullingPass's light-
+    // frustum test (culling.comp's ShadowVisible/ShadowIndirect output,
+    // see VulkanContext::shadowVisibleInstanceBuffer()/
+    // shadowIndirectDrawBuffer()) via an indirect draw, same shape as
+    // GeometryPass's per-LOD indirect draws. Runs in its own render pass
+    // (context->shadowRenderPass()/shadowFramebuffer()), wrapped
+    // explicitly in drawFrame() below - not inside the main color+depth
+    // render pass.
     // =====================================================
     int shadowPass = graph->addPass(RGPass{
         "ShadowPass",
@@ -115,13 +137,16 @@ void FrameRenderer::init(VulkanContext& ctx)
             context->lod(0).vertexBuffer.bind(cmd);
             context->lod(0).indexBuffer.bind(cmd);
 
-            VkBuffer instanceBuf = context->objectBuffer().get();
+            VkBuffer instanceBuf = context->shadowVisibleInstanceBuffer().get();
             VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &offset);
 
-            vkCmdDrawIndexed(
-                cmd, context->lod(0).indexBuffer.indexCount(),
-                VulkanContext::OBJECT_COUNT, 0, 0, 0
+            vkCmdDrawIndexedIndirect(
+                cmd,
+                context->shadowIndirectDrawBuffer().get(),
+                0,    // offset
+                1,    // drawCount (only one draw command)
+                sizeof(DrawIndirectCommand)
             );
 
             if (context->projectile().isActive())

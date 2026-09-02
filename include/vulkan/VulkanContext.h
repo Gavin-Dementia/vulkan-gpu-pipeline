@@ -89,6 +89,17 @@ public:
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
     Material&              material()          { return material_; }
 
+    // Light-frustum culling for the shadow pass - same shared
+    // objectBuffer_/culling.comp dispatch as the camera path, just a
+    // second independent 6-plane test (light frustum, not camera frustum)
+    // whose survivors get compacted into their own buffer/indirect-draw
+    // pair, mirroring the {visibleInstanceBuffer, indirectDrawBuffer}
+    // shape lods_[] already uses. See "Shadow mapping" in
+    // architecture.md.
+    VulkanBuffer&          shadowVisibleInstanceBuffer() { return shadowVisibleInstanceBuffer_; }
+    IndirectDrawBuffer&    shadowIndirectDrawBuffer()    { return shadowIndirectDrawBuffer_; }
+    VulkanBuffer&          lightFrustumBuffer()          { return lightFrustumBuffer_; }
+
     VulkanBuffer&          projectileInstanceBuffer() { return projectileInstanceBuffer_; }
     UniformBuffer&         projectileUniformBuffer()  { return projectileUniformBuffer_; }
     VulkanDescriptor&      projectileDescriptor()     { return projectileDescriptor_; }
@@ -216,6 +227,12 @@ private:
     VulkanComputePipeline computePipeline_;
     VulkanBuffer          frustumBuffer_;
     Material              material_;
+
+    // Shadow pass's light-frustum-culled instance set - see accessor
+    // comments above.
+    VulkanBuffer          shadowVisibleInstanceBuffer_;
+    IndirectDrawBuffer    shadowIndirectDrawBuffer_;
+    VulkanBuffer          lightFrustumBuffer_;
 
     VulkanBuffer          projectileInstanceBuffer_;
     UniformBuffer         projectileUniformBuffer_;
