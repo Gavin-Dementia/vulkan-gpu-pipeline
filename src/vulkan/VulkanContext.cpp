@@ -431,17 +431,28 @@ void VulkanContext::updateInstanceSimulation(float deltaTime)
     // grid spacing is only 3.0 against a ~1.49 bounding radius, so
     // resting instances already sit just 0.03 units apart at closest)
     // visibly clip through each other once their blast velocity settles.
-    // Positional pushout along the line between centers, not a velocity
-    // impulse. Deliberately tuned loose, not a strict non-overlap
-    // constraint: minSeparation (1.5x radius, not the geometrically
-    // "just touching" 2x) tolerates some visual overlap for a denser
-    // scatter look, and each side only closes 30% of the gap per frame
-    // (not an even 50/50 full-close) for a softer settle rather than a
-    // hard snap. Runs every frame (not just on impact), so this partial,
-    // repeated correction converges over a few frames rather than fully
-    // resolving in one pass - intentional, not a missed 0.5/1.0 factor.
+    //
+    // Hybrid response (§30): a velocity impulse (equal-mass, restitution-
+    // scaled, along the contact normal) handles the visible "bounce apart"
+    // motion, applied only while a pair is actually approaching
+    // (velAlongNormal < 0) - a separating or already-resting pair gets no
+    // impulse, since an impulse can't push apart two objects with ~zero
+    // relative velocity. That's exactly the case the positional-pushout
+    // step below still exists for: it's now a much lighter safety net
+    // (10% of the gap per side, not the pre-impulse 30%) whose only job is
+    // guaranteeing eventual separation for resting overlap, not doing the
+    // primary separating - the impulse does that dynamically now.
+    // Deliberately tuned loose either way, not a strict non-overlap
+    // constraint: minSeparation (1.5x radius, not the geometrically "just
+    // touching" 2x) tolerates some visual overlap for a denser scatter
+    // look. Both steps run every frame (not just on impact) in the same
+    // O(n^2) unique-pair pass, so partial correction converges over a few
+    // frames rather than needing a one-shot solver - same "converges over
+    // frames" reasoning §21 already established, just with the dynamic
+    // part now handled by momentum instead of a bigger position snap.
     {
         float minSeparation = 1.5f * boundingSphereRadius_;
+        constexpr float kPositionalCorrectionFactor = 0.1f;   // was 0.3f pre-impulse
         for (uint32_t i = 0; i < OBJECT_COUNT; i++)
         {
             for (uint32_t j = i + 1; j < OBJECT_COUNT; j++)
@@ -450,10 +461,24 @@ void VulkanContext::updateInstanceSimulation(float deltaTime)
                 float dist = glm::length(delta);
                 if (dist < minSeparation)
                 {
-                    glm::vec3 pushDir = (dist > 0.001f) ? (delta / dist) : glm::vec3(0.0f, 1.0f, 0.0f);
+                    glm::vec3 n = (dist > 0.001f) ? (delta / dist) : glm::vec3(0.0f, 1.0f, 0.0f);
+
+                    // Equal-mass impulse (every grid instance shares
+                    // boundingSphereRadius_, so mass is implicitly 1:1):
+                    // -(1+e)*velAlongNormal/2 along the normal, only when
+                    // approaching.
+                    glm::vec3 relVel = instanceVelocities_[j] - instanceVelocities_[i];
+                    float velAlongNormal = glm::dot(relVel, n);
+                    if (velAlongNormal < 0.0f)
+                    {
+                        glm::vec3 impulse = -(1.0f + restitution_) * velAlongNormal * 0.5f * n;
+                        instanceVelocities_[i] -= impulse;
+                        instanceVelocities_[j] += impulse;
+                    }
+
                     float overlap = minSeparation - dist;
-                    instanceCurrentPositions_[i] -= pushDir * (overlap * 0.3f);
-                    instanceCurrentPositions_[j] += pushDir * (overlap * 0.3f);
+                    instanceCurrentPositions_[i] -= n * (overlap * kPositionalCorrectionFactor);
+                    instanceCurrentPositions_[j] += n * (overlap * kPositionalCorrectionFactor);
                 }
             }
         }

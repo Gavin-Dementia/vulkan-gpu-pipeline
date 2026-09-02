@@ -147,11 +147,19 @@ collision tradeoff.
   applies a radial blast impulse (falloff by distance, `+=`'d so
   overlapping blasts compound) to every instance within a blast radius,
   then stops the projectile. Also resolves **mutual instance-vs-instance
-  overlap** every frame (positional pushout, `O(n²)` unique pairs, single
-  pass) — without it, scattered instances settling near each other or
-  near still-resting neighbors visibly clip through one another, since
-  the grid's rest spacing leaves only ~0.02 units of margin between
-  adjacent instances to begin with. See `TECHNICAL_NOTES.md` §21.
+  overlap** every frame (`O(n²)` unique pairs, single pass) — without it,
+  scattered instances settling near each other or near still-resting
+  neighbors visibly clip through one another, since the grid's rest
+  spacing leaves only ~0.02 units of margin between adjacent instances to
+  begin with. A hybrid response as of §30: an equal-mass, restitution-
+  scaled velocity impulse along the contact normal (only applied while a
+  pair is actually approaching) provides the visible bounce/deflection,
+  paired with a lighter positional-correction term (down from the
+  original pure-pushout's 30%/side to 10%/side) that only mops up
+  resting overlap an impulse alone can't resolve. `restitution()`/
+  `setRestitution()` (default `0.3f`) is runtime-tunable via the "GPU
+  Culling Stats" ImGui window's "Collision" section, same reasoning as
+  `lod1Distance()`/`lod2Distance()`. See `TECHNICAL_NOTES.md` §21/§30.
 - `VulkanContext::resetInstanceFormation()` — restores
   `instanceCurrentPositions_` from the permanent `cachedInstances_` rest
   formation and zeroes all velocities. Triggered by an edge-detected

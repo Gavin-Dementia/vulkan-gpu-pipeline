@@ -389,6 +389,16 @@ void FrameRenderer::init(VulkanContext& ctx)
             if (ImGui::SliderFloat("LOD2 Distance", &lod2Dist, 1.0f, 60.0f, "%.1f"))
                 context->setLod2Distance(lod2Dist);
 
+            // Mutual-collision bounciness (TECHNICAL_NOTES.md §30) -
+            // runtime-tunable for the same "find the feel by eye" reason
+            // as the LOD thresholds above. 0 = instances stop dead on
+            // contact, 1 = fully elastic bounce.
+            ImGui::Separator();
+            ImGui::Text("Collision");
+            float restitution = context->restitution();
+            if (ImGui::SliderFloat("Restitution", &restitution, 0.0f, 1.0f, "%.2f"))
+                context->setRestitution(restitution);
+
             ImGui::Separator();
             ImGui::Text("GPU Timing (ms)");
             if (context->device().supportsTimestampQueries())

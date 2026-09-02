@@ -175,6 +175,17 @@ public:
     float collisionRadius() const { return collisionRadius_; }
     void  setCollisionRadius(float r) { collisionRadius_ = r; }
 
+    // Restitution (bounciness) for mutual instance-vs-instance collision
+    // response - 0 = fully inelastic (no bounce), 1 = fully elastic.
+    // Runtime-tunable via the "GPU Culling Stats" ImGui window, same
+    // "easier to find the right feel by eye than to compute" reasoning as
+    // shadowBias_/lod1Distance_/lod2Distance_. Only used by
+    // updateInstanceSimulation()'s mutual-collision impulse (see
+    // TECHNICAL_NOTES.md §30); clamped since values outside [0,1] are
+    // physically meaningless.
+    float restitution() const { return restitution_; }
+    void  setRestitution(float e) { restitution_ = glm::clamp(e, 0.0f, 1.0f); }
+
     // Manual pause/resume for the grid's shared spin - independent of
     // the scatter system above, only affects the rotation model matrix.
     float spinAngle() const { return spinAngle_; }
@@ -202,6 +213,7 @@ private:
     std::array<LODMesh, 3> lods_;
     float boundingSphereRadius_ = 0.0f;   // computed from LOD0's mesh bounds, see initSceneData()
     float collisionRadius_      = 0.0f;   // independent of boundingSphereRadius_, see accessor comment above
+    float restitution_          = 0.3f;   // mutual-collision bounciness, see accessor comment above
 
     float spinAngle_    = 0.0f;   // accumulated grid rotation angle, replaces raw glfwGetTime()
     bool  spinPaused_   = false;

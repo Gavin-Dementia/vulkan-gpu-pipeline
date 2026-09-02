@@ -1596,6 +1596,86 @@ One function change, three consumers updated for free — a direct payoff
 of `lightViewProj()` having stayed a pure, single-sourced function
 instead of accumulating separate per-consumer copies.
 
+### 30. Mutual instance collision: from pure positional pushout to a velocity-impulse + positional-correction hybrid
+
+§21's mutual-collision fix was deliberately positional-only: two
+overlapping instances get shoved apart along the line between their
+centers, no velocity read or written. That section's own
+"Interview-relevant" note already named the tradeoff — "worth revisiting
+with real impulse response if the scatter should look more like an
+actual explosion with bouncing debris rather than objects that stop dead
+on contact." This section is that revisit.
+
+**Why not just add the impulse and drop the positional correction
+entirely.** A velocity impulse only has something to act on when a pair
+is *approaching* — the physically meaningful quantity is
+`dot(relativeVelocity, contactNormal)`, and an impulse is only computed
+when that's negative. A pair that's already overlapping with near-zero
+relative velocity (the common end state here: damping asymptotically
+kills velocity every frame, §20) triggers no impulse at all, because
+there's no approach to counteract. Pure velocity resolution alone would
+leave such a pair visibly interpenetrated *indefinitely* — not a
+transient glitch, a permanent one, since nothing else in the simulation
+would ever separate them. This is why every real-time physics engine
+pairs impulse resolution with some form of positional correction rather
+than using one exclusively; this project does the same, just with a much
+lighter positional term now that the impulse handles the dynamic case.
+
+**Implementation** — both steps live inside the same `if (dist <
+minSeparation)` branch, in the existing `O(n²)` unique-pair loop
+(`updateInstanceSimulation()`, `src/vulkan/VulkanContext.cpp`), no new
+pass:
+
+1. **Velocity impulse**, equal-mass (every grid instance shares
+   `boundingSphereRadius_`, so mass is implicitly 1:1 — no per-instance
+   mass tracking needed), restitution-scaled, along the contact normal
+   `n`:
+   ```cpp
+   glm::vec3 relVel = instanceVelocities_[j] - instanceVelocities_[i];
+   float velAlongNormal = glm::dot(relVel, n);
+   if (velAlongNormal < 0.0f)
+   {
+       glm::vec3 impulse = -(1.0f + restitution_) * velAlongNormal * 0.5f * n;
+       instanceVelocities_[i] -= impulse;
+       instanceVelocities_[j] += impulse;
+   }
+   ```
+   This is the standard textbook equal-mass, restitution-scaled impulse
+   formula. `restitution_ = 0` reduces to instances stopping dead along
+   the normal (matching the old pushout's visual "stop on contact," just
+   arrived at through momentum instead of position); `restitution_ = 1`
+   is a fully elastic bounce.
+2. **Positional correction**, kept but scaled down from 30%-of-overlap-
+   per-side to 10%: now purely a safety net for the resting-overlap case
+   the impulse can't touch, not the primary separation mechanism, so it
+   no longer needs to do most of the work alone.
+
+**`restitution_` is runtime-tunable, not hardcoded** — `VulkanContext::
+restitution()`/`setRestitution()` (default `0.3f`, clamped to `[0,1]`),
+exposed via a new "Collision" section in the "GPU Culling Stats" ImGui
+window (`FrameRenderer.cpp`). Same reasoning already applied to
+`shadowBias_`/`lod1Distance_`/`lod2Distance_`: the right-feeling value
+depends on scene scale and blast strength in ways easier to dial in by
+eye than to derive, and this project already has the "expose it, don't
+guess it" pattern established for exactly that situation.
+
+**Cost:** unchanged asymptotically — still the same `O(n²)` ≈ 58,653-pair
+scan §21 already accounted for, with a few extra vector ops per pair that
+actually overlaps. Not a new standing cost category, just slightly more
+work inside a branch that was already there.
+
+**Interview-relevant:** *"Why not drop the positional correction now
+that there's a real impulse?"* — because impulse resolution is
+velocity-based by construction, and velocity-based correction cannot
+separate two bodies that have already interpenetrated and stopped moving
+relative to each other; it can only prevent *future* interpenetration
+from an approaching pair. Position and velocity are different quantities
+solving different halves of the same problem (respectively: "are you
+currently overlapping" and "are you about to be") — a complete resolver
+needs both, which is exactly why the impulse+correction pairing is the
+standard shape for this kind of constraint in real-time physics
+generally, not a one-off decision specific to this project.
+
 ---
 
 ## Bugs encountered (and what they taught)
