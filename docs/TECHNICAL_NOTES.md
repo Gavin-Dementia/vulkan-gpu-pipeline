@@ -1096,6 +1096,14 @@ nobody asked for (ImGui's own cost) — the roadmap's stated goal was
 quantifying culling/LOD/shadow cost, and 3 intervals + a total answers
 that directly.
 
+> **Update (§24):** `GeometryPass` and `ImGuiPass` *did* later end up in
+> separate render passes (`PassStage::Graphics` vs. the new
+> `PassStage::UI`), but that split was driven by the dockable-viewport
+> work, not a timing need — the 4th timestamp write simply moved to after
+> the *second* of the two passes, so `graphicsMs` still measures the same
+> "everything after the shadow pass" span this section describes. Still
+> no 5th marker; the reasoning above for not wanting one is unchanged.
+
 **`TOP_OF_PIPE`-start / `BOTTOM_OF_PIPE`-end, not a stage-specific bit
 per boundary.** A `BOTTOM_OF_PIPE` timestamp only fires once *everything*
 submitted before it in the command buffer has finished — which is

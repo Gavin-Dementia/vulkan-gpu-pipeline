@@ -15,6 +15,7 @@ Keep `docs/architecture.md`, `docs/TECHNICAL_NOTES.md`, and `docs/roadmap.md` in
 ## Notes not covered elsewhere
 
 - Each **git bash(commit, push etc.)** will effect the history of this respository should get approval by user.
+- Before each **git push** , check every .md to make sure the reliability and timliness is on the track.
 - No lint config and no automated test suite exist in this repo. Verification is: does it build cleanly, and does the running app look/behave correctly (culling/LOD/lighting/collision are all inherently visual).
 - stdout is fully buffered when redirected to a file/pipe rather than a console, so a force-killed background run may show an empty captured log even on a successful start.
 - `CMakeLists.txt` uses **explicit source file lists** (no globbing), grouped into `set(...)` variables per subsystem — adding a new `.cpp` file requires adding it to the relevant list, not just creating the file.

@@ -53,7 +53,7 @@ Application               input polling, deltaTime, world-sim tick
     │                     PBR lighting (SceneData UBO + material push
     │                     constants), grid collision/scatter simulation
     └── FrameRenderer     per-frame sync, command recording
-        └── FrameGraph    DAG of render passes across 3 stages
+        └── FrameGraph    DAG of render passes across 4 stages
             ├── GPUCullingPass  [Compute] frustum culling + LOD selection
             ├── ShadowPass      [Shadow, own render pass] depth-only draw
             │                   of all instances from the light's view
@@ -139,7 +139,9 @@ cmake --build build
 Executable: `build/bin/app.exe` (MSVC's multi-config generator actually places it at `build/bin/Debug/app.exe`; a Visual Studio + CMake-presets workflow may instead output to `out/build/<preset>/bin/app.exe`)
 
 Shaders are compiled automatically via `glslc` during the build step.
-Assets are copied to `build/bin/assets/` automatically.
+Assets are copied to `build/bin/assets/` automatically — run the executable
+with `build/bin` as the working directory (not `build/bin/Debug`), since
+that's where the relative `assets/`/`shaders/` paths resolve from.
 
 ---
 

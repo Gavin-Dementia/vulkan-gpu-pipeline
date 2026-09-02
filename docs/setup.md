@@ -95,7 +95,7 @@ vulkan-gpu-pipeline/
 │       ├── pipeline/          VulkanPipeline, VulkanComputePipeline, VulkanShadowPipeline
 │       ├── platform/          VulkanSurface
 │       ├── renderpass/        VulkanRenderPass, VulkanFramebuffer, VulkanDepthBuffer,
-│       │                      VulkanShadowMap
+│       │                      VulkanShadowMap, VulkanSceneColorTarget
 │       ├── resource/          ShaderLoader, ObjLoader
 │       ├── swapchain/         VulkanSwapchain
 │       └── texture/           VulkanTexture
@@ -135,9 +135,14 @@ No external package manager (vcpkg, conan) required.
 **`WinMain` linker error**
 - CMake is configured for `WIN32_EXECUTABLE OFF` (console subsystem) — do not change this
 
-**Assets not found at runtime**
-- The POST_BUILD step copies `assets/` to `build/bin/assets/`
-- If missing, manually copy or re-run `cmake --build build`
+**Assets not found at runtime / crashes with `[Texture] stbi error: can't fopen` then `abort()`**
+- The POST_BUILD step copies `assets/`/`shaders/compiled/` to `build/bin/assets/`
+  and `build/bin/shaders/`, **not** `build/bin/Debug/` — but the executable
+  itself is at `build/bin/Debug/app.exe` (see §4). Launch it with `build/bin`
+  as the working directory, not from inside the `Debug/` subfolder, or the
+  relative asset/shader paths won't resolve (see `TECHNICAL_NOTES.md`'s
+  bugs table for what this looks like when it goes uncaught).
+- If assets are still missing after that, manually copy or re-run `cmake --build build`
 
 ---
 
