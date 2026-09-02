@@ -50,12 +50,10 @@ layout(std430, binding = 6) buffer IndirectLOD2 { DrawCommand cmd2; };
 layout(binding = 7) uniform FrustumData
 {
     vec4 planes[6];
-    vec4 cameraPos;   // xyz=camera pos, w not yet
+    vec4 cameraPos;      // xyz=camera pos, w not yet
+    vec4 lodDistances;   // x = LOD1_DIST, y = LOD2_DIST, zw unused -
+                          // runtime-tunable, see VulkanContext::lod1Distance()
 } frustum;
-
-// LOD bias
-const float LOD1_DIST = 12.0;
-const float LOD2_DIST = 20.0;
 
 void main()
 {
@@ -82,12 +80,12 @@ void main()
     // distance influence LOD
     float camDist = length(center - frustum.cameraPos.xyz);
 
-    if (camDist < LOD1_DIST)
+    if (camDist < frustum.lodDistances.x)
     {
         uint slot = atomicAdd(cmd0.instanceCount, 1u);
         visibleLOD0[slot].position = vec4(center, 1.0);
     }
-    else if (camDist < LOD2_DIST)
+    else if (camDist < frustum.lodDistances.y)
     {
         uint slot = atomicAdd(cmd1.instanceCount, 1u);
         visibleLOD1[slot].position = vec4(center, 1.0);

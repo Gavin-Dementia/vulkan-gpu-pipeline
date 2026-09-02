@@ -6,7 +6,13 @@
 struct FrustumPlanes
 {
     std::array<glm::vec4, 6> planes;
-    glm::vec4 cameraPos;   // xyz=cam pos, w=0（padding）
+    glm::vec4 cameraPos;      // xyz=cam pos, w=0（padding）
+
+    // LOD distance thresholds - runtime-tunable via the "GPU Culling
+    // Stats" ImGui window (VulkanContext::lod1Distance()/lod2Distance())
+    // instead of culling.comp's former hardcoded LOD1_DIST/LOD2_DIST
+    // constants. x = LOD1_DIST, y = LOD2_DIST, zw unused.
+    glm::vec4 lodDistances = glm::vec4(12.0f, 20.0f, 0.0f, 0.0f);
 
     static FrustumPlanes extractFromMatrix(
         const glm::mat4& viewProj,
@@ -32,5 +38,7 @@ struct FrustumPlanes
         return result;
     }
 };
+static_assert(sizeof(FrustumPlanes) == 128,
+    "FrustumPlanes must be 128 bytes (6 vec4 planes + cameraPos + lodDistances) to match FrustumData's std140 GLSL layout");
 
 

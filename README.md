@@ -39,7 +39,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Shadow Mapping (depth-only pass, 3×3 PCF) | ✅ |
 | GPU Timestamp Performance Instrumentation | ✅ |
 | Dockable Editor UI (ImGui docking, offscreen viewport) | ✅ |
-| Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ |
+| Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only — see below |
 
 ---
 

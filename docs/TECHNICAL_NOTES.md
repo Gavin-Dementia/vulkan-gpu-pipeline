@@ -482,7 +482,8 @@ one `(VisibleInstanceBuffer, IndirectDrawBuffer)` pair, fed by one mesh.
 This was extended to 3 parallel pairs — `VisibleLOD0/1/2` +
 `IndirectLOD0/1/2` — with `culling.comp` bucketing each passing instance
 into one of the three based on camera distance (`LOD1_DIST = 12.0`,
-`LOD2_DIST = 20.0`, hardcoded in-shader) before doing the same
+`LOD2_DIST = 20.0`, hardcoded in-shader at the time - made runtime-tunable
+in §26) before doing the same
 `atomicAdd`-based compaction into that bucket's own buffer. `ObjectBuffer`
 itself stayed a single shared 343-entry array — LOD is a per-frame
 *selection* over one set of instances, not a duplicated object per LOD.
@@ -1257,8 +1258,8 @@ UV-preserving LOD1/LOD2 decimations needs a 3D tool (Blender) not
 available in this environment. LOD1/LOD2 keep sampling a constant
 `uv = (0,0)` texel — the same flat-tinted look they already had, not a
 regression, just an explicitly named gap (same treatment as every other
-"good enough now" simplification this project tracks, e.g. hardcoded LOD
-distance thresholds).
+"good enough now" simplification this project tracks, e.g. the flat
+ambient term standing in for real IBL).
 
 **`VulkanTexture` gained a `VkFormat` parameter instead of a second
 class.** Albedo is color data (`VK_FORMAT_R8G8B8A8_SRGB` — sampling
@@ -1338,6 +1339,49 @@ draw call whose mesh was never the one being tested.
 
 ---
 
+### 26. LOD distance thresholds: piggyback on the existing FrustumData upload, not a new buffer
+
+**Decision:** `culling.comp`'s `LOD1_DIST`/`LOD2_DIST` (§15) were `const
+float` shader constants - closing that "Not yet done" item meant making
+them runtime-tunable. Added a 4th field, `lodDistances` (`vec2` worth of
+data in a `vec4` slot for alignment), to the existing `FrustumPlanes`/
+`FrustumData` struct that already gets uploaded to the GPU every frame
+in `GPUCullingPass`, rather than a new UBO or a new compute descriptor
+binding.
+
+**Why extend an existing buffer instead of adding a new one:** the
+frustum data is already re-uploaded every frame (camera moves every
+frame, so it has to be), and the LOD thresholds only need to change when
+a user drags a slider - piggybacking costs one `vec4` of upload bandwidth
+that was going to happen anyway, versus a whole new `VkBuffer` +
+`VkDescriptorSetLayoutBinding` + pool size entry + `vkUpdateDescriptorSets`
+call for two floats. `ComputeDescriptor` and `culling.comp`'s binding
+count stay unchanged (8 bindings) - only the `FrustumData` block's byte
+size grows, from 112 to 128 bytes, and `frustumSize = sizeof(FrustumPlanes)`
+in `initCullingResources()` already computes that size dynamically, so
+the buffer and the descriptor's bound range both pick up the change with
+no hardcoded byte count to update.
+
+**Why the setters enforce `lod2Distance_ >= lod1Distance_` instead of
+trusting the ImGui call site:** `culling.comp`'s bucketing is an
+if/else-if chain (`camDist < LOD1 → LOD0`, `camDist < LOD2 → LOD1`, else
+→ LOD2), which silently produces a confusing result if the thresholds
+cross - an instance between the (now-inverted) LOD2 and LOD1 values would
+still pass the first check and get bucketed into LOD0. Rather than
+relying on the ImGui slider code to never let that happen,
+`VulkanContext::setLod1Distance()`/`setLod2Distance()` clamp the
+invariant themselves, so any future caller (not just the one ImGui window
+today) can't produce the broken state.
+
+**Verification:** dragged `LOD1 Distance` in the "GPU Culling Stats"
+window up past 25 (the default camera's distance from the grid) and
+watched every instance reclassify to LOD0 live, with the visible mesh
+detail changing across the whole grid in the same frame - the same
+"verify experimentally, don't just trust the math" instinct as the
+`sin(time)` oscillation test in §7.
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |
@@ -1386,10 +1430,11 @@ draw call whose mesh was never the one being tested.
   and the fixed `kSceneRadius` constant in `lightViewProj()` isn't
   re-derived from the live scatter state, so an instance blasted far
   enough outside it would silently stop casting a shadow.
-- **LOD is implemented** (§15) as 3 hardcoded distance buckets
-  (`LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`), not derived from mesh detail
-  level or screen-space projected size, and not exposed as a tunable.
-  A bucket with 0 instances this frame still costs a full
+- **LOD is implemented** (§15) as 3 distance buckets, runtime-tunable
+  since §26 (default `LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`) but still
+  not derived from mesh detail level or screen-space projected size - a
+  flat world-space distance, just no longer a shader constant. A bucket
+  with 0 instances this frame still costs a full
   `vkCmdDrawIndexedIndirect` call — fine at 3 LOD levels, would need
   revisiting (e.g. skip empty buckets, or a 4th "culled entirely" bucket
   merge) if the LOD count grows.

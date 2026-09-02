@@ -150,9 +150,11 @@ Actually implemented:
   issues 3 `vkCmdDrawIndexedIndirect` calls per frame, one per LOD mesh
 - ImGui overlay extended to show LOD0/1/2 visible counts individually
 
-Not yet done: LOD distance thresholds are hardcoded constants, not
-derived from mesh detail or screen-space size; texture sampling still
-isn't reunited with the (still UV-less) Suzanne LOD chain.
+Not yet done at the time: LOD distance thresholds were hardcoded shader
+constants, not derived from mesh detail or screen-space size, and not
+runtime-tunable (fixed in Phase 12); texture sampling still isn't
+reunited with the (still UV-less) Suzanne LOD chain (Phase 8 milestone 2
+later textured LOD0 with a different mesh - see its section below).
 
 Milestone reached: instances visibly swap mesh detail level as the
 camera moves toward/away from them (see `docs/assets/lod_demo_01.gif`).
@@ -411,6 +413,44 @@ the debug UI is an extra area alongside the 3D view, not overlapping it.
 
 ---
 
+## Phase 12 — Tunable LOD Distance Thresholds
+
+**Status: Complete**
+
+Closes the "Not yet done" item Phase 6 originally carried: `culling.comp`'s
+`LOD1_DIST`/`LOD2_DIST` were hardcoded shader constants, meaning any
+change needed a shader recompile - not something to iterate on while
+looking at the scene.
+
+- `FrustumPlanes` (`include/vulkan/culling/Frustum.h`) grew a 4th field,
+  `lodDistances` (`x = LOD1_DIST, y = LOD2_DIST`), alongside the existing
+  6 frustum planes + camera position - uploaded to the GPU every frame
+  as part of the same buffer, not a new binding. `culling.comp`'s
+  `FrustumData` uniform block gained the matching field; the two former
+  `const float` shader constants are gone.
+- `VulkanContext::lod1Distance()`/`lod2Distance()` (default 12.0/20.0,
+  matching the old hardcoded values) with setters that keep
+  `lod2Distance_ >= lod1Distance_` - `culling.comp`'s `if (camDist <
+  LOD1) ... else if (camDist < LOD2) ...` chain silently misbehaves if
+  the thresholds cross, so the setters enforce the invariant rather than
+  trusting every call site to.
+- Two new sliders ("LOD1 Distance" / "LOD2 Distance") in the existing
+  "GPU Culling Stats" ImGui window, right next to the LOD0/1/2 visible
+  counts they control - same "expose it, easier to find by eye than to
+  compute" reasoning as the shadow bias slider (§Phase 9) and the
+  lighting sliders (§Phase 8).
+- Verified interactively: dragging LOD1 Distance up past every
+  instance's camera distance reclassifies the entire grid to LOD0 live,
+  visibly swapping every instance to the higher-detail mesh with no
+  restart.
+
+Not yet done: thresholds are still a flat distance in world units, not
+derived from mesh screen-space size or per-mesh detail level - still a
+manually-tuned pair of numbers, just no longer ones that need a shader
+recompile to change.
+
+---
+
 ## Open / not yet started
 
 - **Live-resized viewport target** (Phase 11) — the offscreen scene
@@ -441,8 +481,10 @@ the debug UI is an extra area alongside the 3D view, not overlapping it.
 - **Multi-pass / hierarchical culling** — current design is a flat
   343-thread scan; fine at this scale, would need a coarser first pass
   at much higher instance counts
-- **LOD distance thresholds as data, not shader constants** — would let
-  LOD ranges be tuned per mesh/scene without a shader recompile
+- **LOD thresholds are still a flat world-space distance** (Phase 12
+  made them runtime-tunable, not shader constants, but they're still a
+  manually-set pair of numbers, not derived from mesh screen-space size
+  or per-mesh detail level)
 
 ---
 

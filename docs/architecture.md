@@ -416,8 +416,9 @@ place).
   1. sphere-vs-6-plane frustum test (unchanged from the original
      single-LOD design)
   2. for threads that pass, a distance check against the camera
-     (`LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`, both hardcoded in-shader)
-     buckets the instance into exactly one of 3 output sets
+     (`frustum.lodDistances.x`/`.y`, runtime-tunable — see "Tunable LOD
+     thresholds" below) buckets the instance into exactly one of 3
+     output sets
   3. the winning bucket's thread claims a slot via `atomicAdd` on that
      bucket's own `DrawCommand.instanceCount` and writes into that
      bucket's own `VisibleLODN` buffer
@@ -425,6 +426,20 @@ place).
   `(VisibleLOD1, IndirectLOD1)`, `(VisibleLOD2, IndirectLOD2)` at
   bindings 1–6, plus `ObjectBuffer` (0) and `FrustumData` (7) — 8
   bindings total in `ComputeDescriptor`
+
+### Tunable LOD thresholds (Phase 12)
+
+`culling.comp`'s LOD1/LOD2 distance cutoffs used to be `const float`
+shader constants. `FrustumPlanes` (`include/vulkan/culling/Frustum.h`)
+now carries a 4th field, `lodDistances` (x = LOD1_DIST, y = LOD2_DIST),
+uploaded every frame alongside the existing 6 frustum planes + camera
+position in `GPUCullingPass` — piggybacking on a buffer that's already
+re-uploaded every frame rather than adding a new one (see
+`TECHNICAL_NOTES.md` §26). `VulkanContext::lod1Distance()`/
+`lod2Distance()`/setters keep `lod2Distance_ >= lod1Distance_`, since
+`culling.comp`'s if/else-if bucketing chain misbehaves if the thresholds
+invert. Two sliders in the "GPU Culling Stats" ImGui window (next to the
+LOD0/1/2 visible counts they control) drive it live, no shader recompile.
 - Each `IndirectDrawBuffer.instanceCount` is reset to 0 by the CPU each
   frame before dispatch, exactly as in the single-LOD design — the
   reset now happens 3 times (once per LOD) instead of once

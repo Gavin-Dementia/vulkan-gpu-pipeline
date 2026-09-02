@@ -313,7 +313,7 @@ void VulkanContext::initCullingResources()
         );
     }
 
-    // Frustum buffer: 6 planes + cameraPos = 7 vec4 = 112 bytes
+    // Frustum buffer: 6 planes + cameraPos + lodDistances = 8 vec4 = 128 bytes
     VkDeviceSize frustumSize = sizeof(FrustumPlanes);  
     
     frustumBuffer_.create(

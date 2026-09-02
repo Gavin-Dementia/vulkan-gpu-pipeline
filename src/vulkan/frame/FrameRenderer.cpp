@@ -59,6 +59,7 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             glm::vec3 camPos = context->camera().position();
             FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view, camPos);
+            frustum.lodDistances = glm::vec4(context->lod1Distance(), context->lod2Distance(), 0.0f, 0.0f);
             context->frustumBuffer().upload(
                 context->device().get(),
                 &frustum,
@@ -348,6 +349,20 @@ void FrameRenderer::init(VulkanContext& ctx)
                 context->camera().position().y,
                 context->camera().position().z
             );
+
+            // LOD distance thresholds - runtime-tunable instead of
+            // culling.comp's former hardcoded LOD1_DIST/LOD2_DIST
+            // constants (see docs/TECHNICAL_NOTES.md). Setters keep
+            // LOD2 >= LOD1 so the shader's if/else-if chain stays sane.
+            ImGui::Separator();
+            ImGui::Text("LOD Thresholds (distance)");
+            float lod1Dist = context->lod1Distance();
+            if (ImGui::SliderFloat("LOD1 Distance", &lod1Dist, 1.0f, 60.0f, "%.1f"))
+                context->setLod1Distance(lod1Dist);
+
+            float lod2Dist = context->lod2Distance();
+            if (ImGui::SliderFloat("LOD2 Distance", &lod2Dist, 1.0f, 60.0f, "%.1f"))
+                context->setLod2Distance(lod2Dist);
 
             ImGui::Separator();
             ImGui::Text("GPU Timing (ms)");

@@ -129,6 +129,25 @@ public:
     float shadowBias() const          { return shadowBias_; }
     void  setShadowBias(float b)      { shadowBias_ = b; }
 
+    // LOD distance thresholds (culling.comp's former hardcoded LOD1_DIST/
+    // LOD2_DIST constants) - runtime-tunable via the "GPU Culling Stats"
+    // ImGui window instead of a shader constant, same "easier to find by
+    // eye than to compute, expose it" reasoning as shadowBias_ above.
+    // Uploaded to the GPU every frame as part of FrustumPlanes
+    // (GPUCullingPass in FrameRenderer.cpp), not a separate buffer.
+    float lod1Distance() const { return lod1Distance_; }
+    float lod2Distance() const { return lod2Distance_; }
+    // Setters keep lod2Distance_ >= lod1Distance_ - culling.comp's
+    // if/else-if chain (camDist < LOD1 -> LOD0, camDist < LOD2 -> LOD1,
+    // else -> LOD2) silently misbehaves if the thresholds cross (e.g. an
+    // instance between LOD2 and LOD1 would wrongly pass the first check).
+    void setLod1Distance(float d)
+    {
+        lod1Distance_ = d;
+        if (lod2Distance_ < lod1Distance_) lod2Distance_ = lod1Distance_;
+    }
+    void setLod2Distance(float d) { lod2Distance_ = (d < lod1Distance_) ? lod1Distance_ : d; }
+
     // Grid collision + scatter (Phase 7 milestone 2). Re-uploads
     // objectBuffer_ every frame from CPU-simulated positions - no compute
     // shader or descriptor changes needed, since culling.comp already
@@ -218,5 +237,9 @@ private:
     glm::vec3             lightColor_     = glm::vec3(1.0f, 1.0f, 1.0f);
     float                 lightIntensity_ = 3.0f;
     float                 shadowBias_     = 0.002f;
+
+    // Matches culling.comp's former hardcoded LOD1_DIST/LOD2_DIST values.
+    float                 lod1Distance_   = 12.0f;
+    float                 lod2Distance_   = 20.0f;
 };
 
