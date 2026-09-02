@@ -1386,6 +1386,83 @@ detail changing across the whole grid in the same frame - the same
 
 ---
 
+### 27. Left-click-to-fire intermittently not registering right after releasing Ctrl
+
+**Reported symptom:** after holding Ctrl to interact with a debug window
+and releasing it, the projectile's left-click trigger wouldn't always
+fire on the very next click - it usually took a large mouse-look swing
+before clicking started working again. User's own diagnosis, stated up
+front: suspected a conflict between the UI's hit-test region and the
+cursor's own region - which turned out to be exactly right.
+
+**Root cause:** `Camera::processInput()`'s Ctrl handling (§18 addendum)
+switches `GLFW_CURSOR` between `NORMAL` (visible, for clicking ImGui) and
+`DISABLED` (hidden, unbounded virtual position, for mouse-look) -
+correct on its own. The missed half: `imgui_impl_glfw.cpp` does **not**
+ignore mouse position while `GLFW_CURSOR_DISABLED` is active (confirmed
+in its own changelog: *"2023-07-18: Inputs: Revert ignoring mouse data on
+GLFW_CURSOR_DISABLED as it can be used differently. User may set
+ImGuiConfigFlags_NoMouse if desired."*) - it keeps feeding the unbounded
+virtual position into `io.MousePos` as if it were a real screen
+coordinate, and ImGui hit-tests window rects against it every frame
+regardless.
+
+The instant Ctrl is released, GLFW's virtual position doesn't jump - it
+continues from wherever it was the moment before release (this is
+deliberate, see `firstMouseSample_` in §18, added specifically to avoid
+a *different* jump artifact). Before Phase 11, that residual position
+landing inside one of the 3 small floating debug windows was unlikely -
+most of the screen wasn't an ImGui window at all. Since Phase 11's
+dockable viewport, the **entire client area** is docked ImGui windows
+(Viewport + the 3 debug tabs), so the residual position is almost always
+still "inside some window," `WantCaptureMouse` stays stuck `true`, and
+`Application.cpp`'s `!ImGui::GetIO().WantCaptureMouse` click-fire gate
+(unchanged since §17) blocks the shot. Moving the mouse to look around
+eventually drags the virtual position far enough to fall outside every
+window's rect, at which point `WantCaptureMouse` finally clears and
+clicking works again - matching "occasionally only after a big view
+swing" exactly.
+
+**Fix:** exactly what ImGui's own changelog recommends - toggle
+`ImGuiConfigFlags_NoMouse` in `Application::mainLoop()`, synced to
+`Camera::cursorVisible()` every single frame (not just on the Ctrl
+transition, so it self-corrects regardless of frame ordering):
+
+```cpp
+if (context->camera().cursorVisible())
+    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+else
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+```
+
+While the cursor is disabled (look mode), ImGui now ignores mouse input
+entirely - `WantCaptureMouse` is always `false`, and the stale/unbounded
+position can never be misread as "hovering a window," because ImGui
+isn't looking at it at all. While Ctrl is held (cursor visible), the flag
+clears and the debug windows work exactly as before.
+
+**Why this is the right layer to fix it at, not the click-gate
+condition:** a narrower fix (e.g. `!cursorVisible() || !WantCaptureMouse`
+only at the fire-gate) would have patched just the reported symptom, but
+left the same stale-position mechanism free to cause other, unreported
+mouse-capture confusion during look mode (phantom hover highlighting,
+a docked panel's drag/resize technically still being "live" from
+ImGui's perspective while the user can't even see their cursor).
+Disabling ImGui's mouse processing outright for the whole duration
+cursor is captured is the actually-correct statement of intent: the user
+cannot interact with any widget while the cursor is invisible and
+captured, so ImGui shouldn't believe it can capture anything either.
+
+**Interview-relevant:** *"Why does a UI-interaction bug only show up
+after adding a dockable viewport, when the underlying cursor-mode code
+was already there?"* - because the *rate* of a stale-position false
+positive is a direct function of how much of the screen is covered by
+ImGui windows. At 3 small floating windows the odds were low enough to
+go unnoticed; at "the entire client area," they round up to "almost
+every time."
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |
@@ -1409,6 +1486,7 @@ detail changing across the whole grid in the same frame - the same
 | After adding derivative-based normal mapping, the *entire* scene rendered solid black — including LOD1/LOD2 meshes the change never touched | `dFdx(uv)`/`dFdy(uv)` are exactly `(0,0)` for any mesh with no real UV variation (LOD1/LOD2's `ObjLoader`-fallback constant `uv=(0,0)`), collapsing the reconstructed tangent/bitangent to the zero vector; `inversesqrt(0)` is `+Inf`, and `vec3(0) * Inf` is `NaN` per IEEE 754, which then poisons every subsequent value derived from it, in every draw sharing the pipeline | Verified by actually launching the app rather than re-reading the shader math (which looks correct for any mesh with real UV variation and gives no hint of the failure). The default camera position never brings any instance within LOD0 range, so the very first test run only ever exercised the degenerate-UV path — worth remembering that "the change I made should only affect X" is a claim to verify against what's actually on screen, not assume from which mesh the change targeted (§25) |
 | A newly added `assets/suzanne_pbr.obj` (Phase 8 milestone 2) never showed up in `git status` after `curl`-ing it into place - investigating turned out to be much bigger than one missing file | `.gitignore`'s "Compiled objects" section had a bare `*.obj` rule intended for MSVC compiler object files. It also matches Wavefront OBJ mesh assets, and `assets/*.obj` was never exempted - `git ls-files assets/` showed only the `.mtl` files and `test_texture.png` were ever actually tracked. **`suzanne.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`, and `textured_cube.obj` had never been committed at all**, on any commit up to this one - every one of this project's demo meshes, the whole time. A fresh `git clone` would build successfully (submodules + CMake don't need the assets) but `ObjLoader::load()` would throw at startup on the first missing file. `build/` (already ignored above the `*.obj` line) already covers every actual compiler `.obj` in this project, making the rule pure redundant risk, not a needed one | Caught by noticing the new file was absent from `git status --short` right before staging, not by an error message - a silently-ignored file produces no warning, and the working tree builds and runs fine regardless of git-tracking status since the files are still physically on disk. Only a fresh clone would have surfaced this. Removed the `*.obj` line entirely and committed the meshes; `*.o`/`*.lo`/`*.slo` (real object-file extensions with no asset-format collision here) stayed ignored |
 | The offscreen scene target's aspect ratio silently didn't match the camera's projection matrix, for the first several commits of the dockable-viewport feature (§24) | `VulkanSceneColorTarget::HEIGHT` was `1024`, not `720` - a typo made while writing the class, never `1280×720` as every design note (including this document's own §24 writeup) already claimed. `Camera::ASPECT_RATIO` is a separate hardcoded `1280.0f/720.0f` constant in a different file, with nothing anywhere cross-checking the two against each other or against the GLFW window's actual creation size (`glfwCreateWindow(1280, 720, ...)` in `Application.cpp`) | Found doing a routine "recheck the docs against the code" pass, not by looking for this specific bug - grepped every doc's stated `1280×1024` resolution and cross-referenced it against `Camera::ASPECT_RATIO` and the actual `glfwCreateWindow` call, which is where the mismatch became obvious. A useful reminder that a doc describing a wrong value *consistently* reads as confirmation, not a red flag, unless it's actually checked against the code and not just against itself. Fixed the constant to `720`; nothing else needed to change since `sceneColorTarget_.extent()` is already read dynamically everywhere it's used |
+| Left-click-to-fire intermittently didn't register right after releasing Ctrl - reliably fixed by a big mouse-look swing, reported by the user with the correct suspicion ("UI region vs. cursor region conflict") | `imgui_impl_glfw.cpp` keeps feeding GLFW's unbounded `GLFW_CURSOR_DISABLED` virtual position into `io.MousePos` (confirmed in its own changelog - it deliberately does not ignore mouse data in that mode) even though that position isn't real screen coordinates; `WantCaptureMouse` hit-tests it against ImGui window rects anyway. Since Phase 11 made the entire client area docked ImGui windows, the residual position from right before Ctrl release is almost always still "inside some window," keeping `WantCaptureMouse` stuck `true` until enough mouse-look movement drags it back outside every window's rect (§27) | User-reported, with the root cause already correctly guessed before investigation started. Fixed per ImGui's own recommended remedy: toggle `ImGuiConfigFlags_NoMouse` in sync with `Camera::cursorVisible()` every frame, so ImGui ignores mouse input outright while the cursor is captured, rather than patching only the one call site (`Application.cpp`'s click-fire gate) that happened to surface the symptom |
 
 ---
 

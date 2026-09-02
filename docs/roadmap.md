@@ -411,6 +411,18 @@ the debug UI is an extra area alongside the 3D view, not overlapping it.
   for just this one target was scoped out. See `TECHNICAL_NOTES.md` §24
   for the full Qt-vs-ImGui-docking tradeoff analysis behind this choice.
 
+**Addendum — a real interaction bug surfaced afterward, user-reported:**
+docking the debug windows over the entire client area made a pre-existing
+cursor-mode/ImGui interaction gap (§18 addendum) into a frequent,
+noticeable bug — the projectile's left-click trigger would intermittently
+not register right after releasing Ctrl, only reliably firing again after
+a large mouse-look swing. Root cause: ImGui's GLFW backend keeps feeding
+the disabled-cursor's unbounded virtual position into its own hit-testing
+regardless, and now that virtually the whole screen is a docked ImGui
+window, that stale position is almost always still "inside one." Fixed
+by syncing `ImGuiConfigFlags_NoMouse` with cursor visibility every frame —
+see `TECHNICAL_NOTES.md` §27.
+
 ---
 
 ## Phase 12 — Tunable LOD Distance Thresholds

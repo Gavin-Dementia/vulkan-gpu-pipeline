@@ -64,6 +64,25 @@ void Application::mainLoop()
 
         context->camera().processInput(context->window(), deltaTime);
 
+        // Keep ImGui's own mouse capture in sync with cursor visibility.
+        // GLFW_CURSOR_DISABLED reports an unbounded "virtual" position
+        // (see Camera::processInput's comments) that ImGui's backend
+        // still feeds into io.MousePos - imgui_impl_glfw.cpp explicitly
+        // does NOT ignore mouse data on GLFW_CURSOR_DISABLED and
+        // recommends ImGuiConfigFlags_NoMouse instead. Without this, that
+        // stale/frozen position can land inside a docked ImGui window
+        // (virtually the whole client area since Phase 11's dockable
+        // viewport) right when Ctrl is released, leaving WantCaptureMouse
+        // stuck true and blocking the projectile's click-to-fire trigger
+        // below until enough mouse-look movement drifts the position back
+        // out of every window's rect - see TECHNICAL_NOTES.md for the
+        // full writeup of this bug.
+        ImGuiIO& io = ImGui::GetIO();
+        if (context->camera().cursorVisible())
+            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+        else
+            io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+
         // Poll (not callback) for the left mouse button - ImGui already
         // owns GLFW's mouse callbacks internally (install_callbacks=true
         // in ImGuiLayer::init), so registering our own would clobber it.

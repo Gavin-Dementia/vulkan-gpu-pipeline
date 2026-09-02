@@ -17,6 +17,12 @@ public:
 
     glm::vec3 position() const { return position_; }
 
+    // True while Ctrl is held (cursor visible, mouse-look suspended) -
+    // exposed so Application::mainLoop() can keep ImGui's own mouse
+    // capture in sync with it (see the ImGuiConfigFlags_NoMouse toggle
+    // there and TECHNICAL_NOTES.md for why that's needed).
+    bool cursorVisible() const { return cursorVisible_; }
+
     // Public so callers (e.g. Projectile launch) can aim along the same
     // direction the camera itself uses for movement/view - single source
     // of truth, same rationale as getViewMatrix()/getProjectionMatrix().
