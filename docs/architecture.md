@@ -281,7 +281,7 @@ on top of the rendered grid. See `TECHNICAL_NOTES.md` §24 for the full
 tradeoff analysis (why not just reposition the windows, why not a custom
 static `VkViewport` split, why not Qt) behind the approach below.
 
-- `VulkanSceneColorTarget` — a fixed-resolution (1280×1024, matching
+- `VulkanSceneColorTarget` — a fixed-resolution (1280×720, matching
   `Camera::ASPECT_RATIO`), sampled (`VK_FORMAT_B8G8R8A8_SRGB`) color
   image/view, independent of swapchain size — same "sampled render
   target, own render pass" shape as `VulkanShadowMap`, just a color
@@ -303,7 +303,7 @@ static `VkViewport` split, why not Qt) behind the approach below.
 - `VulkanContext::pipeline_` (the geometry pipeline) targets the new
   `sceneRenderPass_`/`sceneColorTarget_.extent()` instead of the
   swapchain's `renderPass_`/extent — same shaders/descriptor layout, both
-  extents happen to already be `1280×1024`.
+  extents happen to already be `1280×720`.
 - `ImGuiPass` calls `ImGui::DockSpaceOverViewport()` plus a one-time
   `DockBuilder*` layout (Viewport centered, the 3 debug windows docked as
   a tabbed group on the right) so the first run already shows the
@@ -571,7 +571,7 @@ Write timestamp 2 (BOTTOM_OF_PIPE) — closes the Shadow interval
 Image Memory Barrier (LATE_FRAGMENT_TESTS write → FRAGMENT_SHADER read)
         │
 Begin Offscreen Scene Render Pass (sceneRenderPass_/sceneFramebuffer_,
-   fixed 1280×1024 resolution - see "Dockable viewport" module notes)
+   fixed 1280×720 resolution - see "Dockable viewport" module notes)
         │
 Graphics: GeometryPass
    upload SceneData (light + camera + lightViewProj + shadow bias) →

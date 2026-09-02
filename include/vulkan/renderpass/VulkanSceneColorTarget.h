@@ -13,7 +13,7 @@ class VulkanSceneColorTarget
 {
 public:
     static constexpr uint32_t WIDTH  = 1280;
-    static constexpr uint32_t HEIGHT = 1024;
+    static constexpr uint32_t HEIGHT = 720;   // must match Camera::ASPECT_RATIO (1280/720) and the GLFW window's actual size
     static constexpr VkFormat FORMAT = VK_FORMAT_B8G8R8A8_SRGB;   // matches the swapchain's format
 
     void create(VkPhysicalDevice physical, VkDevice device);

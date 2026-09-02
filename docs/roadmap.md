@@ -385,7 +385,7 @@ the debug UI is an extra area alongside the 3D view, not overlapping it.
   files — docking lives entirely inside `imgui.cpp`/`imgui_internal.h`,
   already covered by `CMakeLists.txt`'s existing imgui source list.
 - New offscreen scene render target (`VulkanSceneColorTarget`, fixed
-  1280×1024 — matches `Camera::ASPECT_RATIO`'s existing fixed-window
+  1280×720 — matches `Camera::ASPECT_RATIO`'s existing fixed-window
   assumption) + a new `VulkanRenderPass::createOffscreenColor()`, modeled
   directly on the shadow map's depth-only precedent (§13/§22 pattern:
   sampled render target, own render pass, own framebuffer).
@@ -475,9 +475,6 @@ recompile to change.
 - **IBL / environment lighting** — current ambient term is a flat
   `0.03 * albedo` constant (shadow mapping for the direct term is now
   implemented — see Phase 9)
-- **Texture sampling reunited with the primary mesh** — implemented and
-  validated in isolation (§13), but the Suzanne LOD chain still has no
-  texcoord data on any of its 3 variants
 - **Multi-pass / hierarchical culling** — current design is a flat
   343-thread scan; fine at this scale, would need a coarser first pass
   at much higher instance counts

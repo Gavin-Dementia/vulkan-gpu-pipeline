@@ -1207,7 +1207,11 @@ render resolution just doesn't increase with it. Flagged in
   `sceneRenderPass_`/`sceneColorTarget_.extent()` instead of the
   swapchain's `renderPass_`/extent — same shaders, same descriptor
   layout, just a different `VkRenderPass` handle and viewport, since both
-  happen to already be `1280×1024`.
+  happen to already be `1280×720`. **Addendum:** for the first several
+  commits this was actually `1280×1024` — a typo in
+  `VulkanSceneColorTarget::HEIGHT`, unnoticed because nothing crashes or
+  validates against it; see the bugs table for the aspect-mismatch
+  consequence and how it was caught.
 - `FrameRenderer::drawFrame()` now begins two render passes where it used
   to begin one: the offscreen scene pass (`executeGraphics()`), a color
   barrier (`COLOR_ATTACHMENT_WRITE_BIT → SHADER_READ_BIT`, mirroring the
@@ -1404,6 +1408,7 @@ detail changing across the whole grid in the same frame - the same
 | `app.exe` printed `[Texture] stbi error: can't fopen` then aborted (`Debug Error! abort() has been called`) when launched directly from `build/bin/Debug/` | `CMAKE_RUNTIME_OUTPUT_DIRECTORY` is `build/bin`, so the `assets/`/`shaders/compiled/` POST_BUILD copies land in `build/bin/`, one level *above* where MSVC's multi-config generator actually places the executable (`build/bin/Debug/app.exe`, already called out in every doc's build section) — relative paths like `"assets/test_texture.png"` don't resolve from that directory. The texture failure alone is survivable (`stbi` logs and returns); the actual `abort()` is `ShaderLoader` throwing `std::runtime_error` for the equally-missing `shaders/compiled/*.spv` with nothing in `main()` to catch it, so it reaches `std::terminate()` | Always run the executable with `build/bin` as the working directory (e.g. `build/bin/Debug/app.exe` launched *from* `build/bin`), not from inside the `Debug/` subfolder it actually lives in — a distinction every doc's build section already states for a different reason (locating the binary) but doesn't spell out for *running* it |
 | After adding derivative-based normal mapping, the *entire* scene rendered solid black — including LOD1/LOD2 meshes the change never touched | `dFdx(uv)`/`dFdy(uv)` are exactly `(0,0)` for any mesh with no real UV variation (LOD1/LOD2's `ObjLoader`-fallback constant `uv=(0,0)`), collapsing the reconstructed tangent/bitangent to the zero vector; `inversesqrt(0)` is `+Inf`, and `vec3(0) * Inf` is `NaN` per IEEE 754, which then poisons every subsequent value derived from it, in every draw sharing the pipeline | Verified by actually launching the app rather than re-reading the shader math (which looks correct for any mesh with real UV variation and gives no hint of the failure). The default camera position never brings any instance within LOD0 range, so the very first test run only ever exercised the degenerate-UV path — worth remembering that "the change I made should only affect X" is a claim to verify against what's actually on screen, not assume from which mesh the change targeted (§25) |
 | A newly added `assets/suzanne_pbr.obj` (Phase 8 milestone 2) never showed up in `git status` after `curl`-ing it into place - investigating turned out to be much bigger than one missing file | `.gitignore`'s "Compiled objects" section had a bare `*.obj` rule intended for MSVC compiler object files. It also matches Wavefront OBJ mesh assets, and `assets/*.obj` was never exempted - `git ls-files assets/` showed only the `.mtl` files and `test_texture.png` were ever actually tracked. **`suzanne.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`, and `textured_cube.obj` had never been committed at all**, on any commit up to this one - every one of this project's demo meshes, the whole time. A fresh `git clone` would build successfully (submodules + CMake don't need the assets) but `ObjLoader::load()` would throw at startup on the first missing file. `build/` (already ignored above the `*.obj` line) already covers every actual compiler `.obj` in this project, making the rule pure redundant risk, not a needed one | Caught by noticing the new file was absent from `git status --short` right before staging, not by an error message - a silently-ignored file produces no warning, and the working tree builds and runs fine regardless of git-tracking status since the files are still physically on disk. Only a fresh clone would have surfaced this. Removed the `*.obj` line entirely and committed the meshes; `*.o`/`*.lo`/`*.slo` (real object-file extensions with no asset-format collision here) stayed ignored |
+| The offscreen scene target's aspect ratio silently didn't match the camera's projection matrix, for the first several commits of the dockable-viewport feature (§24) | `VulkanSceneColorTarget::HEIGHT` was `1024`, not `720` - a typo made while writing the class, never `1280×720` as every design note (including this document's own §24 writeup) already claimed. `Camera::ASPECT_RATIO` is a separate hardcoded `1280.0f/720.0f` constant in a different file, with nothing anywhere cross-checking the two against each other or against the GLFW window's actual creation size (`glfwCreateWindow(1280, 720, ...)` in `Application.cpp`) | Found doing a routine "recheck the docs against the code" pass, not by looking for this specific bug - grepped every doc's stated `1280×1024` resolution and cross-referenced it against `Camera::ASPECT_RATIO` and the actual `glfwCreateWindow` call, which is where the mismatch became obvious. A useful reminder that a doc describing a wrong value *consistently* reads as confirmation, not a red flag, unless it's actually checked against the code and not just against itself. Fixed the constant to `720`; nothing else needed to change since `sceneColorTarget_.extent()` is already read dynamically everywhere it's used |
 
 ---
 
@@ -1444,22 +1449,15 @@ detail changing across the whole grid in the same frame - the same
   revisiting at much higher instance counts where the linear scan itself
   becomes the bottleneck.
 - **The dockable Viewport target is fixed-resolution** (§24) — resizing
-  the ImGui panel scales the existing 1280×1024 image rather than
+  the ImGui panel scales the existing 1280×720 image rather than
   re-rendering at a new resolution; would need swapchain-style resize
   handling this project has never needed anywhere else.
-- **Texture sampling is implemented and validated** (#13) — the
-  descriptor, sampler, and fragment shader (`texture(texSampler,
-  fragUV)`) are all wired up and bound — but the primary demo mesh
-  (`suzanne.obj`, all 3 LOD variants) still has no texcoord data
-  (confirmed: 507/507 LOD0 vertices with `uv == (0,0)`; still true as of
-  the LOD pivot — `suzanne_lod1.obj`/`suzanne_lod2.obj` inherited the
-  same gap). The earlier workaround of switching to a hand-written
-  `textured_cube.obj` (see bugs table) is no longer wired into
-  `initSceneData()` at all — the LOD loader only loads the 3 Suzanne
-  variants — so the running app currently renders Suzanne sampling a
-  single constant texel (`fragUV == (0,0)` everywhere) rather than a
-  properly mapped texture. Fixing this needs either a UV-mapped Suzanne
-  LOD chain or restoring a textured asset into the LOD array.
+- **Texture sampling is implemented and validated** (#13), and reunited
+  with the primary demo mesh for LOD0 as of Phase 8 milestone 2 (§25) —
+  `assets/suzanne_pbr.obj` has real `vt` data, unlike the original
+  `suzanne.obj`. LOD1/LOD2 (`suzanne_lod1.obj`/`suzanne_lod2.obj`) still
+  have none and sample a constant `(0,0)` texel — see §25's scoping
+  decision for why, and `docs/roadmap.md`'s Open items for the tracked gap.
 
 ---
 
