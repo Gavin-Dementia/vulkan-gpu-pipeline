@@ -210,7 +210,7 @@ Milestone 2 — grid collision + scatter — implemented:
 
 ## Phase 8 — PBR Lighting
 
-**Status: Milestone 1 complete**
+**Status: Both milestones complete**
 
 First concrete PBR step, scoped narrowly on purpose: get real lighting
 math on screen before touching materials/textures at all.
@@ -235,9 +235,46 @@ Milestone 1 — Cook-Torrance BRDF — implemented:
   Reinhard tonemap only, no manual `pow(1/2.2)` gamma step
 - ImGui "Lighting" window: real-time direction/color/intensity sliders
 
-Milestone 2 (not started) — texture-based materials (albedo/normal/
-metallic-roughness/AO maps) and a formal `Material` class, generalizing
-the per-object-descriptor-set pattern this milestone already proved out.
+Milestone 2 — texture-based materials — implemented:
+- New `Material` class (`include/vulkan/texture/Material.h`) bundling 4
+  `VulkanTexture` instances (albedo/normal/metallic-roughness/AO) —
+  exactly the "formal Material class, generalizing the per-object-
+  descriptor-set pattern" this phase's plan named as the goal. Grid and
+  projectile still share one `Material` instance (same "reuses the
+  single shared texture" reasoning milestone 1 already established).
+- `VulkanTexture::create()` gained a `VkFormat` parameter — albedo stays
+  `VK_FORMAT_R8G8B8A8_SRGB` (color data), normal/metallic-roughness/AO
+  use `VK_FORMAT_R8G8B8A8_UNORM` (non-color data must not be gamma-
+  decoded on sample). `VulkanDescriptor` grew from 4 to 7 bindings.
+- `triangle.frag`: metallic/roughness now sample a glTF-convention
+  metallic-roughness map (G=roughness, B=metallic) multiplied by the
+  existing push-constant factors — same "factor × texture" pattern
+  `finalAlbedo` already used, so grid vs. projectile keep looking
+  visually distinct. AO multiplies the ambient term only. Normal mapping
+  uses a derivative-based tangent frame (`dFdx`/`dFdy` on world position
+  + UV) instead of a precomputed tangent vertex attribute — zero
+  `Vertex`/`ObjLoader` changes needed. See `TECHNICAL_NOTES.md` §25 for
+  the full design writeup, including a real NaN bug this technique hit
+  and how it was fixed.
+- **Blocking problem, solved:** Suzanne (all 3 LOD `.obj` files) had zero
+  real UV data. LOD0 now loads `assets/suzanne_pbr.obj`, a UV/normal-
+  mapped re-export of the same base mesh sourced from
+  `opengl-tutorials/ogl` (asked the user, who directed a GitHub search
+  over switching demo assets or hand-rolling triplanar projection) —
+  **provenance caveat:** no explicit LICENSE file found in that source
+  repo; Suzanne is Blender's own bundled primitive and unattributed
+  re-exports are a long-standing convention across the graphics-tutorial
+  ecosystem, not a documented grant, worth the user's own call for a
+  public portfolio repo.
+- **Known, explicitly accepted gap:** LOD1/LOD2 still use the original
+  UV-less meshes (matching UV-preserving decimations need a 3D tool this
+  environment doesn't have) — they render exactly as before, not a
+  regression, just not textured. Also placeholder textures throughout
+  (`assets/normal.png`, `metallic_roughness.png`, `ao.png` are small
+  self-generated PNGs — flat normal, a metallic/roughness gradient, flat
+  AO — not sourced/authored PBR photo sets), same "good enough now,
+  refine later" bar this project already applies elsewhere (LOD
+  thresholds, the flat ambient term).
 
 ---
 
@@ -380,8 +417,13 @@ the debug UI is an extra area alongside the 3D view, not overlapping it.
   texture is fixed-resolution; resizing the "Viewport" panel scales the
   existing image rather than re-rendering at a new resolution. Would need
   swapchain-style resize handling this project doesn't have anywhere else.
-- **Texture-based PBR materials** (Phase 8, milestone 2) — albedo/
-  normal/metallic-roughness/AO maps, a formal `Material` class
+- **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
+  was swapped to a UV/normal-mapped mesh; the far LOD meshes sample a
+  constant `(0,0)` texel, same flat-tinted look as before this milestone.
+- **Placeholder PBR texture maps, not sourced/authored ones** (Phase 8,
+  milestone 2) — `normal.png`/`metallic_roughness.png`/`ao.png` are small
+  self-generated flat/gradient PNGs, good enough to validate the sampling
+  mechanism, not real material photography.
 - **Swept (not discrete) projectile collision** — current hit test only
   checks position once per frame; not observable at the current
   speed/instance-radius ratio, but would need revisiting for a much
@@ -412,8 +454,10 @@ the debug UI is an extra area alongside the 3D view, not overlapping it.
   culling, neural-rendering hybrid approaches under consideration for
   graduate study direction)
 - PBR material model, approached incrementally: interactive objects
-  (Phase 7) first, then lighting math (Phase 8 milestone 1, complete),
-  texture-based materials next, rather than jumping straight to a full
-  material system
+  (Phase 7) first, then lighting math (Phase 8 milestone 1), then
+  texture-based materials (Phase 8 milestone 2, both complete) — a real
+  `Material` class exists now, but per-object material variation (beyond
+  the existing push-constant factors) is still future work, not a
+  jump straight to a full material system
 - Foundation for future rendering experiments
 

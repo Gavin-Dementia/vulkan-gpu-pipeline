@@ -170,12 +170,11 @@ set/instance buffer (see `TECHNICAL_NOTES.md` §17); drawn with a plain
 `vkCmdDrawIndexed` inside `GeometryPass`, guarded by `isActive()` — no
 new `FrameGraph` pass.
 
-### Lighting (PBR milestone 1)
+### Lighting (PBR, both milestones)
 
 Cook-Torrance BRDF (GGX distribution, Smith geometry, Fresnel-Schlick),
-one directional light, no textures beyond the existing shared one. Two
-pieces of data, two different mechanisms — see `TECHNICAL_NOTES.md` §19
-for why:
+one directional light. Two pieces of data, two different mechanisms —
+see `TECHNICAL_NOTES.md` §19 for why:
 - `SceneData` (light direction, light color+intensity, camera position)
   — a UBO at **binding 2** on the existing graphics descriptor set,
   shared by every material (both `descriptor_` and `projectileDescriptor_`
@@ -184,7 +183,39 @@ for why:
   stage **push constant**, re-issued via `vkCmdPushConstants` right
   before each draw call, since it's pipeline state that persists across
   draws in the same command buffer rather than per-draw-scoped like a
-  descriptor set.
+  descriptor set. Milestone 2 kept this mechanism as a *factor*
+  multiplying the new textures below, rather than replacing it, so grid
+  vs. projectile still look visually distinct sharing one `Material`.
+
+Milestone 2 (see `TECHNICAL_NOTES.md` §25) added real textures behind
+those flat values:
+- `Material` (`include/vulkan/texture/Material.h`) — bundles 4
+  `VulkanTexture` instances (albedo/normal/metallic-roughness/AO).
+  `VulkanContext::material_` is the one shared instance both
+  `descriptor_` and `projectileDescriptor_` bind, same "reuses the
+  single shared texture" pattern milestone 1 already used for the lone
+  albedo texture.
+  `VulkanTexture::create()` gained a `VkFormat` parameter: albedo stays
+  `VK_FORMAT_R8G8B8A8_SRGB` (color data, sRGB→linear on sample);
+  normal/metallic-roughness/AO use `VK_FORMAT_R8G8B8A8_UNORM` (non-color
+  data must not be gamma-decoded).
+- `VulkanDescriptor` grew from 4 to 7 bindings (4 = normal, 5 =
+  metallic-roughness, 6 = AO, all fragment-stage combined-image-samplers).
+- `triangle.frag`: metallic/roughness sample a glTF-convention
+  metallic-roughness map (G = roughness, B = metallic), multiplied by the
+  existing push-constant factors. AO multiplies the ambient term only
+  (the direct term already has its own occlusion source, the shadow map
+  — same "don't double up two different occlusion signals" discipline as
+  `calcShadow()` touching only `Lo`). Normal mapping reconstructs a
+  per-pixel tangent frame from `dFdx`/`dFdy` on world position and UV
+  (Schuler's derivative-based technique) instead of a precomputed tangent
+  vertex attribute — no `Vertex`/`ObjLoader` changes needed, at the cost
+  of needing a guard for meshes with no real UV variation (see §25's NaN
+  bug writeup).
+- LOD0 loads a new asset, `assets/suzanne_pbr.obj` — a UV/normal-mapped
+  re-export of the same base Suzanne mesh, since the original had zero
+  UV data. LOD1/LOD2 are unchanged (still UV-less, sample a constant
+  texel) — a known, explicitly accepted gap, not a regression.
 
 Tunable at runtime via an ImGui "Lighting" window (direction/color/
 intensity/shadow-bias sliders) — `FrameRenderer`'s `ImGuiPass` lambda
@@ -425,15 +456,16 @@ Application
     │     VulkanRenderPass (offscreen-color) / VulkanFramebuffer - the
     │     offscreen scene target GeometryPass now renders into, sampled by
     │     ImGui's "Viewport" window (see "Dockable viewport" module notes)
-    ├── VulkanDescriptor (graphics, 4 bindings: UBO / combined-image-sampler /
-    │     SceneData / shadow-map combined-image-sampler)
+    ├── VulkanDescriptor (graphics, 7 bindings: UBO / albedo / SceneData /
+    │     shadow map / normal / metallic-roughness / AO combined-image-samplers)
     ├── ComputeDescriptor (compute, 8 bindings: object / 3×visible / 3×indirect / frustum)
     ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
     ├── ObjectBuffer (shared, 343 entries, re-uploaded every frame) / FrustumBuffer
     ├── cachedInstances_ / instanceCurrentPositions_ / instanceVelocities_
     │     (rest formation / live scatter state, all 343 entries — see
     │      "Grid collision + scatter" module notes)
-    ├── VulkanTexture
+    ├── Material (material_ - bundles 4 VulkanTexture: albedo/normal/
+    │     metallic-roughness/AO, see "Lighting" module notes)
     ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos,
     │     lightViewProj, shadow bias — bound at binding 2 on both descriptor_ and
     │     projectileDescriptor_, now also read by the vertex stage)

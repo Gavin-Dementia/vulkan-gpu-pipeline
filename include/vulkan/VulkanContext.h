@@ -28,7 +28,7 @@
 #include "vulkan/buffer/IndexBuffer.h"
 #include "vulkan/instance/InstanceData.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
-#include "vulkan/texture/VulkanTexture.h"
+#include "vulkan/texture/Material.h"
 #include "vulkan/lighting/SceneData.h"
 
 
@@ -87,7 +87,7 @@ public:
     ComputeDescriptor&     computeDescriptor() { return computeDescriptor_; }
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
-    VulkanTexture&         texture()           { return texture_; }
+    Material&              material()          { return material_; }
 
     VulkanBuffer&          projectileInstanceBuffer() { return projectileInstanceBuffer_; }
     UniformBuffer&         projectileUniformBuffer()  { return projectileUniformBuffer_; }
@@ -196,7 +196,7 @@ private:
     ComputeDescriptor     computeDescriptor_;
     VulkanComputePipeline computePipeline_;
     VulkanBuffer          frustumBuffer_;
-    VulkanTexture         texture_;
+    Material              material_;
 
     VulkanBuffer          projectileInstanceBuffer_;
     UniformBuffer         projectileUniformBuffer_;

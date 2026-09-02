@@ -160,6 +160,7 @@ set(VULKAN_SWAPCHAIN_SRC
 
 set(VULKAN_TEXTURE_SRC
     src/vulkan/texture/VulkanTexture.cpp
+    src/vulkan/texture/Material.cpp
 )
 
 # =========================================================

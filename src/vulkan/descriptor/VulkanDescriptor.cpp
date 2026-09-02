@@ -5,15 +5,14 @@
 void VulkanDescriptor::create(
     VkDevice device,
     VkBuffer uniformBuffer,
-    VkImageView textureView,
-    VkSampler textureSampler,
+    Material& material,
     VkBuffer sceneDataBuffer,
     VkImageView shadowMapView,
     VkSampler shadowMapSampler)
 {
     createLayout(device);
     createPool(device);
-    allocateAndWrite(device, uniformBuffer, textureView, textureSampler, sceneDataBuffer, shadowMapView, shadowMapSampler);
+    allocateAndWrite(device, uniformBuffer, material, sceneDataBuffer, shadowMapView, shadowMapSampler);
 }
 
 void VulkanDescriptor::destroy(VkDevice device)
@@ -25,7 +24,7 @@ void VulkanDescriptor::destroy(VkDevice device)
 void VulkanDescriptor::createLayout(VkDevice device)
 {
     // notify Vulkan：binding 0 is a uniform buffer use for vertex shader
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
 
     bindings[0].binding         = 0;
     bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -53,6 +52,23 @@ void VulkanDescriptor::createLayout(VkDevice device)
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    // Phase 8 milestone 2 (see docs/TECHNICAL_NOTES.md): normal /
+    // metallic-roughness / AO maps, sampled only by the fragment shader.
+    bindings[4].binding         = 4;
+    bindings[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[5].binding         = 5;
+    bindings[5].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    bindings[6].binding         = 6;
+    bindings[6].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -68,7 +84,7 @@ void VulkanDescriptor::createPool(VkDevice device)
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 2;   // binding 0 (MVP) + binding 2 (SceneData)
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = 2;   // binding 1 (texture) + binding 3 (shadow map)
+    poolSizes[1].descriptorCount = 5;   // bindings 1,3,4,5,6 (albedo/shadow/normal/MR/AO)
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -83,8 +99,7 @@ void VulkanDescriptor::createPool(VkDevice device)
 void VulkanDescriptor::allocateAndWrite(
     VkDevice device,
     VkBuffer uniformBuffer,
-    VkImageView textureView,
-    VkSampler textureSampler,
+    Material& material,
     VkBuffer sceneDataBuffer,
     VkImageView shadowMapView,
     VkSampler shadowMapSampler
@@ -105,10 +120,10 @@ void VulkanDescriptor::allocateAndWrite(
     bufInfo.offset = 0;
     bufInfo.range  = VK_WHOLE_SIZE;
 
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imgInfo.imageView   = textureView;
-    imgInfo.sampler     = textureSampler;
+    VkDescriptorImageInfo albedoInfo{};
+    albedoInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    albedoInfo.imageView   = material.albedo().view();
+    albedoInfo.sampler     = material.albedo().sampler();
 
     VkDescriptorBufferInfo sceneInfo{};
     sceneInfo.buffer = sceneDataBuffer;
@@ -120,7 +135,22 @@ void VulkanDescriptor::allocateAndWrite(
     shadowInfo.imageView   = shadowMapView;
     shadowInfo.sampler     = shadowMapSampler;
 
-    std::array<VkWriteDescriptorSet, 4> writes{};
+    VkDescriptorImageInfo normalInfo{};
+    normalInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    normalInfo.imageView   = material.normal().view();
+    normalInfo.sampler     = material.normal().sampler();
+
+    VkDescriptorImageInfo mrInfo{};
+    mrInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    mrInfo.imageView   = material.metallicRoughness().view();
+    mrInfo.sampler     = material.metallicRoughness().sampler();
+
+    VkDescriptorImageInfo aoInfo{};
+    aoInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    aoInfo.imageView   = material.ao().view();
+    aoInfo.sampler     = material.ao().sampler();
+
+    std::array<VkWriteDescriptorSet, 7> writes{};
 
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = set_;
@@ -134,7 +164,7 @@ void VulkanDescriptor::allocateAndWrite(
     writes[1].dstBinding      = 1;
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].descriptorCount = 1;
-    writes[1].pImageInfo      = &imgInfo;
+    writes[1].pImageInfo      = &albedoInfo;
 
     writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[2].dstSet          = set_;
@@ -149,6 +179,27 @@ void VulkanDescriptor::allocateAndWrite(
     writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[3].descriptorCount = 1;
     writes[3].pImageInfo      = &shadowInfo;
+
+    writes[4].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet          = set_;
+    writes[4].dstBinding      = 4;
+    writes[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].descriptorCount = 1;
+    writes[4].pImageInfo      = &normalInfo;
+
+    writes[5].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet          = set_;
+    writes[5].dstBinding      = 5;
+    writes[5].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[5].descriptorCount = 1;
+    writes[5].pImageInfo      = &mrInfo;
+
+    writes[6].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[6].dstSet          = set_;
+    writes[6].dstBinding      = 6;
+    writes[6].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[6].descriptorCount = 1;
+    writes[6].pImageInfo      = &aoInfo;
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }

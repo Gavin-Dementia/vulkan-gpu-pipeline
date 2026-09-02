@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include <vector>
+#include "vulkan/texture/Material.h"
 
 class VulkanDescriptor
 {
@@ -8,8 +9,7 @@ public:
     void create(
         VkDevice device,
         VkBuffer uniformBuffer,
-        VkImageView textureView,
-        VkSampler textureSampler,
+        Material& material,
         VkBuffer sceneDataBuffer,
         VkImageView shadowMapView,
         VkSampler shadowMapSampler
@@ -29,8 +29,7 @@ private:
     void allocateAndWrite(
         VkDevice device,
         VkBuffer uniformBuffer,
-        VkImageView textureView,
-        VkSampler textureSampler,
+        Material& material,
         VkBuffer sceneDataBuffer,
         VkImageView shadowMapView,
         VkSampler shadowMapSampler

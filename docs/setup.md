@@ -98,7 +98,7 @@ vulkan-gpu-pipeline/
 │       │                      VulkanShadowMap, VulkanSceneColorTarget
 │       ├── resource/          ShaderLoader, ObjLoader
 │       ├── swapchain/         VulkanSwapchain
-│       └── texture/           VulkanTexture
+│       └── texture/           VulkanTexture, Material
 ├── shaders/                   GLSL source (triangle.vert/frag, culling.comp, shadow.vert)
 ├── src/                       Implementation (.cpp), mirrors include/
 └── third_party/               GLFW, GLM, ImGui, stb, tinyobjloader

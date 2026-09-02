@@ -66,10 +66,18 @@ void VulkanContext::initCore()
 
     uniformBuffer_.create(device_.getPhysical(), device_.get());
 
-    texture_.create(
+    // Phase 8 milestone 2 (see docs/TECHNICAL_NOTES.md): placeholder PBR
+    // texture set - normal.png is a flat "no perturbation" (128,128,255)
+    // map, metallic_roughness.png follows glTF's G=roughness/B=metallic
+    // channel convention, ao.png is flat near-white. Real authored/
+    // downloaded texture sets are a stated future swap-in.
+    material_.load(
         device_.getPhysical(), device_.get(),
         commandPool_.get(), device_.getGraphicsQueue(),
-        "assets/test_texture.png"
+        "assets/test_texture.png",
+        "assets/normal.png",
+        "assets/metallic_roughness.png",
+        "assets/ao.png"
     );
 
     // Shared per-frame scene/light data (SceneData.h) - one buffer bound
@@ -90,8 +98,7 @@ void VulkanContext::initCore()
     descriptor_.create(
         device_.get(),
         uniformBuffer_.get(),
-        texture_.view(),
-        texture_.sampler(),
+        material_,
         sceneDataBuffer_.get(),
         shadowMap_.view(),
         shadowMap_.sampler()
@@ -107,8 +114,7 @@ void VulkanContext::initCore()
     projectileDescriptor_.create(
         device_.get(),
         projectileUniformBuffer_.get(),
-        texture_.view(),
-        texture_.sampler(),
+        material_,
         sceneDataBuffer_.get(),
         shadowMap_.view(),
         shadowMap_.sampler()
@@ -180,8 +186,14 @@ void VulkanContext::initCore()
 // =========================================================
 void VulkanContext::initSceneData()
 {
+    // LOD0 uses a UV/normal-mapped re-export of the same base mesh (Phase 8
+    // milestone 2, see docs/TECHNICAL_NOTES.md) so it can actually sample
+    // the new texture set; LOD1/LOD2 keep the original UV-less meshes -
+    // matching UV-preserving decimations would need a 3D tool this
+    // environment doesn't have, so they stay a known, flagged gap rather
+    // than blocking this milestone.
     const std::array<std::string, 3> lodPaths = {
-        "assets/suzanne.obj",
+        "assets/suzanne_pbr.obj",
         "assets/suzanne_lod1.obj",
         "assets/suzanne_lod2.obj"
     };
@@ -499,7 +511,7 @@ void VulkanContext::cleanup()
         lods_[i].vertexBuffer.destroy(device_.get());
     }
 
-    texture_.destroy(device_.get());
+    material_.destroy(device_.get());
     projectileDescriptor_.destroy(device_.get());
     projectileUniformBuffer_.destroy(device_.get());
     projectileInstanceBuffer_.destroy(device_.get());

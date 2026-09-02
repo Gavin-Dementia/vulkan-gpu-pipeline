@@ -22,6 +22,14 @@ layout(binding = 2) uniform SceneData {
 
 layout(binding = 3) uniform sampler2D shadowMap;
 
+// Phase 8 milestone 2 (see docs/TECHNICAL_NOTES.md): normal/metallic-
+// roughness/AO maps. metallicRoughnessMap follows glTF's channel
+// convention (G = roughness, B = metallic) so any future swap to a real
+// authored/downloaded texture set drops in without a repack.
+layout(binding = 4) uniform sampler2D normalMap;
+layout(binding = 5) uniform sampler2D metallicRoughnessMap;
+layout(binding = 6) uniform sampler2D aoMap;
+
 layout(push_constant) uniform MaterialPushConstants {
     vec4 albedo;             // rgb used, a unused
     vec4 metallicRoughness;  // x = metallic, y = roughness
@@ -59,6 +67,46 @@ float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
 vec3 fresnelSchlick(float cosTheta, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Derivative-based tangent frame ("normal mapping without precomputed
+// tangents" - Schuler's technique) instead of a tangent vertex attribute:
+// this project's Vertex/ObjLoader carry no tangent data, and adding one
+// would mean recomputing it for every LOD mesh. dFdx/dFdy on the already-
+// available world position and UV are enough to reconstruct a per-pixel
+// TBN basis with no vertex-format change - the tradeoff is one that only
+// matters at UV seams/poles, invisible at this scene's scale.
+//
+// Guarded fallback: LOD1/LOD2 (and any UV-less mesh - ObjLoader falls
+// back to a constant uv=(0,0) when an OBJ has no texcoord_index) have
+// zero UV variation across every pixel, so dFdx(uv)/dFdy(uv) are exactly
+// (0,0) there - T and B collapse to the zero vector, and inversesqrt(0)
+// is +Inf, so 0*Inf produces NaN that poisons every draw using this
+// pipeline, not just the UV-less mesh (hit this directly: the default
+// camera distance only ever shows LOD1/LOD2, so the whole scene rendered
+// solid black before this guard was added). Skip perturbation and return
+// the unperturbed normal whenever the UV gradient is degenerate - exactly
+// the correct behavior for a mesh with no real UV data to perturb against.
+vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, vec3 mapNormal)
+{
+    vec3 dp1 = dFdx(worldPos);
+    vec3 dp2 = dFdy(worldPos);
+    vec2 duv1 = dFdx(uv);
+    vec2 duv2 = dFdy(uv);
+
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    float maxLenSq = max(dot(T, T), dot(B, B));
+    if (maxLenSq < EPS)
+        return N;
+
+    float invmax = inversesqrt(maxLenSq);
+    mat3 TBN = mat3(T * invmax, B * invmax, N);
+
+    return normalize(TBN * mapNormal);
 }
 
 // lightSpacePos comes from an orthographic (affine) projection, so w is
@@ -106,10 +154,17 @@ void main()
     vec3 texColor    = texture(texSampler, fragUV).rgb;
     vec3 finalAlbedo = material.albedo.rgb * texColor;
 
-    float metallic  = material.metallicRoughness.x;
-    float roughness = material.metallicRoughness.y;
+    // glTF channel convention: G = roughness, B = metallic. The push
+    // constant stays a *factor* multiplying the texture (same pattern as
+    // finalAlbedo above), so grid vs. projectile keep looking visually
+    // distinct even sampling the same shared Material (see TECHNICAL_NOTES).
+    vec3 mr = texture(metallicRoughnessMap, fragUV).rgb;
+    float metallic  = material.metallicRoughness.x * mr.b;
+    float roughness = material.metallicRoughness.y * mr.g;
+    float ao        = texture(aoMap, fragUV).r;
 
-    vec3 N = normalize(fragNormal);
+    vec3 mapNormal = texture(normalMap, fragUV).rgb * 2.0 - 1.0;
+    vec3 N = normalize(perturbNormal(normalize(fragNormal), fragWorldPos, fragUV, mapNormal));
     vec3 V = normalize(scene.cameraPos.xyz - fragWorldPos);
     vec3 L = normalize(-scene.lightDirection.xyz);
     vec3 H = normalize(V + L);
@@ -135,8 +190,10 @@ void main()
     vec3 radiance = scene.lightColor.rgb * scene.lightColor.a;
     vec3 Lo = (kD * finalAlbedo / PI + specular) * radiance * NdotL * shadow;
 
-    // Flat ambient substitute for missing IBL/environment lighting.
-    vec3 ambient = 0.03 * finalAlbedo;
+    // Flat ambient substitute for missing IBL/environment lighting -
+    // AO occludes this term only, same "don't touch the shadowed direct
+    // term" precedent calcShadow() already set for the shadow map.
+    vec3 ambient = 0.03 * finalAlbedo * ao;
     vec3 color = ambient + Lo;
 
     // Reinhard tonemap only - no pow(color, 1/2.2) gamma step. The swapchain

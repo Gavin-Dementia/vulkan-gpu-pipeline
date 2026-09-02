@@ -40,8 +40,11 @@ ipch/
 # =========================
 # Compiled objects
 # =========================
+# *.obj deliberately NOT ignored here - it collides with Wavefront OBJ
+# mesh assets in assets/*.obj (a real bug: it silently excluded a newly
+# added mesh asset from git, see docs/TECHNICAL_NOTES.md). build/ above
+# already covers every actual compiler .obj output in this project.
 *.o
-*.obj
 *.lo
 *.slo
 

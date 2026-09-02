@@ -1224,6 +1224,116 @@ structurally-different pass this codebase already has a sanctioned
 extension mechanism for (`PassStage` + `execute*()`), not a UI-only
 change.
 
+### 25. Texture-based PBR materials: a `Material` class, and a NaN bug the placeholder assets made inevitable
+
+**Decision:** PBR milestone 1 (§19) proved the lighting math with flat
+push-constant material params; this milestone adds real textures behind
+them — a `Material` class (`include/vulkan/texture/Material.h`) bundling
+albedo/normal/metallic-roughness/AO, `VulkanDescriptor` growing from 4 to
+7 bindings, and `triangle.frag` sampling all four instead of just albedo.
+
+**The blocking problem: Suzanne has zero real UV data.** `triangle.frag`
+already sampled a texture for albedo and `Vertex::uv` was already wired
+through the whole pipeline (§13's earlier isolated validation), but
+`assets/suzanne.obj` (and both LOD variants) have no `vt` lines at all —
+confirmed the same way §13's original gap was confirmed, by grepping the
+source file rather than assuming. Asked the user how to unblock this;
+directed to search GitHub rather than switch the demo mesh or hand-roll
+triplanar projection. Found `opengl-tutorials/ogl`'s `suzanne.obj` — the
+same base Blender monkey mesh, real `vt`/`vn` data, from the widely-used
+opengl-tutorial.org series. **Provenance caveat, stated plainly rather
+than papered over:** no explicit LICENSE file in that source repo.
+Suzanne itself is Blender's own bundled default primitive, and
+unattributed re-exports of it are ubiquitous across the real-time
+graphics tutorial ecosystem (LearnOpenGL, Sascha Willems' Vulkan
+samples, this exact repo) — a strong convention, but not a documented
+grant, and worth the user's own judgment call before it sits in a public
+portfolio repo.
+
+**Scoping decision: only LOD0 gets the new mesh.** Generating matching
+UV-preserving LOD1/LOD2 decimations needs a 3D tool (Blender) not
+available in this environment. LOD1/LOD2 keep sampling a constant
+`uv = (0,0)` texel — the same flat-tinted look they already had, not a
+regression, just an explicitly named gap (same treatment as every other
+"good enough now" simplification this project tracks, e.g. hardcoded LOD
+distance thresholds).
+
+**`VulkanTexture` gained a `VkFormat` parameter instead of a second
+class.** Albedo is color data (`VK_FORMAT_R8G8B8A8_SRGB` — sampling
+auto-converts sRGB→linear, same reasoning as §13's original format
+choice); normal/metallic-roughness/AO are not color data and must be
+read back as raw bytes (`VK_FORMAT_R8G8B8A8_UNORM`) or the values come
+out wrong. One parameterized class, not a near-duplicate "non-color
+texture" class, since the only real difference is which enum value gets
+passed to `vkCreateImage`/`vkCreateImageView`.
+
+**Metallic-roughness/AO are textures multiplying existing push-constant
+factors, not textures replacing them.** `triangle.frag`'s
+`finalAlbedo = material.albedo.rgb * texColor` pattern already
+established "push constant is a per-draw factor, texture is the spatial
+detail" — extended the same way to metallic/roughness (glTF's channel
+convention: G=roughness, B=metallic, so any future swap to a real
+authored/downloaded texture set drops in with no repack) and AO
+(multiplies the ambient term only — the direct `Lo` term already has its
+own separate occlusion signal, the shadow map, so AO touching it too
+would double up two different occlusion sources for no reason; same
+"don't touch the shadowed direct term" discipline §22's `calcShadow()`
+already established).
+
+**Normal mapping: derivative-based tangent frame, not a vertex
+attribute — deliberately, and it exposed a real bug.** Adding a `tangent`
+field to `Vertex` would mean recomputing it for all 3 LOD meshes and
+touching `ObjLoader`; the alternative (reconstructing a per-pixel TBN
+basis from `dFdx`/`dFdy` on the fragment's world position and UV —
+Schuler's "normal mapping without precomputed tangents" technique) needs
+zero vertex-format changes. Implemented it, and hit a NaN bug immediately
+on first run that turned the *entire* scene solid black, not just the
+newly-textured mesh:
+
+```glsl
+float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+```
+
+`T`/`B` (the reconstructed tangent/bitangent) are built from `dFdx(uv)`/
+`dFdy(uv)`. For any mesh with **no real UV variation across a pixel** —
+which is exactly what LOD1/LOD2 have, since `ObjLoader` falls back to a
+constant `uv = (0,0)` when an OBJ has no texcoord data (confirmed in
+`ObjLoader.cpp`: `index.texcoord_index >= 0` gates reading real UVs, an
+`else` branch sets the constant) — `dFdx(uv)` and `dFdy(uv)` are exactly
+`(0,0)` at every pixel, so `T = B = vec3(0)`, `dot(T,T) = dot(B,B) = 0`,
+and `inversesqrt(0)` is `+Inf`. `vec3(0) * Inf` is `NaN` per IEEE 754 —
+not zero — and that NaN propagates through the TBN matrix, the perturbed
+normal, `NdotL`/`NdotV`, and finally `outColor` itself.
+
+**Why this made the *whole scene* black, not just LOD1/LOD2:** the
+default camera position (`(0,0,25)`, per `Camera.h`) is far enough from
+the 7×7×7 grid (spacing 3.0, so the grid's near face is only at `z≈9`)
+that no instance is ever within `LOD1_DIST = 12.0` at startup — the
+default view shows *only* LOD1/LOD2. The newly-textured LOD0 mesh was
+never actually on screen during the first test; every visible instance
+was hitting the degenerate-UV-gradient path. This is a good example of
+why "run it and look" beats reasoning about a shader change in the
+abstract — the bug was invisible from reading the code (the math looks
+correct for any mesh with real UV variation) and only showed up by
+actually launching the app.
+
+**Fix:** guard the degenerate case and fall back to the unperturbed
+geometric normal — exactly the correct behavior for a mesh with no real
+UV data to perturb against, and it costs one branch:
+
+```glsl
+float maxLenSq = max(dot(T, T), dot(B, B));
+if (maxLenSq < EPS)
+    return N;
+```
+
+**Interview-relevant:** *"Why does a normal-mapping shader change break
+meshes that were never touched?"* — because the shader is shared by every
+draw using this pipeline regardless of mesh, and a `0 * Inf = NaN` in
+GLSL isn't a graceful "no effect," it's a poison value that propagates
+through every subsequent operation touching it, including in a
+draw call whose mesh was never the one being tested.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -1246,16 +1356,23 @@ change.
 | Shadow map showed roughly half the grid missing/wrong depending on light angle | `glm::ortho()` defaults to OpenGL's `z_ndc ∈ [-1,1]` (this project never defines `GLM_FORCE_DEPTH_ZERO_TO_ONE`); for an orthographic matrix that linearly clips away the near half of the frustum under Vulkan's `[0,1]` requirement | `Camera`'s existing `glm::perspective()` usage had the same convention mismatch but hid it (only a near-plane sliver is affected for perspective); switched to `glm::orthoRH_ZO()` for the light matrix specifically (§22) — the perspective/orthographic distinction changes whether this bug is invisible or scene-breaking |
 | Shadows appeared on grid instances with nothing actually occluding them, worse the longer the app had been running | `shadow.vert` transformed vertices with only the raw mesh-local `inPosition` — it never applied `ubo.model` (the grid's continuously-accumulating spin rotation) the way `triangle.vert` does, so the shadow map was permanently cast from each mesh's un-rotated *rest pose* while the visible geometry kept spinning independently every frame | Reported as "not sure if it's an algorithm bug or an aliasing artifact"; the deciding clue was that it was pixel-*coherent* (a stale silhouette-shaped mismatch, confirmed by asking whether it tracked with spin over time), not pixel-*noisy* like the earlier acne bug — same failure category ("shadow doesn't match the caster") but a different mechanism, worth distinguishing before reaching for a bias/PCF fix again. Fixed by giving `ShadowPushConstants` a second `mat4 model` field and pushing the same per-draw rotation (grid: `spinAngle()`; projectile: identity) that `GeometryPass` already computes — 128 bytes total, exactly Vulkan's guaranteed minimum push-constant size |
 | `app.exe` printed `[Texture] stbi error: can't fopen` then aborted (`Debug Error! abort() has been called`) when launched directly from `build/bin/Debug/` | `CMAKE_RUNTIME_OUTPUT_DIRECTORY` is `build/bin`, so the `assets/`/`shaders/compiled/` POST_BUILD copies land in `build/bin/`, one level *above* where MSVC's multi-config generator actually places the executable (`build/bin/Debug/app.exe`, already called out in every doc's build section) — relative paths like `"assets/test_texture.png"` don't resolve from that directory. The texture failure alone is survivable (`stbi` logs and returns); the actual `abort()` is `ShaderLoader` throwing `std::runtime_error` for the equally-missing `shaders/compiled/*.spv` with nothing in `main()` to catch it, so it reaches `std::terminate()` | Always run the executable with `build/bin` as the working directory (e.g. `build/bin/Debug/app.exe` launched *from* `build/bin`), not from inside the `Debug/` subfolder it actually lives in — a distinction every doc's build section already states for a different reason (locating the binary) but doesn't spell out for *running* it |
+| After adding derivative-based normal mapping, the *entire* scene rendered solid black — including LOD1/LOD2 meshes the change never touched | `dFdx(uv)`/`dFdy(uv)` are exactly `(0,0)` for any mesh with no real UV variation (LOD1/LOD2's `ObjLoader`-fallback constant `uv=(0,0)`), collapsing the reconstructed tangent/bitangent to the zero vector; `inversesqrt(0)` is `+Inf`, and `vec3(0) * Inf` is `NaN` per IEEE 754, which then poisons every subsequent value derived from it, in every draw sharing the pipeline | Verified by actually launching the app rather than re-reading the shader math (which looks correct for any mesh with real UV variation and gives no hint of the failure). The default camera position never brings any instance within LOD0 range, so the very first test run only ever exercised the degenerate-UV path — worth remembering that "the change I made should only affect X" is a claim to verify against what's actually on screen, not assume from which mesh the change targeted (§25) |
+| A newly added `assets/suzanne_pbr.obj` (Phase 8 milestone 2) never showed up in `git status` after `curl`-ing it into place - investigating turned out to be much bigger than one missing file | `.gitignore`'s "Compiled objects" section had a bare `*.obj` rule intended for MSVC compiler object files. It also matches Wavefront OBJ mesh assets, and `assets/*.obj` was never exempted - `git ls-files assets/` showed only the `.mtl` files and `test_texture.png` were ever actually tracked. **`suzanne.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`, and `textured_cube.obj` had never been committed at all**, on any commit up to this one - every one of this project's demo meshes, the whole time. A fresh `git clone` would build successfully (submodules + CMake don't need the assets) but `ObjLoader::load()` would throw at startup on the first missing file. `build/` (already ignored above the `*.obj` line) already covers every actual compiler `.obj` in this project, making the rule pure redundant risk, not a needed one | Caught by noticing the new file was absent from `git status --short` right before staging, not by an error message - a silently-ignored file produces no warning, and the working tree builds and runs fine regardless of git-tracking status since the files are still physically on disk. Only a fresh clone would have surfaced this. Removed the `*.obj` line entirely and committed the meshes; `*.o`/`*.lo`/`*.slo` (real object-file extensions with no asset-format collision here) stayed ignored |
 
 ---
 
 ## Open items / known simplifications
 
-- **PBR lighting (§19) has no textures yet** — albedo/metallic/roughness
-  are a push constant, shared by all 343 grid instances (the projectile
-  gets its own distinct values, but still one flat set, not per-instance
-  variation). Texture-based materials (albedo/normal/metallic-roughness/
-  AO maps) and a formal `Material` class are the next PBR milestone.
+- **Texture-based PBR materials are implemented** (§25) — a `Material`
+  class, albedo/normal/metallic-roughness/AO all sampled in
+  `triangle.frag`. Remaining gaps, both deliberate: only LOD0 has real UV
+  data (LOD1/LOD2 sample a constant texel, same as before this
+  milestone); the texture maps themselves are small self-generated
+  placeholders (flat normal, a metallic/roughness gradient, flat AO), not
+  authored/downloaded PBR photo sets. Material params are still shared by
+  all 343 grid instances (the projectile gets its own distinct push-
+  constant values, but still one flat set) — true per-instance material
+  variation is future work.
 - **No IBL/environment lighting** — the ambient term is a flat
   `0.03 * albedo` constant, not derived from any environment map. Faces
   fully turned away from the single directional light are nearly black
