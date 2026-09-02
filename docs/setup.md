@@ -144,12 +144,13 @@ No external package manager (vcpkg, conan) required.
 ## 8. FrameGraph design note
 
 Passes are registered with explicit dependency lists and a `PassStage`
-(`Compute`, `Shadow`, or `Graphics` — see `FrameGraph.h`):
+(`Compute`, `Shadow`, `Graphics`, or `UI` — see `FrameGraph.h`):
 
 ```cpp
 int cullingPass  = graph->addPass({ "GPUCullingPass", {}, ..., PassStage::Compute });
 int shadowPass   = graph->addPass({ "ShadowPass", {}, ..., PassStage::Shadow });
 int geometryPass = graph->addPass({ "GeometryPass", { cullingPass, shadowPass }, ..., PassStage::Graphics });
+int uiPass       = graph->addPass({ "ImGuiPass", { geometryPass }, ..., PassStage::UI });
 graph->build();  // resolves topological order, detects cycles
 ```
 
@@ -158,12 +159,14 @@ graph->build();  // resolves topological order, detects cycles
 
 Each stage has its own explicit wrapper in `FrameRenderer::drawFrame()`:
 `executeCompute()` runs outside any render pass, `executeShadow()` runs
-inside the shadow map's own depth-only render pass, and `executeGraphics()`
-runs inside the main color+depth render pass — see
-`docs/TECHNICAL_NOTES.md` §22 for why a third render pass needed a third
-`PassStage` rather than reusing `Graphics`. A new pass within an existing
-stage can be inserted by adding a node with the appropriate dependencies;
-a genuinely new stage (its own render pass/framebuffer) needs a new
-`PassStage` enum value plus a matching `execute*()` method and wrapper in
-`drawFrame()`, following the `Shadow` stage as the template.
+inside the shadow map's own depth-only render pass, `executeGraphics()`
+runs inside the offscreen scene render pass, and `executeUI()` runs inside
+the swapchain's own render pass — see `docs/TECHNICAL_NOTES.md` §22 for
+why a third render pass needed a third `PassStage` rather than reusing
+`Graphics`, and §24 for why the dockable-viewport work needed a 4th
+(`UI`) the same way. A new pass within an existing stage can be inserted
+by adding a node with the appropriate dependencies; a genuinely new stage
+(its own render pass/framebuffer) needs a new `PassStage` enum value plus
+a matching `execute*()` method and wrapper in `drawFrame()`, following
+the `Shadow` stage as the template — as `UI` itself did.
 

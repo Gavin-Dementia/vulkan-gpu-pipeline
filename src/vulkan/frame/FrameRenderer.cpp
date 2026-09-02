@@ -3,6 +3,7 @@
 #include "vulkan/culling/Frustum.h"
 #include "vulkan/frame/FrameGraph.h"
 #include "imgui.h"
+#include "imgui_internal.h"   // DockBuilder* - one-time default dock layout, see ImGuiPass below
 #include "imgui_impl_vulkan.h"
 
 #include <stdexcept>
@@ -290,14 +291,47 @@ void FrameRenderer::init(VulkanContext& ctx)
     });
 
     // =====================================================
-    // ImGuiPass
+    // ImGuiPass - runs in the swapchain's own render pass (PassStage::UI),
+    // separate from the offscreen scene pass above. Docked layout: a
+    // central "Viewport" panel shows the scene (sceneViewportSet_, sampling
+    // sceneColorTarget_) instead of the debug windows overlapping it
+    // directly, per the Phase 11 "extra area, not the main screen" change.
     // =====================================================
     graph->addPass({
         "ImGuiPass",
-        { geometryPass },   // 依赖GeometryPass，确保UI画在最上层
+        { geometryPass },   // documents ordering; PassStage separation is what actually enforces it
         [this](VkCommandBuffer cmd)
         {
             context->imguiLayer().beginFrame();
+
+            ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+            ImGui::DockSpaceOverViewport(dockspaceId, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+
+            if (!dockLayoutInitialized_)
+            {
+                dockLayoutInitialized_ = true;
+
+                ImGui::DockBuilderRemoveNode(dockspaceId);
+                ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
+
+                ImGuiID dockMain = dockspaceId;
+                ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.28f, nullptr, &dockMain);
+
+                ImGui::DockBuilderDockWindow("Viewport", dockMain);
+                ImGui::DockBuilderDockWindow("GPU Culling Stats", dockRight);
+                ImGui::DockBuilderDockWindow("Lighting", dockRight);
+                ImGui::DockBuilderDockWindow("Shadow Map", dockRight);
+
+                ImGui::DockBuilderFinish(dockspaceId);
+            }
+
+            // The live 3D scene, rendered offscreen by GeometryPass above -
+            // this is the "extra area" change: debug windows dock beside
+            // this instead of floating on top of the rendered grid.
+            ImGui::Begin("Viewport");
+            ImGui::Image((ImTextureID)(intptr_t)sceneViewportSet_, ImGui::GetContentRegionAvail());
+            ImGui::End();
 
             ImGui::Begin("GPU Culling Stats");
             // ImGui::Text("Visible: %u / %u", context->getLastVisibleCount(), VulkanContext::OBJECT_COUNT);
@@ -362,7 +396,7 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             context->imguiLayer().render(cmd);
         },
-        PassStage::Graphics
+        PassStage::UI
     });
 
     // =====================================================
@@ -375,6 +409,12 @@ void FrameRenderer::init(VulkanContext& ctx)
     // verification step, before any shading code samples it.
     shadowMapDebugSet_ = ImGui_ImplVulkan_AddTexture(
         context->shadowMap().view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    // Registers the offscreen scene color target so the "Viewport" window
+    // (ImGuiPass, above) can display the live 3D scene - same mechanism as
+    // the shadow map preview just above, aimed at the color target instead.
+    sceneViewportSet_ = ImGui_ImplVulkan_AddTexture(
+        context->sceneColorTarget().view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     std::cout << "[FrameRenderer] initialized (FrameGraph Stage B)\n";
 }
@@ -530,10 +570,58 @@ void FrameRenderer::drawFrame()
         0, 0, nullptr, 0, nullptr, 1, &shadowBarrier
     );
 
-    // ===== Graphics：inside RenderPass =====
-    std::array<VkClearValue, 2> clearValues{};
-    clearValues[0].color        = { 0.1f, 0.2f, 0.7f, 1.0f };
-    clearValues[1].depthStencil = { 1.0f, 0 };   // depth=1.0（最远），stencil=0
+    // ===== Graphics: offscreen scene pass, its own render pass/framebuffer
+    // (sceneRenderPass_/sceneFramebuffer_), fixed resolution - sampled by
+    // ImGui's "Viewport" window below instead of being presented directly.
+    auto& sceneColorTarget = context->sceneColorTarget();
+
+    std::array<VkClearValue, 2> sceneClearValues{};
+    sceneClearValues[0].color        = { 0.1f, 0.2f, 0.7f, 1.0f };
+    sceneClearValues[1].depthStencil = { 1.0f, 0 };   // depth=1.0（最远），stencil=0
+
+    VkRenderPassBeginInfo sceneRp{};
+    sceneRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    sceneRp.renderPass = context->sceneRenderPass().get();
+    sceneRp.framebuffer = context->sceneFramebuffer().get()[0];
+    sceneRp.renderArea.offset = {0, 0};
+    sceneRp.renderArea.extent = sceneColorTarget.extent();
+    sceneRp.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
+    sceneRp.pClearValues    = sceneClearValues.data();
+
+    vkCmdBeginRenderPass(frame.commandBuffer, &sceneRp, VK_SUBPASS_CONTENTS_INLINE);
+    graph->executeGraphics(frame.commandBuffer);
+    vkCmdEndRenderPass(frame.commandBuffer);
+
+    // Barrier: the scene pass's color write must finish (and become
+    // visible) before ImGui's fragment shader samples it in the Viewport
+    // window below - same shape as the shadow barrier above, generalized
+    // to the color attachment instead of depth (see architecture.md).
+    VkImageMemoryBarrier sceneBarrier{};
+    sceneBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sceneBarrier.oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneBarrier.image             = sceneColorTarget.image();
+    sceneBarrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    sceneBarrier.subresourceRange.baseMipLevel   = 0;
+    sceneBarrier.subresourceRange.levelCount     = 1;
+    sceneBarrier.subresourceRange.baseArrayLayer = 0;
+    sceneBarrier.subresourceRange.layerCount     = 1;
+    sceneBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    sceneBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        frame.commandBuffer,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &sceneBarrier
+    );
+
+    // ===== UI: swapchain's own render pass, ImGui only (PassStage::UI) =====
+    std::array<VkClearValue, 2> uiClearValues{};
+    uiClearValues[0].color        = { 0.06f, 0.06f, 0.07f, 1.0f };   // editor-style background behind docked windows
+    uiClearValues[1].depthStencil = { 1.0f, 0 };
 
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -541,13 +629,12 @@ void FrameRenderer::drawFrame()
     rp.framebuffer = framebuffer.get()[imageIndex];
     rp.renderArea.offset = {0, 0};
     rp.renderArea.extent = swapchain.getExtent();
-    rp.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    rp.pClearValues    = clearValues.data();
+    rp.clearValueCount = static_cast<uint32_t>(uiClearValues.size());
+    rp.pClearValues    = uiClearValues.data();
 
     vkCmdBeginRenderPass(frame.commandBuffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
-    // ===== FrameGraph execution =====
-    graph->executeGraphics(frame.commandBuffer);
+    graph->executeUI(frame.commandBuffer);
 
     vkCmdEndRenderPass(frame.commandBuffer);
 

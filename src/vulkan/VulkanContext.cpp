@@ -114,10 +114,36 @@ void VulkanContext::initCore()
         shadowMap_.sampler()
     );
 
+    // Offscreen scene target: GeometryPass/LightingPass/PostProcess
+    // (PassStage::Graphics) render here instead of directly to the
+    // swapchain, so ImGui can display the result inside a dockable
+    // "Viewport" panel alongside the debug windows instead of everything
+    // overlapping the same fullscreen image. Fixed resolution, matching
+    // Camera::ASPECT_RATIO's existing "fixed window size" assumption - see
+    // TECHNICAL_NOTES.md for why this doesn't need swapchain-style resize
+    // handling that doesn't exist anywhere else in this codebase either.
+    sceneColorTarget_.create(device_.getPhysical(), device_.get());
+    sceneColorDepth_.create(
+        device_.getPhysical(), device_.get(), sceneColorTarget_.extent()
+    );
+    sceneRenderPass_.createOffscreenColor(
+        device_.get(), VulkanSceneColorTarget::FORMAT, sceneColorDepth_.format()
+    );
+    sceneFramebuffer_.create(
+        device_.get(),
+        sceneRenderPass_.get(),
+        { sceneColorTarget_.view() },
+        sceneColorDepth_.view(),
+        sceneColorTarget_.extent()
+    );
+
+    // Geometry pipeline now targets the offscreen scene render pass, not
+    // the swapchain's - the swapchain's renderPass_/framebuffer_ below are
+    // used only to host the UI-stage pass (see FrameGraph::PassStage::UI).
     pipeline_.create(
         device_.get(),
-        swapchain_.getExtent(),
-        renderPass_.get(),
+        sceneColorTarget_.extent(),
+        sceneRenderPass_.get(),
         descriptor_.layout()
     );
 
@@ -482,6 +508,11 @@ void VulkanContext::cleanup()
     uniformBuffer_.destroy(device_.get());
 
     pipeline_.destroy(device_.get());
+    sceneFramebuffer_.destroy(device_.get());
+    sceneRenderPass_.destroy(device_.get());
+    sceneColorDepth_.destroy(device_.get());
+    sceneColorTarget_.destroy(device_.get());
+
     framebuffer_.destroy(device_.get());
     depthBuffer_.destroy(device_.get());
     renderPass_.destroy(device_.get());

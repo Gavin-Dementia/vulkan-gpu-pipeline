@@ -20,6 +20,7 @@
 #include "vulkan/renderpass/VulkanFramebuffer.h"
 #include "vulkan/renderpass/VulkanRenderPass.h"
 #include "vulkan/renderpass/VulkanShadowMap.h"
+#include "vulkan/renderpass/VulkanSceneColorTarget.h"
 #include "vulkan/swapchain/VulkanSwapchain.h"
 #include "vulkan/pipeline/VulkanPipeline.h"
 #include "vulkan/pipeline/VulkanComputePipeline.h"
@@ -98,6 +99,15 @@ public:
     VulkanRenderPass&       shadowRenderPass()   { return shadowRenderPass_; }
     VulkanFramebuffer&      shadowFramebuffer()  { return shadowFramebuffer_; }
     VulkanShadowPipeline&   shadowPipeline()     { return shadowPipeline_; }
+
+    // Offscreen scene render target for the dockable ImGui "Viewport"
+    // panel - GeometryPass/LightingPass/PostProcess (PassStage::Graphics)
+    // now render here instead of directly to the swapchain; the swapchain's
+    // own renderPass_/framebuffer_ host only the UI-stage pass. See
+    // architecture.md's "Dockable viewport" module notes.
+    VulkanSceneColorTarget& sceneColorTarget()   { return sceneColorTarget_; }
+    VulkanRenderPass&       sceneRenderPass()    { return sceneRenderPass_; }
+    VulkanFramebuffer&      sceneFramebuffer()   { return sceneFramebuffer_; }
 
     // Directional light's orthographic view-projection matrix, framed
     // around a fixed scene-radius constant covering the 7x7x7 grid's
@@ -198,6 +208,11 @@ private:
     VulkanRenderPass      shadowRenderPass_;
     VulkanFramebuffer     shadowFramebuffer_;
     VulkanShadowPipeline  shadowPipeline_;
+
+    VulkanSceneColorTarget sceneColorTarget_;
+    VulkanDepthBuffer      sceneColorDepth_;   // independent of the swapchain's depthBuffer_
+    VulkanRenderPass       sceneRenderPass_;
+    VulkanFramebuffer      sceneFramebuffer_;
 
     glm::vec3             lightDirection_ = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f));
     glm::vec3             lightColor_     = glm::vec3(1.0f, 1.0f, 1.0f);

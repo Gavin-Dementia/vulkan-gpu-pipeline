@@ -17,6 +17,15 @@ public:
         VkDevice device,
         VkFormat depthFormat);
 
+    // Offscreen scene variant for the dockable ImGui "Viewport" panel -
+    // color + depth like create(), but the color attachment's final layout
+    // leaves it ready to be sampled by ImGui's fragment shader instead of
+    // presented, and it isn't tied to the swapchain's format/extent.
+    void createOffscreenColor(
+        VkDevice device,
+        VkFormat colorFormat,
+        VkFormat depthFormat);
+
     void destroy(VkDevice device);
 
     VkRenderPass get() const { return renderPass; }

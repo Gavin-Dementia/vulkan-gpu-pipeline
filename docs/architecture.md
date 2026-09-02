@@ -43,13 +43,21 @@ Application                     — input polling, deltaTime, world-sim tick
                 │                     depth-only draw of all instances
                 │                     from the light's point of view
                 ├── GeometryPass     [Graphics stage, depends on
-                │                     CullingPass + ShadowPass] — per-draw
+                │                     CullingPass + ShadowPass, renders
+                │                     into the offscreen sceneFramebuffer_,
+                │                     NOT the swapchain] — per-draw
                 │                     material push constant + 3 indirect
                 │                     draws (grid LODs) + 1 direct draw
                 │                     (projectile, if active), sampling
                 │                     the shadow map for occlusion
-                └── ImGuiPass        stats overlay + live lighting/shadow
-                                      sliders + shadow map debug preview
+                └── ImGuiPass        [UI stage, own render pass = the
+                                      swapchain's] — dockable "Viewport"
+                                      window (samples GeometryPass's output)
+                                      + stats overlay + live lighting/shadow
+                                      sliders + shadow map debug preview,
+                                      all docked beside the Viewport rather
+                                      than overlapping it (see "Dockable
+                                      viewport" below)
 ```
 
 > The 3-LOD fan-out (one `{visible-instance, indirect draw}` pair per
@@ -234,6 +242,52 @@ existing bounding spheres.
   and 3×3 PCF, multiplying only the direct `Lo` term — the flat ambient
   term stays unshadowed.
 
+### Dockable viewport (Phase 11)
+
+The 3 debug windows (`GPU Culling Stats` / `Lighting` / `Shadow Map`) used
+to be plain `ImGui::Begin()` windows with no assigned position, cascading
+on top of the rendered grid. See `TECHNICAL_NOTES.md` §24 for the full
+tradeoff analysis (why not just reposition the windows, why not a custom
+static `VkViewport` split, why not Qt) behind the approach below.
+
+- `VulkanSceneColorTarget` — a fixed-resolution (1280×1024, matching
+  `Camera::ASPECT_RATIO`), sampled (`VK_FORMAT_B8G8R8A8_SRGB`) color
+  image/view, independent of swapchain size — same "sampled render
+  target, own render pass" shape as `VulkanShadowMap`, just a color
+  attachment instead of depth. Paired with its own `VulkanDepthBuffer`
+  instance (`sceneColorDepth_`), separate from the swapchain's.
+- `VulkanRenderPass::createOffscreenColor()` — a third render-pass
+  variant alongside `create()`/`createDepthOnly()`: color + depth
+  attachments like `create()`, but the color attachment's final layout is
+  `SHADER_READ_ONLY_OPTIMAL` (sampled by ImGui afterwards) instead of
+  `PRESENT_SRC_KHR`.
+- `FrameGraph::PassStage` gained a 4th value, `UI`, alongside
+  `Compute`/`Shadow`/`Graphics` — same "a genuinely new render pass needs
+  a new stage" extension this codebase already used once for `Shadow`
+  (`docs/setup.md` §8 documents this as the sanctioned pattern).
+  `GeometryPass`/`LightingPass`/`PostProcess` stay `Graphics`, now
+  understood as "the offscreen scene pass"; `ImGuiPass` moved to `UI`,
+  the swapchain's own render pass — which now hosts *only* UI, no 3D
+  geometry.
+- `VulkanContext::pipeline_` (the geometry pipeline) targets the new
+  `sceneRenderPass_`/`sceneColorTarget_.extent()` instead of the
+  swapchain's `renderPass_`/extent — same shaders/descriptor layout, both
+  extents happen to already be `1280×1024`.
+- `ImGuiPass` calls `ImGui::DockSpaceOverViewport()` plus a one-time
+  `DockBuilder*` layout (Viewport centered, the 3 debug windows docked as
+  a tabbed group on the right) so the first run already shows the
+  intended layout. The scene color target is registered with
+  `ImGui_ImplVulkan_AddTexture()` and displayed in a new "Viewport"
+  window — the exact mechanism the Shadow Map debug preview already used
+  (see "Shadow mapping" above), aimed at the main color output instead.
+- `third_party/imgui` repointed from a non-docking commit to the
+  `docking` branch (`ImGuiConfigFlags_DockingEnable` didn't exist
+  before). No new source files.
+- Deliberately fixed-resolution, not resized to the panel's pixel size —
+  this codebase has no swapchain resize handling anywhere else either
+  (`Camera::ASPECT_RATIO` is a hardcoded constant); `ImGui::Image()`
+  scales the existing texture to whatever size the panel ends up being.
+
 ### FrameRenderer
 
 Owns per-frame synchronization (fence/semaphore pairs, double-buffered)
@@ -258,14 +312,20 @@ and the `FrameGraph` instance. `drawFrame()`:
 4. Begins the shadow render pass, records `executeShadow()` (see "Shadow
    mapping" above), ends it, writes timestamp 2; inserts the shadow→main
    image barrier (depth write → fragment-shader read)
-5. Begins the main render pass, records `executeGraphics()`: uploads
-   `SceneData` (light + camera + shadow data), pushes the grid's
-   material constants, binds each LOD's own vertex/index/
-   visible-instance buffers and issues one `vkCmdDrawIndexedIndirect`
-   per LOD (3 draw calls/frame); if the projectile is active, pushes its
-   own (distinct) material constants and issues one `vkCmdDrawIndexed`;
-   runs `ImGuiPass` last — ends the render pass, writes timestamp 3
-6. Submits, presents
+5. Begins the **offscreen scene render pass** (`sceneRenderPass_`/
+   `sceneFramebuffer_`, see "Dockable viewport" above), records
+   `executeGraphics()`: uploads `SceneData` (light + camera + shadow
+   data), pushes the grid's material constants, binds each LOD's own
+   vertex/index/visible-instance buffers and issues one
+   `vkCmdDrawIndexedIndirect` per LOD (3 draw calls/frame); if the
+   projectile is active, pushes its own (distinct) material constants and
+   issues one `vkCmdDrawIndexed` — ends the render pass; inserts a color
+   barrier (color write → fragment-shader read) so ImGui can safely
+   sample the result
+6. Begins the **swapchain's render pass** (UI only), records
+   `executeUI()` (`ImGuiPass` — dockable Viewport + debug windows) — ends
+   the render pass, writes timestamp 3
+7. Submits, presents
 
 Note: the input polling, `Projectile::update()`, `updateInstanceSimulation()`
 (grid collision/scatter/mutual-collision), and `updateSpin()` steps all
@@ -278,12 +338,13 @@ lives there rather than inside a `FrameRenderer` pass.
 A DAG of render passes. Each `RGPass` declares:
 - `name`
 - `reads` — indices of passes this one depends on
-- `stage` — `Compute` or `Graphics`
+- `stage` — `Compute`, `Shadow`, `Graphics`, or `UI`
 - `execute` — the actual command-recording lambda
 
 `build()` resolves execution order via Kahn's algorithm (BFS topological
 sort using indegree counts), throwing on cycle detection. `executeCompute()`
-/ `executeGraphics()` walk the resolved order, filtering by stage.
+/ `executeShadow()` / `executeGraphics()` / `executeUI()` walk the resolved
+order, filtering by stage.
 
 ### Camera
 
@@ -360,6 +421,10 @@ Application
     ├── VulkanComputePipeline
     ├── VulkanShadowMap / VulkanRenderPass (depth-only) / VulkanFramebuffer
     │     (depth-only) / VulkanShadowPipeline (see "Shadow mapping" module notes)
+    ├── VulkanSceneColorTarget / VulkanDepthBuffer (sceneColorDepth_) /
+    │     VulkanRenderPass (offscreen-color) / VulkanFramebuffer - the
+    │     offscreen scene target GeometryPass now renders into, sampled by
+    │     ImGui's "Viewport" window (see "Dockable viewport" module notes)
     ├── VulkanDescriptor (graphics, 4 bindings: UBO / combined-image-sampler /
     │     SceneData / shadow-map combined-image-sampler)
     ├── ComputeDescriptor (compute, 8 bindings: object / 3×visible / 3×indirect / frustum)
@@ -381,11 +446,18 @@ Application
                 ├── GPUCullingPass (Compute) — frustum test + LOD fan-out
                 ├── ShadowPass (Shadow) — depth-only, all instances unculled,
                 │                          objectBuffer_ reused as instance buffer
-                └── GeometryPass (Graphics, reads CullingPass + ShadowPass) —
-                                              per-draw push constant
-                                              (MaterialPushConstants: albedo/metallic/roughness)
-                                              + 3× vkCmdDrawIndexedIndirect
-                                              + 1× vkCmdDrawIndexed (projectile, if active)
+                ├── GeometryPass (Graphics, reads CullingPass + ShadowPass,
+                │   │                       renders into sceneFramebuffer_) —
+                │   │                       per-draw push constant
+                │   │                       (MaterialPushConstants: albedo/metallic/roughness)
+                │   │                       + 3× vkCmdDrawIndexedIndirect
+                │   │                       + 1× vkCmdDrawIndexed (projectile, if active)
+                └── ImGuiPass (UI, reads GeometryPass, runs in the
+                                              swapchain's own render pass) —
+                                              dockable "Viewport" window
+                                              (samples sceneColorTarget_) +
+                                              debug windows (see "Dockable
+                                              viewport" module notes)
 ```
 
 > **Resolved:** `VulkanContext::instanceBuffer_` (the original static,
@@ -451,7 +523,8 @@ Write timestamp 2 (BOTTOM_OF_PIPE) — closes the Shadow interval
         │
 Image Memory Barrier (LATE_FRAGMENT_TESTS write → FRAGMENT_SHADER read)
         │
-Begin Render Pass
+Begin Offscreen Scene Render Pass (sceneRenderPass_/sceneFramebuffer_,
+   fixed 1280×1024 resolution - see "Dockable viewport" module notes)
         │
 Graphics: GeometryPass
    upload SceneData (light + camera + lightViewProj + shadow bias) →
@@ -461,10 +534,19 @@ Graphics: GeometryPass
    if projectile active: push its own material constants,
    bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
         │
-Graphics: ImGuiPass — stats overlay + live lighting/shadow sliders +
-   shadow map debug preview
+End Offscreen Scene Render Pass
         │
-End Render Pass
+Image Memory Barrier (COLOR_ATTACHMENT_OUTPUT write → FRAGMENT_SHADER read)
+        │
+Begin Swapchain Render Pass (renderPass_/framebuffer_ - UI only, no 3D
+   geometry draws here anymore)
+        │
+UI: ImGuiPass — DockSpaceOverViewport + dockable "Viewport" window
+   (ImGui::Image samples sceneColorTarget_) + stats overlay + live
+   lighting/shadow sliders + shadow map debug preview, all docked beside
+   the Viewport instead of overlapping it
+        │
+End Swapchain Render Pass
         │
 Write timestamp 3 (BOTTOM_OF_PIPE) — closes the Graphics interval
         │

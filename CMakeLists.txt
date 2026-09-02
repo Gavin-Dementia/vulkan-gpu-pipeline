@@ -151,6 +151,7 @@ set(VULKAN_RENDERPASS_SRC
     src/vulkan/renderpass/VulkanRenderPass.cpp
     src/vulkan/renderpass/VulkanFramebuffer.cpp
     src/vulkan/renderpass/VulkanShadowMap.cpp
+    src/vulkan/renderpass/VulkanSceneColorTarget.cpp
 )
 
 set(VULKAN_SWAPCHAIN_SRC

@@ -39,6 +39,15 @@ private:
     // verifies the shadow pass before any shading code depends on it).
     VkDescriptorSet shadowMapDebugSet_ = VK_NULL_HANDLE;
 
+    // Scene color target registered with ImGui so the dockable "Viewport"
+    // window can display the live 3D scene (see PassStage::UI).
+    VkDescriptorSet sceneViewportSet_ = VK_NULL_HANDLE;
+
+    // One-time default dock layout (Viewport centered, debug windows
+    // docked to the right) - applied only on the first UI-stage frame so
+    // a manually-rearranged layout isn't stomped on every frame after.
+    bool dockLayoutInitialized_ = false;
+
 private:
     void createSyncObjects();
     void createCommandBuffers();

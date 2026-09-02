@@ -87,3 +87,13 @@ void FrameGraph::executeGraphics(VkCommandBuffer cmd)
     }
 }
 
+void FrameGraph::executeUI(VkCommandBuffer cmd)
+{
+    for (int idx : executionOrder)
+    {
+        auto& pass = passes[idx];
+        if (pass.stage == PassStage::UI && pass.execute)
+            pass.execute(cmd);
+    }
+}
+

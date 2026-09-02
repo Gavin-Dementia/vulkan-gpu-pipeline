@@ -12,7 +12,8 @@ enum class PassStage
 {
     Compute,
     Shadow,
-    Graphics
+    Graphics,   // the offscreen scene render pass (sceneRenderPass_)
+    UI          // the swapchain render pass - ImGui only, see FrameRenderer.cpp
 };
 
 struct RGPass
@@ -38,6 +39,7 @@ public:
     void executeCompute(VkCommandBuffer cmd);   // 在RenderPass外执行
     void executeShadow(VkCommandBuffer cmd);    // 在shadow RenderPass内执行
     void executeGraphics(VkCommandBuffer cmd);  // 在主RenderPass内执行
+    void executeUI(VkCommandBuffer cmd);        // 在swapchain RenderPass内执行
 
 private:
     VulkanContext* context = nullptr;

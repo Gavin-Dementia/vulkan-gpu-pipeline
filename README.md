@@ -38,6 +38,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | PBR Lighting (Cook-Torrance BRDF) | ✅ |
 | Shadow Mapping (depth-only pass, 3×3 PCF) | ✅ |
 | GPU Timestamp Performance Instrumentation | ✅ |
+| Dockable Editor UI (ImGui docking, offscreen viewport) | ✅ |
 | Texture-based PBR Materials | ⏳ planned |
 
 ---
@@ -61,8 +62,13 @@ Application               input polling, deltaTime, world-sim tick
             │                   Cook-Torrance shading + shadow sampling
             ├── LightingPass    (placeholder, not yet used)
             ├── PostProcess     (placeholder, not yet used)
-            └── ImGuiPass       stats overlay + live lighting/shadow
-                                sliders + shadow map debug preview
+            └── ImGuiPass       [UI, own render pass] dockable "Viewport"
+                                window showing GeometryPass's output +
+                                stats overlay + live lighting/shadow
+                                sliders + shadow map debug preview, all
+                                docked beside the Viewport, not overlapping
+                                it (GeometryPass renders to an offscreen
+                                target, not directly to the swapchain)
 ```
 
 The FrameGraph resolves pass execution order via **Kahn's algorithm** at build time,

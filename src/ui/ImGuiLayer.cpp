@@ -35,6 +35,13 @@ void ImGuiLayer::init(
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
 
+    // Lets the debug windows (GPU Culling Stats / Lighting / Shadow Map)
+    // and the scene "Viewport" panel dock against each other and the
+    // window edges instead of floating as separate overlapping windows.
+    // Deliberately not enabling ImGuiConfigFlags_ViewportsEnable - windows
+    // stay inside the one GLFW window, not spawned as separate OS windows.
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
     ImGui_ImplGlfw_InitForVulkan(window, true);
 
     ImGui_ImplVulkan_InitInfo initInfo{};

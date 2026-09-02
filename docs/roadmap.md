@@ -331,8 +331,55 @@ open item that had been carried since Phase 5 — see `TECHNICAL_NOTES.md`
 
 ---
 
+## Phase 11 — Dockable Editor UI
+
+**Status: Complete**
+
+The 3 debug windows (`GPU Culling Stats` / `Lighting` / `Shadow Map`) used
+to be plain `ImGui::Begin()` windows with no assigned position, cascading
+on top of the rendered grid. Reworked into a real editor-style layout so
+the debug UI is an extra area alongside the 3D view, not overlapping it.
+
+- `third_party/imgui` repointed from a non-docking commit to the
+  `docking` branch (`ImGuiConfigFlags_DockingEnable` /
+  `ImGui::DockSpaceOverViewport` didn't exist before this). No new source
+  files — docking lives entirely inside `imgui.cpp`/`imgui_internal.h`,
+  already covered by `CMakeLists.txt`'s existing imgui source list.
+- New offscreen scene render target (`VulkanSceneColorTarget`, fixed
+  1280×1024 — matches `Camera::ASPECT_RATIO`'s existing fixed-window
+  assumption) + a new `VulkanRenderPass::createOffscreenColor()`, modeled
+  directly on the shadow map's depth-only precedent (§13/§22 pattern:
+  sampled render target, own render pass, own framebuffer).
+  `GeometryPass`/`LightingPass`/`PostProcess` (`PassStage::Graphics`) now
+  render here instead of directly to the swapchain.
+- `FrameGraph` gained a 4th `PassStage`, `UI` — the swapchain's own
+  render pass now hosts *only* `ImGuiPass`, following the exact
+  extension pattern `docs/setup.md` §8 already documents ("a genuinely
+  new stage needs a new `PassStage` value + `execute*()` + a wrapper in
+  `drawFrame()`, following the Shadow stage as the template").
+- `ImGuiPass` calls `ImGui::DockSpaceOverViewport()` and a one-time
+  `DockBuilder*` layout (Viewport centered, the 3 debug windows docked as
+  a tabbed group on the right) so the first run already shows the
+  intended layout instead of default-cascaded windows. The scene color
+  target is registered with `ImGui_ImplVulkan_AddTexture()` and displayed
+  in a new "Viewport" window — the same mechanism the Shadow Map debug
+  preview already used, aimed at the main color output instead of the
+  shadow depth map.
+- Deliberately **not** dynamically resized to the panel's pixel size —
+  `ImGui::Image()` just scales the fixed-resolution texture to whatever
+  size the docked panel ends up being. This codebase has no swapchain
+  resize handling anywhere else either, so building live-resize plumbing
+  for just this one target was scoped out. See `TECHNICAL_NOTES.md` §24
+  for the full Qt-vs-ImGui-docking tradeoff analysis behind this choice.
+
+---
+
 ## Open / not yet started
 
+- **Live-resized viewport target** (Phase 11) — the offscreen scene
+  texture is fixed-resolution; resizing the "Viewport" panel scales the
+  existing image rather than re-rendering at a new resolution. Would need
+  swapchain-style resize handling this project doesn't have anywhere else.
 - **Texture-based PBR materials** (Phase 8, milestone 2) — albedo/
   normal/metallic-roughness/AO maps, a formal `Material` class
 - **Swept (not discrete) projectile collision** — current hit test only

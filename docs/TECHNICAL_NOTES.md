@@ -36,9 +36,14 @@ Application
                 ├── ShadowPass       [Shadow, own render pass] — depth-only,
                 │                     draws all instances from the light's
                 │                     view (see §22)
-                └── GeometryPass     [Graphics, depends on CullingPass +
-                                      ShadowPass] — 1 indexed-indirect draw
-                                      per LOD, samples the shadow map
+                ├── GeometryPass     [Graphics, depends on CullingPass +
+                │                     ShadowPass] — 1 indexed-indirect draw
+                │                     per LOD, samples the shadow map;
+                │                     renders to the offscreen scene target,
+                │                     not the swapchain directly (see §24)
+                └── ImGuiPass        [UI, own render pass = the swapchain's]
+                                      — dockable Viewport (samples the scene
+                                      target) + debug windows (see §24)
 ```
 
 The split into `initCore` / `initSceneData` / `initCullingResources` was a
@@ -1116,6 +1121,103 @@ without adding speculative complexity for cases that can't be tested here.
 
 ---
 
+### 24. Dockable ImGui viewport: why not Qt, and why fixed-resolution
+
+**Decision:** The 3 debug windows used to be plain `ImGui::Begin()` calls
+with no assigned position, cascading over the top-left corner of the
+window and on top of the rendered grid. Reworked so the 3D scene renders
+into an offscreen target and is displayed inside a dockable ImGui
+"Viewport" panel, with the debug windows docked beside it instead of
+overlapping it — a real editor-style layout, not just repositioned
+floating windows.
+
+**Why not just reposition the existing windows (the cheapest option):**
+considered first, but it leaves the debug windows sitting on top of the
+3D image regardless of where they're pinned — the 3D output still
+occupies the full framebuffer underneath them. It doesn't give a real
+"extra area" the way docking does.
+
+**Why not carve out a static side region with a custom `VkViewport`
+(no docking, no offscreen target):** would need the geometry pipeline's
+viewport/scissor to target a sub-rectangle of the swapchain framebuffer
+and `Camera`'s aspect ratio to match it — mechanically simpler than a
+second render pass, but it produces a fixed, undraggable split (no true
+docking/resizing/rearranging), and this codebase's pipelines already bake
+viewport/scissor as static pipeline state (`VulkanPipeline.cpp`), so
+"resizable" was never actually on the table without dynamic viewport
+state either way. Rejected in favor of the more capable option once it
+turned out not to cost meaningfully more.
+
+**Why not Qt (the user's explicit fallback if the ImGui approach turned
+out to be bloated):** researched before committing to an approach.
+`QVulkanWindow` exists and can be embedded in a `QWidget` tree via
+`createWindowContainer()`, but there is no existing ImGui-Vulkan-Qt
+integration (`qtimgui` only supports the OpenGL widget/window backends,
+not Vulkan) — building one would mean replacing GLFW's window/input
+handling (mouse-look cursor capture, WASD polling, the projectile's
+click-fire gating on `ImGui::GetIO().WantCaptureMouse`) and adding Qt to
+a build system that currently vendors everything itself with zero
+external package managers (see `docs/setup.md` §6). All of that for a
+capability ImGui's docking branch already provides directly.
+
+**Why the ImGui-docking approach turned out not to be bloated:** the
+exact mechanism needed — render a Vulkan image, register it with
+`ImGui_ImplVulkan_AddTexture()`, display it via `ImGui::Image()` — was
+already in this codebase for the Shadow Map debug preview (§22). The
+sanctioned way to add a structurally different render pass to
+`FrameGraph` (a new `PassStage` + `execute*()` + explicit wrapper in
+`drawFrame()`) was already documented in `docs/setup.md` §8 as the
+template the Shadow stage set. The new offscreen target class
+(`VulkanSceneColorTarget`) is a near-copy of `VulkanShadowMap` with color
+usage bits instead of depth. Net new code ended up comparable to the
+shadow-mapping feature (Phase 9) — an existing, already-shipped feature
+of similar shape — not a new category of complexity. `third_party/imgui`
+being a plain git submodule made moving to the `docking` branch a normal
+commit-pointer change, not a fork/vendor operation.
+
+**Why the offscreen scene target is fixed-resolution, not resized to
+match the docked panel's pixel size:** `Camera::ASPECT_RATIO` is already
+a hardcoded constant (`1280.0f/1024.0f`, comment: "fixed window size, not
+resizable"), and no swapchain-recreation-on-resize code exists anywhere
+in this codebase — `VulkanPipeline`'s viewport/scissor are static
+pipeline state, baked in at creation, not `VK_DYNAMIC_STATE_VIEWPORT`.
+Building live-resize plumbing for just the new viewport target, in a
+codebase that has never needed it even for the swapchain itself, would
+be solving a problem this project doesn't otherwise have. `ImGui::Image()`
+scales the fixed-resolution texture to whatever size the panel ends up
+being, so dragging/docking/resizing the panel still works visually — the
+render resolution just doesn't increase with it. Flagged in
+`docs/roadmap.md`'s Open items, not treated as a defect.
+
+**Structural changes this required:**
+- `FrameGraph::PassStage` gained a 4th value, `UI` — `GeometryPass`/
+  `LightingPass`/`PostProcess` stay `Graphics` (now understood as "the
+  offscreen scene pass"); `ImGuiPass` moved to `UI`, running in the
+  swapchain's own render pass, which now hosts *only* UI.
+- `VulkanContext::pipeline_` (the geometry pipeline) now targets the new
+  `sceneRenderPass_`/`sceneColorTarget_.extent()` instead of the
+  swapchain's `renderPass_`/extent — same shaders, same descriptor
+  layout, just a different `VkRenderPass` handle and viewport, since both
+  happen to already be `1280×1024`.
+- `FrameRenderer::drawFrame()` now begins two render passes where it used
+  to begin one: the offscreen scene pass (`executeGraphics()`), a color
+  barrier (`COLOR_ATTACHMENT_WRITE_BIT → SHADER_READ_BIT`, mirroring the
+  existing depth barrier's shape from §22), then the swapchain pass
+  (`executeUI()`). The 4th GPU timestamp write moved to close over both
+  passes combined, keeping `graphicsMs`'s meaning ("everything after the
+  shadow pass") unchanged from §23.
+
+**Interview-relevant:** *"Why does adding a dockable viewport touch
+`FrameGraph` at all instead of just being an ImGui-side change?"* —
+because the 3D scene has to stop rendering directly to the swapchain and
+start rendering to a sampled offscreen image instead; that's a second
+render pass with different attachments, which is exactly the kind of
+structurally-different pass this codebase already has a sanctioned
+extension mechanism for (`PassStage` + `execute*()`), not a UI-only
+change.
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |
@@ -1135,6 +1237,7 @@ without adding speculative complexity for cases that can't be tested here.
 | Shadow pass's `vkCmdBindVertexBuffers` reused `objectBuffer_` without the right usage flag | Buffer was created with only `STORAGE_BUFFER_BIT` (culling.comp's SSBO), never `VERTEX_BUFFER_BIT` — reusing a buffer for a new purpose doesn't retroactively grant it that purpose's usage flag | Caught by re-checking the buffer's creation call, not by an observed validation message — worth doing that check *before* reusing a buffer cross-purpose, since some drivers won't complain even though it's invalid per spec (§22) |
 | Shadow map showed roughly half the grid missing/wrong depending on light angle | `glm::ortho()` defaults to OpenGL's `z_ndc ∈ [-1,1]` (this project never defines `GLM_FORCE_DEPTH_ZERO_TO_ONE`); for an orthographic matrix that linearly clips away the near half of the frustum under Vulkan's `[0,1]` requirement | `Camera`'s existing `glm::perspective()` usage had the same convention mismatch but hid it (only a near-plane sliver is affected for perspective); switched to `glm::orthoRH_ZO()` for the light matrix specifically (§22) — the perspective/orthographic distinction changes whether this bug is invisible or scene-breaking |
 | Shadows appeared on grid instances with nothing actually occluding them, worse the longer the app had been running | `shadow.vert` transformed vertices with only the raw mesh-local `inPosition` — it never applied `ubo.model` (the grid's continuously-accumulating spin rotation) the way `triangle.vert` does, so the shadow map was permanently cast from each mesh's un-rotated *rest pose* while the visible geometry kept spinning independently every frame | Reported as "not sure if it's an algorithm bug or an aliasing artifact"; the deciding clue was that it was pixel-*coherent* (a stale silhouette-shaped mismatch, confirmed by asking whether it tracked with spin over time), not pixel-*noisy* like the earlier acne bug — same failure category ("shadow doesn't match the caster") but a different mechanism, worth distinguishing before reaching for a bias/PCF fix again. Fixed by giving `ShadowPushConstants` a second `mat4 model` field and pushing the same per-draw rotation (grid: `spinAngle()`; projectile: identity) that `GeometryPass` already computes — 128 bytes total, exactly Vulkan's guaranteed minimum push-constant size |
+| `app.exe` printed `[Texture] stbi error: can't fopen` then aborted (`Debug Error! abort() has been called`) when launched directly from `build/bin/Debug/` | `CMAKE_RUNTIME_OUTPUT_DIRECTORY` is `build/bin`, so the `assets/`/`shaders/compiled/` POST_BUILD copies land in `build/bin/`, one level *above* where MSVC's multi-config generator actually places the executable (`build/bin/Debug/app.exe`, already called out in every doc's build section) — relative paths like `"assets/test_texture.png"` don't resolve from that directory. The texture failure alone is survivable (`stbi` logs and returns); the actual `abort()` is `ShaderLoader` throwing `std::runtime_error` for the equally-missing `shaders/compiled/*.spv` with nothing in `main()` to catch it, so it reaches `std::terminate()` | Always run the executable with `build/bin` as the working directory (e.g. `build/bin/Debug/app.exe` launched *from* `build/bin`), not from inside the `Debug/` subfolder it actually lives in — a distinction every doc's build section already states for a different reason (locating the binary) but doesn't spell out for *running* it |
 
 ---
 
@@ -1168,6 +1271,10 @@ without adding speculative complexity for cases that can't be tested here.
   per-object testing). Acceptable at this instance count; would need
   revisiting at much higher instance counts where the linear scan itself
   becomes the bottleneck.
+- **The dockable Viewport target is fixed-resolution** (§24) — resizing
+  the ImGui panel scales the existing 1280×1024 image rather than
+  re-rendering at a new resolution; would need swapchain-style resize
+  handling this project has never needed anywhere else.
 - **Texture sampling is implemented and validated** (#13) — the
   descriptor, sampler, and fragment shader (`texture(texSampler,
   fragUV)`) are all wired up and bound — but the primary demo mesh
