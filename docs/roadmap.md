@@ -274,12 +274,14 @@ Milestone 2 — texture-based materials — implemented:
 - **Known, explicitly accepted gap:** LOD1/LOD2 still use the original
   UV-less meshes (matching UV-preserving decimations need a 3D tool this
   environment doesn't have) — they render exactly as before, not a
-  regression, just not textured. Also placeholder textures throughout
-  (`assets/normal.png`, `metallic_roughness.png`, `ao.png` are small
-  self-generated PNGs — flat normal, a metallic/roughness gradient, flat
-  AO — not sourced/authored PBR photo sets), same "good enough now,
-  refine later" bar this project already applies elsewhere (LOD
-  thresholds, the flat ambient term).
+  regression, just not textured. **Still open** — see Phase 20's notes,
+  which searched for a fix and left this one alone. Also placeholder
+  textures throughout (`assets/normal.png`, `metallic_roughness.png`,
+  `ao.png` are small self-generated PNGs — flat normal, a
+  metallic/roughness gradient, flat AO — not sourced/authored PBR photo
+  sets), same "good enough now, refine later" bar this project already
+  applies elsewhere (LOD thresholds, the flat ambient term).
+  **Later revisited and closed — Phase 20.**
 
 ---
 

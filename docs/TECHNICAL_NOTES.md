@@ -3066,9 +3066,8 @@ close this gap any more than the original flat one did.
 - **Texture sampling is implemented and validated** (#13), and reunited
   with the primary demo mesh for LOD0 as of Phase 8 milestone 2 (§25) —
   `assets/suzanne_pbr.obj` has real `vt` data, unlike the original
-  `suzanne.obj`. LOD1/LOD2 (`suzanne_lod1.obj`/`suzanne_lod2.obj`) still
-  have none and sample a constant `(0,0)` texel — see §25's scoping
-  decision for why, and `docs/roadmap.md`'s Open items for the tracked gap.
+  `suzanne.obj`. Shares the LOD1/LOD2 UV gap the PBR materials item above
+  already covers.
 - **Projectile collision is swept as of §41** — the grid-impact test
   sweeps `[previousPosition(), position()]` against every instance's
   collision sphere and finds the earliest hit along that segment, closing

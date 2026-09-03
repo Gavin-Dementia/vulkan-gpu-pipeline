@@ -687,8 +687,11 @@ construction) and the geometry pass (vertex transform) — see
 ### ObjLoader
 
 Loads OBJ via tinyobjloader, deduplicates vertices into a `unordered_map`
-keyed by position+normal+uv (Suzanne LOD0: 2904 → 507 unique vertices).
-Called once per LOD mesh (`suzanne_pbr.obj` / `suzanne_lod1.obj` /
+keyed by position+normal+uv (Suzanne LOD0: 2904 → 590 unique vertices as
+of `suzanne_pbr.obj` - more than the original `suzanne.obj`'s 507, since
+real UV/normal seams split vertices a position-only mesh didn't need to;
+see `TECHNICAL_NOTES.md` §8 for that original count). Called once per
+LOD mesh (`suzanne_pbr.obj` / `suzanne_lod1.obj` /
 `suzanne_lod2.obj`), each returning its own `{ vertices, indices,
 boundingRadius }`. Also recenters the mesh to its own bounding-box
 center (raw OBJ coordinates aren't authored at local origin) and
