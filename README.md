@@ -23,6 +23,10 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 
 ![Texture PBR Demo](docs/assets/tex_pbr_01.gif)
 
+### Image-Based Lighting
+
+![Image-Based Lighting Demo](docs/assets/IBL_01.gif)
+
 ---
 
 ## Features
