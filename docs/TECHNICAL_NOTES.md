@@ -2880,6 +2880,95 @@ right question - "did the path this frame's real movement traced
 intersect anything" - without changing the simulation's actual physics,
 which a movement clamp would.
 
+### 42. Real PBR material sourcing (ambientCG)
+
+Closes Phase 8 milestone 2's other named gap (§25 shipped the sampling
+*mechanism* - `Material`, the 4-texture bundle, `triangle.frag`'s
+channel reads - using small self-generated flat/gradient PNGs as
+placeholders, explicitly flagged as not real material photography).
+
+**Why this needed sourcing, not generation.** Nothing in this codebase
+(or its vendored `third_party/`) can *author* a physically-based
+material - a real normal/roughness/AO set encodes actual surface
+photogrammetry data, not something proceduralizable the way the
+project's other placeholder-closing work (e.g. §33's procedural sky) is.
+This is squarely asset-content work, not an engineering gap, and was
+scoped accordingly rather than forced into a code-shaped solution.
+
+**Why ambientCG, and why `Bricks097` specifically.** ambientCG
+(ambientcg.com) publishes its entire library under CC0 1.0 Universal -
+public domain, no attribution required, no account/API key needed to
+download - the cleanest possible licensing position for a public repo,
+same reasoning that made `opengl-tutorials/ogl` (§25) a safe source for
+`suzanne_pbr.obj`. Its download URLs follow a stable, scriptable pattern
+(`https://ambientcg.com/get?file=<AssetID>_<Resolution>-<Format>.zip`),
+confirmed by fetching one directly rather than guessing. Several
+candidates were downloaded and inspected before choosing: pure-metal
+materials (`Metal032`, `MetalPlates006`) looked good but ship no
+AmbientOcclusion map at all (physically sensible - a flat metal panel
+has no self-shadowing cavities to bake), which would have meant
+synthesizing that channel anyway, undermining the point. `Bricks097`
+ships real Color/NormalGL/Roughness/AmbientOcclusion maps - genuine
+photogrammetry data for 3 of the 4 channels `Material` needs, missing
+only Metalness (bricks aren't metal, so ambientCG doesn't generate one -
+a real material fact, not a gap).
+
+**The one synthesized value is a material fact, not a placeholder.**
+`metallic_roughness.png`'s blue (metalness) channel is a constant 0
+across the whole image - but this isn't the same category of
+fabrication the original placeholders were (arbitrary flat/gradient
+values standing in for data that was never measured). Brick is
+correctly non-metallic; encoding that as a uniform 0 is the *accurate*
+value for this real material, the same way a real metal material's
+missing AO map would correctly imply "no additional occlusion" rather
+than a gap. The green (roughness) channel is 100% real, resized from
+ambientCG's own Roughness map.
+
+**Why `test_texture.png` (the albedo) was also replaced, beyond the
+named gap.** The roadmap item only named `normal.png`/
+`metallic_roughness.png`/`ao.png` - `test_texture.png` was a synthetic
+black/white checker test pattern (a UV-sanity-check asset, not itself
+claimed as "real material"), left alone by the original scoping. Pairing
+`Bricks097`'s real normal/roughness/AO data with an unrelated checker
+albedo would look incoherent (bump/occlusion detail with no matching
+color variation to justify it) - so this section deliberately widened
+scope by one file to keep the whole material internally consistent,
+using the same material's own Color map.
+
+**Channel-combining without a compiler on PATH.** This codebase already
+vendors `stb_image.h`/`stb_image_write.h` (`third_party/stb/`), the
+obvious tool for a one-off image-processing utility - but `cl.exe`
+wasn't discoverable on this session's `PATH` without the full Visual
+Studio Developer environment, and standing that up just for a disposable
+script wasn't worth it. Used PowerShell's `System.Drawing.Bitmap`
+instead: `Graphics.DrawImage` with `HighQualityBicubic` interpolation
+for the 1024→512 downsize, then a per-pixel `GetPixel`/`SetPixel` loop
+(fast enough at 512×512 = 262,144 pixels for a one-time asset-prep pass,
+even though it's not how this codebase would ever touch pixels at
+runtime) to build `metallic_roughness.png` from the resized Roughness
+map's green channel plus a constant blue.
+
+**No code changes anywhere.** `VulkanTexture::create()`'s format split
+(albedo sRGB, the other 3 UNORM), `VulkanDescriptor`'s 7 bindings, and
+`triangle.frag`'s sampling/channel-convention logic (§25) are all
+untouched - `VulkanContext::initCore()` already loads exactly these 4
+filenames, so this is a pure content swap under the same paths.
+Verified via the existing `[Texture] loaded ...` startup log (confirmed
+all 4 now report `512x512`, no load errors) and a visual check of the
+running app for crashes or black/NaN artifacts (§25's degenerate-UV
+guard is unaffected - only LOD0, which has real UV data, exercises
+tangent reconstruction against these maps; LOD1/LOD2 remain on the
+constant-texel path regardless of what these files contain).
+
+**Interview-relevant:** *"Why not just generate a synthetic normal map
+procedurally (e.g. Perlin noise) instead of sourcing a real one?"* -
+that would still be fabricated data with no connection to an actual
+photographed surface, the same category of placeholder this section
+exists to replace, just a fancier-looking one. The point isn't "make the
+bumps look more complex," it's "sample data that actually came from
+measuring something real" - a synthetic-but-elaborate map wouldn't
+close this gap any more than the original flat one did.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -2913,14 +3002,16 @@ which a movement clamp would.
 
 - **Texture-based PBR materials are implemented** (§25) — a `Material`
   class, albedo/normal/metallic-roughness/AO all sampled in
-  `triangle.frag`. Remaining gaps, both deliberate: only LOD0 has real UV
-  data (LOD1/LOD2 sample a constant texel, same as before this
-  milestone); the texture maps themselves are small self-generated
-  placeholders (flat normal, a metallic/roughness gradient, flat AO), not
-  authored/downloaded PBR photo sets. Material params are still shared by
-  all 343 grid instances (the projectile gets its own distinct push-
-  constant values, but still one flat set) — true per-instance material
-  variation is future work.
+  `triangle.frag`, using a real sourced CC0 material (ambientCG's
+  `Bricks097`) as of §42, not the original self-generated placeholders.
+  Remaining gap: only LOD0 has real UV data (LOD1/LOD2 sample a constant
+  texel, same as before Phase 8 milestone 2) - closing this needs a
+  UV-preserving decimation this environment has no 3D tool for, and no
+  suitable pre-made low-poly UV-mapped Suzanne variant turned up during
+  §42's asset search either. Material params are still shared by all 343
+  grid instances (the projectile gets its own distinct push-constant
+  values, but still one flat set) — true per-instance material variation
+  is future work.
 - **IBL is complete, all 3 milestones** (§33/§34/§35) — a procedurally
   baked environment cubemap, a live skybox, a diffuse irradiance cubemap,
   a specular-prefiltered mip-chain cubemap, and a BRDF integration LUT

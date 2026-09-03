@@ -70,11 +70,17 @@ void VulkanContext::initCore()
 
     uniformBuffer_.create(device_.getPhysical(), device_.get());
 
-    // Phase 8 milestone 2 (see docs/TECHNICAL_NOTES.md): placeholder PBR
-    // texture set - normal.png is a flat "no perturbation" (128,128,255)
-    // map, metallic_roughness.png follows glTF's G=roughness/B=metallic
-    // channel convention, ao.png is flat near-white. Real authored/
-    // downloaded texture sets are a stated future swap-in.
+    // Real PBR material as of Phase 20 (see docs/TECHNICAL_NOTES.md §42) -
+    // ambientCG's CC0 "Bricks097" (README's Asset Credits has the full
+    // attribution): test_texture.png/normal.png/ao.png are that material's
+    // real photogrammetry Color/NormalGL/AmbientOcclusion maps, resized to
+    // 512x512. metallic_roughness.png is synthesized from its Roughness
+    // map (G channel) with metallic (B channel) held at a constant 0 -
+    // physically correct for a non-metal material, not a fabricated value
+    // - following glTF's G=roughness/B=metallic channel convention.
+    // Replaced Phase 8 milestone 2's self-generated flat/gradient
+    // placeholders (a flat "no perturbation" normal map, a flat near-white
+    // AO map) entirely.
     material_.load(
         device_.getPhysical(), device_.get(),
         commandPool_.get(), device_.getGraphicsQueue(),

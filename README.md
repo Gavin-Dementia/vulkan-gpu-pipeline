@@ -200,6 +200,17 @@ The Vulkan SDK must be installed on the system. All other dependencies are bundl
   (`tutorial17_rotations/suzanne.obj`) — used because this project's own
   `suzanne.obj`/LOD1/LOD2 meshes have no UV data. See
   `docs/TECHNICAL_NOTES.md` §25 for why.
+- `assets/test_texture.png`/`normal.png`/`metallic_roughness.png`/`ao.png`
+  (Phase 20) are derived from [ambientCG](https://ambientcg.com)'s
+  [Bricks097](https://ambientcg.com/a/Bricks097) material (CC0 1.0
+  Universal — public domain, no attribution required, credited here
+  anyway): real photogrammetry Color/NormalGL/Roughness/AmbientOcclusion
+  maps, resized to 512×512, with `metallic_roughness.png` combining the
+  Roughness map (G channel) with a constant-0 metalness (B channel) —
+  physically correct for a non-metal brick material, not a fabricated
+  value. Replaces Phase 8 milestone 2's self-generated flat/gradient
+  placeholders. See `docs/TECHNICAL_NOTES.md` §42 for the full sourcing
+  and channel-combination process.
 
 ---
 

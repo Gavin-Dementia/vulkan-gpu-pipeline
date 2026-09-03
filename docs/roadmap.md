@@ -837,15 +837,52 @@ fixed, tunneling case.
 
 ---
 
+## Phase 20 — Real PBR Material (ambientCG)
+
+**Status: Complete**
+
+Closes the "placeholder PBR texture maps" gap from Phase 8 milestone 2:
+`normal.png`/`metallic_roughness.png`/`ao.png` were small self-generated
+flat/gradient PNGs, good enough to validate the sampling mechanism but
+not real material photography. See `docs/TECHNICAL_NOTES.md` §42 for
+the full sourcing and channel-combination process.
+
+- Sourced [ambientCG](https://ambientcg.com)'s `Bricks097` material
+  (CC0 1.0 Universal, public domain) — real photogrammetry Color/
+  NormalGL/Roughness/AmbientOcclusion maps, resized to 512×512.
+- `metallic_roughness.png` combines the real Roughness map (G channel)
+  with a constant-0 metalness (B channel) — physically correct for a
+  non-metal brick material, not a fabricated value; brick materials
+  don't ship a Metalness map at all since it would just be uniformly 0.
+- `test_texture.png` (the albedo, previously a synthetic checker test
+  pattern, not itself named in the roadmap gap) was swapped to the same
+  material's real Color map too — a deliberate scope addition beyond
+  the literal Phase 8 gap, since pairing real normal/roughness/AO data
+  with an unrelated synthetic checker albedo would look visually
+  incoherent.
+- Zero code changes anywhere - `VulkanTexture::create()`'s format split,
+  `VulkanDescriptor`'s bindings, and `triangle.frag`'s sampling logic are
+  all untouched; this is a pure asset-content swap under the same 4
+  filenames `VulkanContext::initCore()` already loads.
+- Verified by rebuilding and confirming `[Texture] loaded assets/*.png
+  (512x512)` for all 4 files with no load errors, then a visual check of
+  the running app (no crash, no black/NaN artifacts - the shading
+  pipeline's degenerate-UV guard from §25 is unaffected since only LOD0,
+  which has real UV data, samples these maps in a way that exercises
+  tangent reconstruction).
+
+---
+
 ## Open / not yet started
 
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
   was swapped to a UV/normal-mapped mesh; the far LOD meshes sample a
   constant `(0,0)` texel, same flat-tinted look as before this milestone.
-- **Placeholder PBR texture maps, not sourced/authored ones** (Phase 8,
-  milestone 2) — `normal.png`/`metallic_roughness.png`/`ao.png` are small
-  self-generated flat/gradient PNGs, good enough to validate the sampling
-  mechanism, not real material photography.
+  Closing this needs a UV-preserving decimation of the base mesh (a 3D
+  tool this environment doesn't have — see `TECHNICAL_NOTES.md` §25);
+  no suitable pre-made low-poly UV-mapped Suzanne variant was found
+  during Phase 20's asset search either, so this stays open rather than
+  forcing a mismatched substitute.
 
 ---
 

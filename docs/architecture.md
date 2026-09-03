@@ -241,6 +241,12 @@ those flat values:
   re-export of the same base Suzanne mesh, since the original had zero
   UV data. LOD1/LOD2 are unchanged (still UV-less, sample a constant
   texel) — a known, explicitly accepted gap, not a regression.
+- **Phase 20** (`TECHNICAL_NOTES.md` §42): the 4 texture files themselves
+  went from self-generated flat/gradient placeholders to a real CC0
+  material (ambientCG's `Bricks097`, see README's Asset Credits) —
+  `VulkanTexture::create()`'s format split above, `VulkanDescriptor`'s
+  bindings, and `triangle.frag`'s sampling logic are all untouched; only
+  the PNG file contents changed.
 
 Tunable at runtime via an ImGui "Lighting" window (direction/color/
 intensity/shadow-bias sliders) — `FrameRenderer`'s `ImGuiPass` lambda
