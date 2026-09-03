@@ -12,7 +12,7 @@ This document describes the high-level architecture of the renderer.
 
 ```
 Application                     — input polling, deltaTime, world-sim tick
-├── Camera::processInput()        WASD + mouse-look (Ctrl reveals cursor for UI)
+├── Camera::processInput()        WASD + Space/Ctrl + mouse-look (Shift reveals cursor for UI)
 ├── Projectile::launch()/update() left-click fires, straight-line flight
 ├── VulkanContext::updateInstanceSimulation()
 │                                  velocity+damping integration, projectile-
@@ -81,7 +81,7 @@ Responsible for:
 - Driving `Camera::processInput()` each frame, then immediately syncing
   `ImGuiConfigFlags_NoMouse` with `Camera::cursorVisible()` every frame —
   see `TECHNICAL_NOTES.md` §27 for why this has to happen every frame,
-  not just on the Ctrl transition
+  not just on the Shift transition
 - Polling (not callback-based) left-click input to launch `Projectile`,
   gated on `!ImGui::GetIO().WantCaptureMouse` — see `Projectile` below
   for why polling instead of a GLFW callback
@@ -585,15 +585,21 @@ order, filtering by stage.
 
 ### Camera
 
-First-person controller: WASD for movement, mouse-look for yaw/pitch
-(the window is set to `GLFW_CURSOR_DISABLED` once in `Application::init()`
-so the cursor is hidden and reports an unbounded virtual position — see
+First-person controller: WASD for horizontal movement, Space/Left-Ctrl
+for vertical movement along the camera's own local up axis (`getUp()`,
+`cross(right(), forward())` — not world-up, though the two only diverge
+once the camera pitches), mouse-look for yaw/pitch (the window is set to
+`GLFW_CURSOR_DISABLED` once in `Application::init()` so the cursor is
+hidden and reports an unbounded virtual position — see
 `TECHNICAL_NOTES.md` §18 for why this replaced the original QE/arrow-key
-scheme). Holding **Ctrl** reveals the cursor (`GLFW_CURSOR_NORMAL`) and
+scheme). Holding **Shift** reveals the cursor (`GLFW_CURSOR_NORMAL`) and
 suspends mouse-look entirely, so the ImGui debug windows can actually be
 clicked/dragged — GLFW's unbounded virtual cursor position in disabled
 mode isn't real screen coordinates, so ImGui can't hit-test against it
-otherwise (§18 addendum). `cursorVisible()` exposes this state publicly
+otherwise (§18 addendum). Left-Ctrl was freed for the down-movement
+binding above by moving the UI-reveal modifier to Shift — see §38 for
+the bug this exposed in `Application.cpp`'s own independent (and, until
+§38, stale) copy of this key check. `cursorVisible()` exposes this state publicly
 so `Application::mainLoop()` can keep ImGui's own mouse capture in sync
 with it — see "Application" above and `TECHNICAL_NOTES.md` §27 for the
 inverse problem this solves (ImGui still processing the unbounded
@@ -839,8 +845,8 @@ Application
 ```
 Application::mainLoop()  (before FrameRenderer::drawFrame() is even called)
         │
-Poll input: WASD/mouse-look, click (fire projectile), R (reset grid),
-            T (toggle spin), Ctrl (reveal cursor for ImGui), Esc (quit)
+Poll input: WASD/Space/Ctrl/mouse-look, click (fire projectile), R (reset
+            grid), T (toggle spin), Shift (reveal cursor for ImGui), Esc (quit)
         │
 Projectile::update(dt)              — flight, lifetime expiry
         │

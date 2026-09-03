@@ -15,11 +15,16 @@ glm::vec3 Camera::right() const
     return glm::normalize(glm::cross(getForward(), glm::vec3(0.0f, 1.0f, 0.0f)));
 }
 
+glm::vec3 Camera::getUp() const
+{
+    return glm::normalize(glm::cross(right(), getForward()));
+}
+
 void Camera::processInput(GLFWwindow* window, float deltaTime)
 {
     float moveAmount = moveSpeed_ * deltaTime;
 
-    // WASD movement
+    // WASD space ctrl movement
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         position_ += getForward() * moveAmount;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
@@ -28,16 +33,20 @@ void Camera::processInput(GLFWwindow* window, float deltaTime)
         position_ -= right() * moveAmount;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         position_ += right() * moveAmount;
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+        position_ += getUp() * moveAmount;
+    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+        position_ -= getUp() * moveAmount;
 
-    // Hold Ctrl to reveal the cursor and adjust the ImGui debug windows;
+    // Hold Shift to reveal the cursor and adjust the ImGui debug windows;
     // release it to go back to mouse-look. Only toggle GLFW's cursor mode
     // on an actual transition, not every frame.
-    bool ctrlHeld = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
-                    glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+    bool shiftHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                     glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
 
-    if (ctrlHeld != cursorVisible_)
+    if (shiftHeld != cursorVisible_)
     {
-        cursorVisible_ = ctrlHeld;
+        cursorVisible_ = shiftHeld;
         glfwSetInputMode(window, GLFW_CURSOR, cursorVisible_ ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
         firstMouseSample_ = true;   // avoid a jump when look mode resumes
     }

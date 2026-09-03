@@ -206,12 +206,14 @@ The Vulkan SDK must be installed on the system. All other dependencies are bundl
 
 | Input | Action |
 |---|---|
-| `W` `A` `S` `D` | Move |
+| `W` `A` `S` `D` | Move horizontally |
+| `Space` | Move up |
+| `Left Ctrl` | Move down |
 | Mouse | Look around (cursor is captured by default) |
 | Left click | Fire the projectile at the grid |
 | `R` | Reset the grid to its original formation |
 | `T` | Pause / resume the grid's spin |
-| Hold `Ctrl` | Reveal the cursor to interact with the ImGui windows (stats overlay, lighting/shadow-bias sliders, shadow map debug preview) |
+| Hold `Shift` | Reveal the cursor to interact with the ImGui windows (stats overlay, lighting/shadow-bias sliders, shadow map debug preview) |
 | `Esc` | Quit |
 
 ---

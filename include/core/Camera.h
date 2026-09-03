@@ -70,5 +70,6 @@ private:
     bool cursorVisible_ = false;
 
     glm::vec3 right() const;
+    glm::vec3 getUp() const;
 };
 

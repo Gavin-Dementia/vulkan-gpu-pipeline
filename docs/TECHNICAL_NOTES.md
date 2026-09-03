@@ -2527,6 +2527,52 @@ the cost of one `bool` and a few ImGui lines.
 
 ---
 
+### 38. Camera controls: Space/Ctrl vertical movement, UI-reveal moved off Ctrl - and the duplicated-key-check bug that move exposed
+
+`Camera::processInput()` gained `Space`/`Left Ctrl` for movement along
+the camera's own local up axis (new `getUp()` helper,
+`normalize(cross(right(), forward()))` - not world-up, though the two
+coincide until the camera actually pitches), alongside the existing
+WASD horizontal movement. Since `Left Ctrl` was the modifier that
+revealed the cursor for UI adjustment (§18), and it's now a movement
+key, the UI-reveal modifier moved to `Shift` in the same change.
+
+That modifier move exposed a real bug, not just a doc-staleness issue.
+`Application::mainLoop()` had its own **independent copy** of the
+"is the cursor in UI-reveal mode" check, re-derived from a hardcoded
+`GLFW_KEY_LEFT_CONTROL` poll, to gate whether a left-click fires a
+projectile:
+```cpp
+bool ctrlHeld = glfwGetKey(...GLFW_KEY_LEFT_CONTROL...) == GLFW_PRESS || ...;
+if (leftPressed && !prevLeftMousePressed_ && !ImGui::GetIO().WantCaptureMouse)
+    if (!ctrlHeld) { /* launch projectile */ }
+```
+This was never updated when `Camera.cpp`'s modifier changed, so it went
+stale in two directions at once: holding `Ctrl` (now legitimately bound
+to "move down") would incorrectly suppress firing even in ordinary
+mouse-look mode, while `Shift` - the actual new UI-reveal key - wasn't
+checked by this duplicate at all. The fix wasn't to swap `CONTROL` for
+`SHIFT` in `Application.cpp` (that just reintroduces the same
+duplication, ready to go stale again the next time the binding
+changes) - it was to delete the duplicate check entirely and call
+`context->camera().cursorVisible()`, the accessor `Camera` already
+exposes and that `Application::mainLoop()` already uses two lines above
+for the `ImGuiConfigFlags_NoMouse` sync (§27). One source of truth for
+"is the cursor in UI mode," not two independently-derived ones that
+happen to agree only as long as nobody touches the key binding.
+
+**Interview-relevant:** *"Why does a controls tweak in `Camera.cpp`
+count as a bug fix in `Application.cpp`?"* — because the two files were
+each computing the same boolean from raw input state instead of one
+computing it and the other reading it. Duplicated derivation from the
+same source is a latent bug whether or not the source ever changes;
+this change just happened to be the one that collected on it. Same
+lesson as §27's `ImGuiConfigFlags_NoMouse` fix one section up - prefer
+"read the single accessor" over "recompute the same condition again
+and hope both copies stay in sync."
+
+---
+
 ## Bugs encountered (and what they taught)
 
 | Bug | Root cause | Lesson |
