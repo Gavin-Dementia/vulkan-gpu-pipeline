@@ -258,6 +258,49 @@ void VulkanContext::resizeSceneTarget(uint32_t width, uint32_t height)
 }
 
 // =========================================================
+// Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39).
+// Recreates framebuffer_/depthBuffer_/swapchain_ at the window's current
+// framebuffer size. renderPass_ is left untouched - same "format/
+// structure only, no extent" fact resizeSceneTarget() above already
+// relies on for sceneRenderPass_. pipeline_/skyboxPipeline_ need no
+// recreation here (unlike resizeSceneTarget()'s), since neither targets
+// the swapchain - both bake a VkViewport against sceneColorTarget_'s
+// extent instead, which this resize doesn't touch.
+// =========================================================
+void VulkanContext::resizeSwapchain()
+{
+    // Shared across both frames-in-flight, not per-slot, so only a full
+    // device idle is provably sufficient before destroying them - same
+    // stall/simplicity tradeoff resizeSceneTarget() already accepts.
+    vkDeviceWaitIdle(device_.get());
+
+    framebuffer_.destroy(device_.get());
+    depthBuffer_.destroy(device_.get());
+    swapchain_.destroy(device_.get());
+
+    swapchain_.create(
+        device_.getPhysical(),
+        device_.get(),
+        surface_.get(),
+        window_
+    );
+
+    depthBuffer_.create(
+        device_.getPhysical(),
+        device_.get(),
+        swapchain_.getExtent()
+    );
+
+    framebuffer_.create(
+        device_.get(),
+        renderPass_.get(),
+        swapchain_.getImageViews(),
+        depthBuffer_.view(),
+        swapchain_.getExtent()
+    );
+}
+
+// =========================================================
 // IBL Milestones 1-3 (see docs/TECHNICAL_NOTES.md §33/§34/§35):
 // environment cubemap + procedural sky bake + skybox pipeline (M1), a
 // diffuse irradiance cubemap convolved from the environment (M2), and a

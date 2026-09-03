@@ -201,6 +201,22 @@ public:
     // current size.
     void resizeSceneTarget(uint32_t width, uint32_t height);
 
+    // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39).
+    // Recreates framebuffer_/depthBuffer_/swapchain_ at whatever size
+    // glfwGetFramebufferSize(window_) currently reports - unlike
+    // resizeSceneTarget() above, no width/height parameters: the
+    // swapchain's extent always tracks the actual window, there's no
+    // independent "requested size" to pass in. renderPass_ is untouched
+    // (format doesn't change on a plain resize, and a VkRenderPass
+    // doesn't encode extent - same fact resizeSceneTarget() relies on for
+    // sceneRenderPass_); pipeline_/skyboxPipeline_ need no changes either,
+    // since both target the offscreen sceneRenderPass_/sceneColorTarget_,
+    // not the swapchain, and never bake the swapchain's extent into a
+    // VkViewport. Blocks on vkDeviceWaitIdle, same "simplest correct
+    // implementation, no debounce" tradeoff as resizeSceneTarget(). Called
+    // by FrameRenderer at the top of drawFrame(), never mid-frame.
+    void resizeSwapchain();
+
     // Directional light's orthographic view-projection matrix, framed
     // around a fixed scene-radius constant covering the 7x7x7 grid's
     // footprint plus scatter margin - single source of truth, same

@@ -721,6 +721,54 @@ unaffected by viewport size and don't need any re-bake.
 
 ---
 
+## Phase 17 — Live-Resized Window / Swapchain
+
+**Status: Complete**
+
+Closes the gap Phase 11 flagged and Phase 16 only partially closed: "This
+codebase has no swapchain resize handling anywhere else either" was true
+of the *window itself*, not just the docked Viewport panel Phase 16
+fixed - the GLFW window was hard-coded `GLFW_RESIZABLE = GLFW_FALSE`
+from Phase 0 through Phase 16, so dragging the OS window border was
+never actually possible until now. See `TECHNICAL_NOTES.md` §39 for the
+full design.
+
+- `Application::init()` - the window is now created with
+  `GLFW_RESIZABLE = GLFW_TRUE`.
+- `VulkanContext::resizeSwapchain()` - destroys and recreates
+  `framebuffer_`/`depthBuffer_`/`swapchain_` at the window's current
+  framebuffer size. `renderPass_` is untouched (a `VkRenderPass` doesn't
+  encode extent - the same fact Phase 16 already relied on for
+  `sceneRenderPass_`); `pipeline_`/`skyboxPipeline_` need no changes at
+  all, since Phase 11 already moved both off the swapchain onto the
+  offscreen `sceneRenderPass_`/`sceneColorTarget_` - this resize doesn't
+  touch either. Blocks on a full `vkDeviceWaitIdle`, same reasoning as
+  `resizeSceneTarget()`.
+- `FrameRenderer::drawFrame()` detects a resize two ways: comparing
+  `glfwGetFramebufferSize()` against the swapchain's current extent at
+  the top of every frame (an ordinary window drag), and
+  `vkAcquireNextImageKHR`/`vkQueuePresentKHR` themselves returning
+  `VK_ERROR_OUT_OF_DATE_KHR`/`VK_SUBOPTIMAL_KHR` (a swapchain gone stale
+  for a reason other than a plain resize, e.g. a display mode change).
+  `frame.inFlightFence` is now reset only *after* a successful acquire,
+  not before - resetting it first and then bailing out on an out-of-date
+  acquire would leave the fence signaled-never, hanging the next frame
+  that waits on the same slot.
+- `FrameRenderer::recreateSwapchainResources()` - re-sizes
+  `imagesInFlight`/`imageRenderFinished` to the (usually unchanged)
+  swapchain image count and calls `ImGui_ImplVulkan_SetMinImageCount()`,
+  since ImGui's Vulkan backend needs to know if that count ever changes.
+- `Application::mainLoop()` pauses (via `glfwWaitEvents()`) whenever the
+  framebuffer reports 0×0 (window minimized) instead of calling
+  `drawFrame()` at all - a 0-sized swapchain is invalid to create, and
+  there's nothing to render to it anyway.
+
+**Known, accepted limitation:** no debounce, same tradeoff Phase 16
+already accepted for the viewport panel - dragging the window border
+can trigger a `vkDeviceWaitIdle` stall on consecutive frames.
+
+---
+
 ## Open / not yet started
 
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0

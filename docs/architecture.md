@@ -92,6 +92,10 @@ Responsible for:
   driving `VulkanContext::updateInstanceSimulation()`/`updateSpin()`
   every frame (world-simulation state, not rendering state — kept here
   rather than inside a `FrameRenderer` pass)
+- Pausing the whole loop (`glfwWaitEvents()`, skipping `drawFrame()`
+  entirely) whenever the framebuffer reports 0×0 — a minimized window —
+  since Phase 17's live-resized swapchain (see below) can't build a
+  valid 0-sized swapchain and there's nothing to render to it anyway
 
 Not responsible for:
 - Vulkan resource management
@@ -516,11 +520,69 @@ no debounce).
   (`ImGui_ImplVulkan_RemoveTexture`/`AddTexture`) against the new
   `VkImageView`.
 
+### Live-resized window / swapchain (Phase 17)
+
+Closes the gap Phase 16 left open — that phase made the *docked Viewport
+panel* live-resizable, but the GLFW window itself was still hard-coded
+non-resizable, so an actual OS-level swapchain resize/recreate path
+never existed anywhere in the codebase. See `TECHNICAL_NOTES.md` §39 for
+the full design (the fence-reset-ordering fix in particular).
+
+- `Application::init()` — the window is now created with
+  `GLFW_RESIZABLE = GLFW_TRUE` instead of `GLFW_FALSE`.
+- `VulkanContext::resizeSwapchain()` — destroys and recreates
+  `framebuffer_`/`depthBuffer_`/`swapchain_` at the window's current
+  framebuffer size (no width/height parameters — `VulkanSwapchain::
+  create()` already re-queries the window itself). `renderPass_` is
+  untouched (format/structure only, no extent — the same fact
+  `resizeSceneTarget()` above already relies on). Unlike
+  `resizeSceneTarget()`, no pipeline needs recreating here at all:
+  `pipeline_`/`skyboxPipeline_` both target the offscreen
+  `sceneRenderPass_`/`sceneColorTarget_` (Phase 11), never the swapchain,
+  so neither has a `VkViewport` baked against swapchain extent to begin
+  with. Blocks on `vkDeviceWaitIdle`, same "simplest correct
+  implementation, no debounce" tradeoff as `resizeSceneTarget()`.
+- `FrameRenderer::drawFrame()` checks for a needed resize at the very
+  top of every frame, two independent ways: a direct
+  `glfwGetFramebufferSize()` vs. swapchain-extent comparison (an
+  ordinary window drag), and a `swapchainNeedsRecreate_` flag set when
+  `vkAcquireNextImageKHR`/`vkQueuePresentKHR` themselves report
+  `VK_SUBOPTIMAL_KHR`/`VK_ERROR_OUT_OF_DATE_KHR` (a stale swapchain from
+  something other than a plain resize, e.g. a display mode change).
+  `vkAcquireNextImageKHR` returning `VK_ERROR_OUT_OF_DATE_KHR` directly
+  (mid-frame, not caught by the top-of-frame check) recreates
+  immediately and returns without submitting, deferring the rest of that
+  frame to the next `drawFrame()` call.
+- `frame.inFlightFence` is now reset only *after* a successful acquire
+  instead of before it — resetting first and then bailing out on an
+  out-of-date acquire would leave the fence reset-but-never-signaled,
+  hanging the next `vkWaitForFences()` call on that same frame slot
+  forever.
+- `FrameRenderer::recreateSwapchainResources()` — re-sizes
+  `imagesInFlight`/`imageRenderFinished` to the (usually unchanged)
+  swapchain image count (only actually recreating the owned
+  `imageRenderFinished` semaphores if that count changed) and calls
+  `ImGui_ImplVulkan_SetMinImageCount()`, since ImGui's Vulkan backend
+  needs to know if the image count it was initialized with ever changes.
+- `Application::mainLoop()` pauses via `glfwWaitEvents()` whenever the
+  framebuffer is 0×0 (window minimized), skipping `drawFrame()` entirely
+  until the window is restored — `VulkanContext::resizeSwapchain()`
+  itself does no 0-size clamping, relying on this caller-side guarantee
+  instead (the current codebase's only resize path that doesn't clamp
+  its own input, since a minimized window has nothing to render to
+  regardless).
+
 ### FrameRenderer
 
 Owns per-frame synchronization (fence/semaphore pairs, double-buffered)
 and the `FrameGraph` instance. `drawFrame()`:
 
+0. Checks for a needed swapchain resize (window drag or a suboptimal/
+   out-of-date flag from the previous frame's acquire/present — see
+   "Live-resized window / swapchain" above) and, separately, a queued
+   scene-target resize from the previous frame's `ImGuiPass` (see
+   "Live-resized viewport target" above) — both applied here, before
+   anything else this frame touches per-frame-slot state
 1. Waits on the current frame's fence; reads back the *previous*
    frame's 3 LOD instance counts for the ImGui overlay (see
    `TECHNICAL_NOTES.md` §11 for why this happens here and not
@@ -845,6 +907,10 @@ Application
 ```
 Application::mainLoop()  (before FrameRenderer::drawFrame() is even called)
         │
+glfwPollEvents() → if framebuffer is 0×0 (minimized), glfwWaitEvents()
+                   in a loop instead of calling drawFrame() at all
+                   (Phase 17, TECHNICAL_NOTES §39)
+        │
 Poll input: WASD/Space/Ctrl/mouse-look, click (fire projectile), R (reset
             grid), T (toggle spin), Shift (reveal cursor for ImGui), Esc (quit)
         │
@@ -860,12 +926,19 @@ VulkanContext::updateSpin(dt)       — accumulated angle, skipped if paused
         │
 ════════ FrameRenderer::drawFrame() ════════
         │
+Check for a needed swapchain resize (window-size mismatch, or a
+suboptimal/out-of-date flag from the previous frame's acquire/present) →
+VulkanContext::resizeSwapchain() + FrameRenderer::recreateSwapchainResources()
+if so (Phase 17, TECHNICAL_NOTES §39) — also apply any scene-target
+resize queued by the previous frame's ImGuiPass (Phase 16, TECHNICAL_NOTES §36)
+        │
 Wait Fence → Read back previous frame's 3 LOD instance counts + coarse-
 pass cluster-visible counts (debug overlay) + this frame slot's 4 GPU
 timestamps → Culling/Shadow/Graphics/Total ms (if the GPU supports
 timestamp queries — see TECHNICAL_NOTES §23)
         │
-Acquire Swapchain Image
+Acquire Swapchain Image (VK_ERROR_OUT_OF_DATE_KHR → recreate + return
+                          without submitting, retried next drawFrame() call)
         │
 Reset IndirectLOD0/1/2.instanceCount = 0   (3× CPU write)
 Reset ShadowIndirect.instanceCount = 0     (CPU write, indexed by LOD0)

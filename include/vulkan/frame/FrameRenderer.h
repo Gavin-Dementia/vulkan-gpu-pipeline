@@ -52,9 +52,22 @@ private:
     uint32_t pendingWidth_  = 0;
     uint32_t pendingHeight_ = 0;
 
+    // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39) -
+    // set when vkAcquireNextImageKHR/vkQueuePresentKHR report the
+    // swapchain is suboptimal/out of date, checked (alongside a direct
+    // framebuffer-size comparison) at the top of the next drawFrame().
+    bool swapchainNeedsRecreate_ = false;
+
 private:
     void createSyncObjects();
     void createCommandBuffers();
     void createQueryPools();
+
+    // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39) -
+    // recreates the swapchain-derived resources FrameRenderer itself owns
+    // per swapchain image (imagesInFlight/imageRenderFinished) after
+    // VulkanContext::resizeSwapchain() runs, and tells ImGui's Vulkan
+    // backend about a changed image count.
+    void recreateSwapchainResources();
 };
 

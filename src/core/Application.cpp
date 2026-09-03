@@ -22,7 +22,10 @@ void Application::init()
         throw std::runtime_error("Failed to init GLFW");
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39) -
+    // this was GLFW_FALSE from Phase 0 through Phase 16, since nothing in
+    // the pipeline could handle a swapchain resize yet.
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     GLFWwindow* window = glfwCreateWindow(
         1280,
@@ -58,6 +61,29 @@ void Application::mainLoop()
     while (running)
     {
         glfwPollEvents();
+
+        // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md
+        // §39): a minimized window reports a 0x0 framebuffer, which
+        // would make VulkanContext::resizeSwapchain() build a zero-extent
+        // (invalid) swapchain. Block here instead of calling
+        // drawFrame() at all until the window is restored - the same
+        // "pause the whole loop while minimized" pattern every Vulkan
+        // swapchain-resize implementation uses, since there's nothing
+        // useful to render to a 0-sized surface anyway.
+        int fbWidth, fbHeight;
+        glfwGetFramebufferSize(context->window(), &fbWidth, &fbHeight);
+        if (fbWidth == 0 || fbHeight == 0)
+        {
+            while ((fbWidth == 0 || fbHeight == 0) && !glfwWindowShouldClose(context->window()))
+            {
+                glfwWaitEvents();
+                glfwGetFramebufferSize(context->window(), &fbWidth, &fbHeight);
+            }
+            // Restarting the deltaTime clock here keeps the minimized
+            // duration itself from being counted as one giant frame the
+            // moment the window is restored.
+            lastTime = (float)glfwGetTime();
+        }
 
         float currentTime = (float)glfwGetTime();
         float deltaTime = currentTime - lastTime;

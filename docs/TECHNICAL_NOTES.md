@@ -2571,6 +2571,121 @@ lesson as §27's `ImGuiConfigFlags_NoMouse` fix one section up - prefer
 "read the single accessor" over "recompute the same condition again
 and hope both copies stay in sync."
 
+### 39. Live-resized window / swapchain
+
+Closes a gap §36 explicitly left open: that section made the *docked
+Viewport panel* live-resizable, but `Application::init()` still created
+the GLFW window with `GLFW_RESIZABLE = GLFW_FALSE`, and nothing in the
+codebase had ever handled `vkAcquireNextImageKHR`/`vkQueuePresentKHR`
+returning `VK_ERROR_OUT_OF_DATE_KHR`/`VK_SUBOPTIMAL_KHR` — dragging the
+actual OS window border was never possible, let alone safe, before this
+change.
+
+**Why this was a much smaller change than §36's scene-target resize.**
+§36 had to recreate two pipelines (`pipeline_`/`skyboxPipeline_`)
+because both bake a `VkViewport` against the offscreen scene target's
+extent. The swapchain's own render pass/framebuffer (`renderPass_`/
+`framebuffer_`) host *only* `ImGuiPass` (Phase 11 moved all 3D geometry
+onto `sceneRenderPass_`/`sceneColorTarget_` instead) and ImGui's Vulkan
+backend doesn't bake a fixed viewport the way this codebase's other
+pipeline classes do — it takes the swapchain's `VkRenderPass` once at
+`ImGui_ImplVulkan_Init()` time and reads the actual framebuffer extent
+per-frame via `vkCmdSetViewport`-equivalent internal state. So
+`VulkanContext::resizeSwapchain()` only has to destroy/recreate
+`framebuffer_`/`depthBuffer_`/`swapchain_` — no pipeline, no descriptor,
+no shader touches the swapchain's extent anywhere in this codebase.
+`renderPass_` itself is untouched, same "format/structure only, no
+extent" fact §36 already relied on for `sceneRenderPass_`.
+
+**Two independent resize triggers, not one.** An ordinary window drag
+is caught by comparing `glfwGetFramebufferSize(window_)` against
+`swapchain_.getExtent()` at the top of every `FrameRenderer::drawFrame()`
+call — the same "poll and compare" pattern §36 already established for
+the Viewport panel, chosen for consistency rather than wiring up a
+`glfwSetFramebufferSizeCallback`. But a plain size comparison can't
+catch every reason a swapchain goes stale (e.g. the surface format
+becoming suboptimal after a display mode or HDR/SDR switch, with the
+*size* unchanged) — Vulkan's own answer to that is the
+`VK_SUBOPTIMAL_KHR`/`VK_ERROR_OUT_OF_DATE_KHR` return codes from
+`vkAcquireNextImageKHR`/`vkQueuePresentKHR`, so both are checked too,
+setting a `swapchainNeedsRecreate_` flag consumed at the top of the
+*next* frame (present's out-of-date/suboptimal can't be handled
+mid-frame — presentation is the last thing `drawFrame()` does).
+`vkAcquireNextImageKHR` returning `VK_ERROR_OUT_OF_DATE_KHR` directly is
+the one case that *can't* wait for the next frame: the returned
+`imageIndex` isn't valid to render into *this* frame, so that branch
+recreates immediately and returns without recording or submitting
+anything, deferring the rest of the frame's work entirely.
+
+**The fence-reset-ordering bug this would otherwise have introduced.**
+Before this change, `drawFrame()` did `vkResetFences(frame.inFlightFence)`
+*before* `vkAcquireNextImageKHR`. Naively bolting an out-of-date check
+onto the existing order — reset, acquire, check, bail out on
+`return` — would leave that frame slot's fence reset (unsignaled) with
+nothing ever going on to signal it, since bailing out skips the
+`vkQueueSubmit` that would normally do so. The *next* call to
+`drawFrame()` reusing that same slot calls `vkWaitForFences(...,
+UINT64_MAX)` on it and blocks forever — the whole render thread hangs
+the very first time a resize lands mid-acquire. The fix (the standard
+one for this exact Vulkan pitfall): reorder so the fence is only reset
+*after* a successful acquire. Waiting on a fence that's still signaled
+from this slot's last real submit costs nothing extra; it's exactly the
+state `vkWaitForFences` already found true at the top of this same
+`drawFrame()` call, a few lines earlier.
+
+**Per-swapchain-image resources, resized conditionally.**
+`imagesInFlight` (non-owning `VkFence` pointers, one per swapchain
+image) is unconditionally re-sized/reset to the new image count after
+every recreate — cheap, and correctness requires it regardless of
+whether the count actually changed (stale fence pointers from the old
+swapchain's images would otherwise linger). `imageRenderFinished` (real,
+owned `VkSemaphore` objects) is only destroyed and recreated if the
+image count *changed* — the common case, a plain window resize on the
+same surface/device, keeps the same count, so this avoids needless
+semaphore churn on every drag frame. `ImGui_ImplVulkan_SetMinImageCount()`
+is called unconditionally after every recreate regardless, since it's
+cheap and is ImGui's own documented contract for "the swap chain was
+recreated."
+
+**Minimize is a real edge case, not a hypothetical one.** A minimized
+Win32 window reports a `0×0` framebuffer via `glfwGetFramebufferSize()`,
+and `vkCreateSwapchainKHR` with a `0×0` extent is invalid — this isn't
+theoretical, it's the very first thing that happens if a user minimizes
+the window with this feature half-implemented. Fixed in
+`Application::mainLoop()`, not in `VulkanContext::resizeSwapchain()`:
+after `glfwPollEvents()`, if the framebuffer is `0×0`, the loop calls
+`glfwWaitEvents()` in a blocking loop (re-checking the size each
+iteration) instead of calling `drawFrame()` at all, until the window is
+restored. `resizeSwapchain()` itself does no defensive 0-size clamping —
+the one resize path in this codebase that doesn't clamp its own input —
+because there's no sensible fallback size for "the user minimized the
+window," unlike §36's 64px floor for a transiently-small dock panel.
+`lastTime` is reset to `glfwGetTime()` right after the wait loop exits,
+so the minimized duration itself doesn't get counted as one giant
+`deltaTime` spike the moment the window is restored (see §37 for why an
+uncapped `deltaTime` spike is a real, previously-diagnosed problem in
+this codebase, not a hypothetical one).
+
+**No debounce — same accepted tradeoff as §36.** Dragging the window
+border can trigger a `vkDeviceWaitIdle` stall (inside
+`resizeSwapchain()`) on consecutive frames, exactly like §36's Viewport-
+panel resize. Same reasoning: keeping the resize path simple was judged
+more valuable than the smoother-but-more-complex alternative (debounce,
+or per-resource fencing instead of a full device idle) for a project at
+this scale.
+
+**Interview-relevant:** *"Why doesn't this resize need to touch
+`pipeline_`/`skyboxPipeline_` when §36's did?"* — because those two
+pipelines' `VkViewport` is baked against the *offscreen scene target's*
+extent (`sceneColorTarget_`), which Phase 11 already decoupled from the
+swapchain entirely. A window resize changes the swapchain's extent, not
+the scene target's — the two are now independent by construction, so a
+change to one has zero pipeline-recreation cost on the other. That
+decoupling was a side effect of Phase 11's dockable-viewport design, not
+something this feature had to build — this section is really evidence
+that Phase 11's architecture choice paid off later, for a use case it
+wasn't originally designed for.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -2656,6 +2771,12 @@ and hope both copies stay in sync."
   live re-bake of IBL's baked-once assets (§33/§34/§35) - those stay
   correct regardless of viewport size since they're not resolution-
   dependent.
+- **The window/swapchain itself is live-resized as of §39** — the GLFW
+  window is resizable, `vkAcquireNextImageKHR`/`vkQueuePresentKHR`'s
+  out-of-date/suboptimal codes are handled, and a minimized window pauses
+  the main loop instead of building an invalid 0-sized swapchain. Same
+  no-debounce tradeoff as §36's viewport resize (a `vkDeviceWaitIdle`
+  stall per frame while actively dragging the window border).
 - **Texture sampling is implemented and validated** (#13), and reunited
   with the primary demo mesh for LOD0 as of Phase 8 milestone 2 (§25) —
   `assets/suzanne_pbr.obj` has real `vt` data, unlike the original

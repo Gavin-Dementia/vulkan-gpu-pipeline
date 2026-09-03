@@ -633,6 +633,32 @@ void FrameRenderer::drawFrame()
     auto& renderPass = context->renderPass();
     auto& framebuffer = context->framebuffer();
 
+    // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39):
+    // checked before anything else this frame, same "apply at the very
+    // top of the next frame" timing as the scene-target resize below -
+    // recreateSwapchainResources() does its own vkDeviceWaitIdle, which
+    // subsumes the per-slot fence wait a few lines down. Two independent
+    // triggers: a direct framebuffer-size comparison (catches an ordinary
+    // window drag - GLFW's framebuffer size already reflects the new size
+    // by the time glfwPollEvents() returns in Application::mainLoop()) and
+    // swapchainNeedsRecreate_ (set below when vkAcquireNextImageKHR/
+    // vkQueuePresentKHR themselves reported the swapchain suboptimal/out
+    // of date - e.g. a display mode change, not just a resize).
+    {
+        int fbWidth, fbHeight;
+        glfwGetFramebufferSize(context->window(), &fbWidth, &fbHeight);
+        VkExtent2D currentExtent = swapchain.getExtent();
+        bool sizeMismatch =
+            static_cast<uint32_t>(fbWidth)  != currentExtent.width ||
+            static_cast<uint32_t>(fbHeight) != currentExtent.height;
+
+        if (swapchainNeedsRecreate_ || sizeMismatch)
+        {
+            recreateSwapchainResources();
+            swapchainNeedsRecreate_ = false;
+        }
+    }
+
     // Live-resized viewport target (see docs/TECHNICAL_NOTES.md §36):
     // apply a resize queued by the *previous* frame's ImGuiPass here, at
     // the very top of the next frame, before any per-frame-slot state is
@@ -707,10 +733,16 @@ void FrameRenderer::drawFrame()
         }
     }
 
-    vkResetFences(device.get(), 1, &frame.inFlightFence);
-
+    // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39):
+    // frame.inFlightFence is deliberately NOT reset until after this
+    // acquire succeeds. If it were reset first and the swapchain then
+    // turned out to be out of date, drawFrame() would have to bail out
+    // without ever submitting - leaving the fence reset-but-never-
+    // signaled, so the *next* call's vkWaitForFences() on this same slot
+    // would block forever. Waiting on the still-signaled fence from this
+    // slot's last real submit costs nothing (it's already signaled).
     uint32_t imageIndex;
-    vkAcquireNextImageKHR(
+    VkResult acquireResult = vkAcquireNextImageKHR(
         device.get(),
         swapchain.getSwapchain(),
         UINT64_MAX,
@@ -718,6 +750,21 @@ void FrameRenderer::drawFrame()
         VK_NULL_HANDLE,
         &imageIndex
     );
+
+    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        // The image index this call returned (if any) isn't valid to
+        // render into - recreate now and pick the resize up cleanly on
+        // the *next* drawFrame() call instead of this one.
+        recreateSwapchainResources();
+        return;
+    }
+    if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR)
+        throw std::runtime_error("Failed to acquire swapchain image");
+    if (acquireResult == VK_SUBOPTIMAL_KHR)
+        swapchainNeedsRecreate_ = true;   // still a valid image this frame - recreate next frame instead
+
+    vkResetFences(device.get(), 1, &frame.inFlightFence);
 
     if (imagesInFlight[imageIndex] != VK_NULL_HANDLE)
     {
@@ -921,7 +968,11 @@ void FrameRenderer::drawFrame()
     present.pSwapchains = swapchains;
     present.pImageIndices = &imageIndex;
 
-    vkQueuePresentKHR(device.getPresentQueue(), &present);
+    VkResult presentResult = vkQueuePresentKHR(device.getPresentQueue(), &present);
+    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
+        swapchainNeedsRecreate_ = true;   // picked up at the top of the next drawFrame()
+    else if (presentResult != VK_SUCCESS)
+        throw std::runtime_error("Failed to present swapchain image");
 
     currentFrame = (currentFrame + 1) % frames.size();
     frameCounter_++;
@@ -1044,5 +1095,48 @@ void FrameRenderer::createQueryPools()
         if (vkCreateQueryPool(device, &info, nullptr, &frame.queryPool) != VK_SUCCESS)
             throw std::runtime_error("Failed to create timestamp query pool");
     }
+}
+
+// Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39).
+// VulkanContext::resizeSwapchain() owns the swapchain/framebuffer/depth-
+// buffer themselves; this recreates the two things FrameRenderer keeps
+// sized to the swapchain's *image count* (not its per-frame-in-flight
+// state, which is independent of the swapchain entirely) and makes sure
+// ImGui's Vulkan backend knows if that count changed.
+void FrameRenderer::recreateSwapchainResources()
+{
+    context->resizeSwapchain();
+
+    uint32_t imageCount = getImageCount();
+
+    // Non-owning: each entry just points at whichever in-flight frame's
+    // fence last used that swapchain image, so a plain resize/reset (no
+    // destroy) is correct here even when imageCount changed.
+    imagesInFlight.assign(imageCount, VK_NULL_HANDLE);
+
+    // Per-swapchain-image semaphores, unlike imagesInFlight, are real
+    // owned objects - only recreate them if the image count actually
+    // changed (the common case, a plain resize, keeps the same count).
+    if (imageRenderFinished.size() != imageCount)
+    {
+        VkDevice device = context->device().get();
+        for (VkSemaphore sem : imageRenderFinished)
+            vkDestroySemaphore(device, sem, nullptr);
+
+        imageRenderFinished.assign(imageCount, VK_NULL_HANDLE);
+
+        VkSemaphoreCreateInfo semInfo{};
+        semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        for (auto& sem : imageRenderFinished)
+        {
+            if (vkCreateSemaphore(device, &semInfo, nullptr, &sem) != VK_SUCCESS)
+                throw std::runtime_error("Failed to recreate imageRenderFinished semaphore");
+        }
+    }
+
+    // Only matters if imageCount changed, but harmless (and required by
+    // ImGui's own contract) to call unconditionally after any swapchain
+    // recreation.
+    ImGui_ImplVulkan_SetMinImageCount(imageCount);
 }
 

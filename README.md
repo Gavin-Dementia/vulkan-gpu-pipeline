@@ -45,6 +45,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | GPU Timestamp Performance Instrumentation | ✅ |
 | Dockable Editor UI (ImGui docking, offscreen viewport) | ✅ |
 | Live-Resized Viewport Target | ✅ |
+| Live-Resized Window / Swapchain | ✅ |
 | Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only — see below |
 | Image-Based Lighting (procedural-sky cubemap, diffuse irradiance, specular prefilter + BRDF LUT) | ✅ |
 
