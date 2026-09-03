@@ -87,23 +87,26 @@ vulkan-gpu-pipeline/
 │       ├── command/           VulkanCommandPool
 │       ├── core/              VulkanInstance
 │       ├── culling/           Frustum (Gribb-Hartmann plane extraction)
-│       ├── descriptor/        VulkanDescriptor, ComputeDescriptor, CubeSamplerDescriptor
+│       ├── descriptor/        VulkanDescriptor, ComputeDescriptor,
+│       │                      CubeSamplerDescriptor, IBLDescriptor
 │       ├── device/            VulkanDevice
 │       ├── frame/             FrameContext, FrameRenderer, FrameGraph
 │       ├── instance/          InstanceData (per-instance vertex attribute)
 │       ├── lighting/          SceneData, MaterialPushConstants
 │       ├── pipeline/          VulkanPipeline, VulkanComputePipeline, VulkanShadowPipeline,
 │       │                      VulkanEnvCapturePipeline, VulkanSkyboxPipeline,
-│       │                      VulkanIrradiancePipeline
+│       │                      VulkanIrradiancePipeline, VulkanPrefilterPipeline,
+│       │                      VulkanBRDFLutPipeline
 │       ├── platform/          VulkanSurface
 │       ├── renderpass/        VulkanRenderPass, VulkanFramebuffer, VulkanDepthBuffer,
 │       │                      VulkanShadowMap, VulkanSceneColorTarget
 │       ├── resource/          ShaderLoader, ObjLoader
 │       ├── swapchain/         VulkanSwapchain
-│       └── texture/           VulkanTexture, Material, VulkanCubemap
+│       └── texture/           VulkanTexture, Material, VulkanCubemap, VulkanBRDFLut
 ├── shaders/                   GLSL source (triangle.vert/frag, culling.comp,
 │                              cullingCoarse.comp, shadow.vert, fullscreenTriangle.vert,
-│                              envCapture.frag, skybox.frag, irradianceConvolve.frag)
+│                              envCapture.frag, skybox.frag, irradianceConvolve.frag,
+│                              prefilterEnv.frag, brdfLUT.frag)
 ├── src/                       Implementation (.cpp), mirrors include/
 └── third_party/               GLFW, GLM, ImGui, stb, tinyobjloader
 ```

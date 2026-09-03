@@ -10,7 +10,7 @@ struct SkyboxPushConstants
 };
 
 // Live skybox pipeline: fullscreenTriangle.vert + skybox.frag, one
-// descriptor set (SkyboxDescriptor - the environment cubemap sampler),
+// descriptor set (CubeSamplerDescriptor - the environment cubemap sampler),
 // depth test/write both disabled (drawn first inside GeometryPass,
 // before the grid - see FrameRenderer.cpp; the grid's own depth test
 // afterward naturally overdraws it, no z-value trickery needed). Sibling

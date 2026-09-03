@@ -706,9 +706,10 @@ light direction at all, so this doesn't apply to it).
   consideration for graduate study direction)
 - PBR material model, approached incrementally: interactive objects
   (Phase 7) first, then lighting math (Phase 8 milestone 1), then
-  texture-based materials (Phase 8 milestone 2, both complete) — a real
-  `Material` class exists now, but per-object material variation (beyond
-  the existing push-constant factors) is still future work, not a
-  jump straight to a full material system
+  texture-based materials (Phase 8 milestone 2), then full image-based
+  ambient lighting (Phase 15, complete) — a real `Material` class exists
+  now, but per-object material variation (beyond the existing
+  push-constant factors) is still future work, not a jump straight to a
+  full material system
 - Foundation for future rendering experiments
 

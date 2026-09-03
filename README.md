@@ -49,7 +49,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | GPU Timestamp Performance Instrumentation | ✅ |
 | Dockable Editor UI (ImGui docking, offscreen viewport) | ✅ |
 | Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only — see below |
-| Image-Based Lighting (procedural-sky cubemap + skybox) | ✅ Milestone 1 of 3 — infra + skybox, ambient term not yet lit by it |
+| Image-Based Lighting (procedural-sky cubemap, diffuse irradiance, specular prefilter + BRDF LUT) | ✅ |
 
 ---
 
@@ -72,7 +72,9 @@ Application               input polling, deltaTime, world-sim tick
             ├── GeometryPass    [Graphics] skybox (procedural-sky cubemap)
             │                   + grid (3× indirect draw, one per LOD) +
             │                   projectile (1× direct draw), Cook-Torrance
-            │                   shading + shadow sampling
+            │                   direct shading + shadow sampling + full
+            │                   split-sum image-based ambient (diffuse
+            │                   irradiance + specular prefilter/BRDF LUT)
             ├── LightingPass    (placeholder, not yet used)
             ├── PostProcess     (placeholder, not yet used)
             └── ImGuiPass       [UI, own render pass] dockable "Viewport"
