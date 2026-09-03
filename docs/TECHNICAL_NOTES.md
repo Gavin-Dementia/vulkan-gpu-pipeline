@@ -1200,7 +1200,11 @@ be solving a problem this project doesn't otherwise have. `ImGui::Image()`
 scales the fixed-resolution texture to whatever size the panel ends up
 being, so dragging/docking/resizing the panel still works visually — the
 render resolution just doesn't increase with it. Flagged in
-`docs/roadmap.md`'s Open items, not treated as a defect.
+`docs/roadmap.md`'s Open items, not treated as a defect. **Later
+revisited and closed — see §36**, once this project's pipelines/render
+targets had enough established "recompute fresh, don't cache" precedent
+(frustum planes, `lightViewProj()`) that adding live-resize plumbing
+stopped being "solving a problem this project doesn't otherwise have."
 
 **Structural changes this required:**
 - `FrameGraph::PassStage` gained a 4th value, `UI` — `GeometryPass`/
@@ -2310,6 +2314,124 @@ own comment for the reasoning), not a from-scratch shortcut, but it is
 an approximation — grazing-angle reflections on rough surfaces are the
 place it's most visibly imperfect.
 
+### 36. Live-resized viewport target
+
+Closes the roadmap's last remaining open item from the dockable-viewport
+work (Phase 11, `TECHNICAL_NOTES.md` §24): the offscreen scene target
+(`sceneColorTarget_`) was fixed at 1280×720, so resizing the docked
+"Viewport" panel just scaled the existing image (`ImGui::Image()`
+stretching a fixed-resolution texture) rather than re-rendering at the
+panel's actual pixel size. This section makes it genuinely resizable.
+
+**What actually needs to change when the target's size changes.**
+Four things reference the scene target's dimensions, and each needed a
+different fix:
+1. **The color/depth images themselves** (`sceneColorTarget_`/
+   `sceneColorDepth_`) — `VulkanSceneColorTarget::create()` grew
+   `width`/`height` as required runtime parameters (previously baked in
+   as `WIDTH`/`HEIGHT` compile-time constants); `extent()` now reports
+   whatever size was last created, not a fixed value.
+2. **The camera's projection matrix's aspect ratio** — `Camera::
+   ASPECT_RATIO` was a `1280.0f/720.0f` compile-time constant.
+   `getProjectionMatrix()` now takes `aspectRatio` as a required
+   parameter; every call site (`GPUCullingPass`'s frustum construction,
+   `GeometryPass`'s grid and projectile UBOs) recomputes it fresh each
+   frame from `context->sceneColorTarget().extent()` — the same
+   "recompute, don't cache" discipline this codebase already applies to
+   frustum planes and `lightViewProj()`. Getting this wrong doesn't
+   crash anything - it silently renders a stretched/squashed image,
+   exactly the visual artifact this whole feature exists to fix.
+3. **The screen-space LOD threshold's projection scale** (§32) —
+   `frustum.lodParams.z` was derived from
+   `VulkanSceneColorTarget::HEIGHT`, a compile-time constant that no
+   longer exists once the target's size is a runtime value. Fixed by
+   reading `context->sceneColorTarget().extent().height` fresh each
+   frame instead, in the same `GPUCullingPass` lambda that already
+   computes the new aspect ratio.
+4. **Two pipelines' baked-in `VkViewport`/scissor** (`pipeline_`,
+   `skyboxPipeline_`) — every pipeline class in this codebase bakes a
+   static viewport at creation time (confirmed via `grep -r
+   VK_DYNAMIC_STATE`, zero hits outside `third_party/` — see §35's same
+   finding for the specular prefilter's 5 pipeline instances). A resize
+   has to destroy and recreate both pipelines at the new extent; there's
+   no cheaper "just update the viewport" path available without
+   introducing dynamic viewport state as a new pattern, which this
+   change deliberately didn't do.
+
+**`VulkanContext::resizeSceneTarget(width, height)`** — destroys and
+recreates `sceneFramebuffer_`/`pipeline_`/`skyboxPipeline_`/
+`sceneColorDepth_`/`sceneColorTarget_` at the new size.
+`sceneRenderPass_` itself is untouched: a `VkRenderPass` encodes
+attachment format/structure only, not extent — the same fact IBL's bake
+(§33) already relied on to reuse one render pass across several
+differently-sized framebuffers. Clamps `width`/`height` to a 64px floor
+itself (the single authoritative enforcement point — `ImGui::
+GetContentRegionAvail()` can transiently report near-zero while a dock
+panel is being torn down or rebuilt, and callers shouldn't each need to
+know to guard against that). No-ops if the requested size already
+matches the current one.
+
+**Why `vkDeviceWaitIdle`, not a per-frame-slot fence wait.**
+`sceneColorTarget_`/`sceneColorDepth_`/`pipeline_`/`skyboxPipeline_` are
+single, shared instances — not duplicated per frame-in-flight the way
+`FrameContext`'s command buffers/fences are. A per-slot fence wait only
+proves *one* slot's prior GPU work is done; it says nothing about the
+*other* slot, which could still be mid-flight reading the very images
+about to be destroyed. Only a full device idle is provably sufficient
+here. The accepted cost: a real, visible stall (a brief hitch) every
+time the panel is resized, most noticeable while its border is being
+actively dragged (see below) — traded deliberately for keeping this
+resize path simple rather than introducing per-resource fencing this
+codebase has no precedent for anywhere else.
+
+**Why the resize is detected in `ImGuiPass` but applied at the top of
+the *next* frame, not immediately.** By the time `ImGuiPass` runs (the
+last stage of the frame, per `FrameGraph::PassStage::UI`), `GeometryPass`
+has *already* recorded draws this frame against the current
+`sceneFramebuffer_`/`pipeline_` into the command buffer. Destroying and
+recreating those objects right then would invalidate a command buffer
+still mid-recording (or already fully recorded, about to be submitted).
+So `ImGuiPass` only detects the size mismatch and *queues* it
+(`FrameRenderer::resizePending_`/`pendingWidth_`/`pendingHeight_`);
+`drawFrame()` applies it at the very top of the *next* call, before
+touching any per-frame-slot state — the one point in the frame loop
+where nothing has been recorded yet.
+
+**The ImGui-registered texture has to be re-registered, not just left
+alone.** `sceneViewportSet_` (the `VkDescriptorSet` `ImGui_ImplVulkan_
+AddTexture()` returns, sampled by `ImGui::Image()` in the "Viewport"
+window) is bound to a specific `VkImageView` at registration time. Once
+`resizeSceneTarget()` destroys the old `sceneColorTarget_` and creates a
+new one, that old view is gone and the registered descriptor would be
+pointing at a destroyed resource — ImGui has no way to detect this on
+its own. Fixed by calling `ImGui_ImplVulkan_RemoveTexture(sceneViewportSet_)`
+then re-`ImGui_ImplVulkan_AddTexture()` against the new view, immediately
+after `resizeSceneTarget()` returns, in `FrameRenderer::drawFrame()`.
+
+**No debounce — a deliberate, accepted tradeoff, not an oversight.**
+While the Viewport panel's border is being actively dragged,
+`ImGui::GetContentRegionAvail()` differs from the current extent on
+essentially every frame, so this can queue (and the next frame apply) a
+resize on consecutive frames — meaning a `vkDeviceWaitIdle` stall on
+every frame during an active drag. A production UI would likely debounce
+this (only resize after the drag settles for some interval, or throttle
+to a few times per second). This codebase doesn't, matching its existing
+"simplest correct implementation" bar elsewhere (e.g. the mutual-collision
+O(n²) pass, or IBL's single combined bake) — the visible cost is a
+resize-time stutter, not a correctness bug, and worth revisiting only if
+that stutter turns out to matter for how this project is actually used.
+
+**Interview-relevant:** *"Why does the aspect ratio need to be a
+parameter now instead of a constant, when the FOV itself
+(`Camera::FOV_DEGREES`) stays fixed?"* — because `glm::perspective(fovy,
+aspect, near, far)` takes the *vertical* FOV directly and derives the
+*horizontal* FOV from the aspect ratio; keeping vertical FOV fixed while
+the aspect ratio changes is exactly the correct behavior for a resizable
+viewport (a taller-than-wide panel should show more vertically, not
+distort the existing view) — there was never a reason to touch
+`FOV_DEGREES` itself, only the ratio that was previously hardcoded
+alongside it.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -2387,10 +2509,14 @@ place it's most visibly imperfect.
   re-clustered by proximity, so a heavily-scattered projectile blast
   degrades the coarse pass's rejection efficacy (correctness is
   unaffected — see §31's containment proof).
-- **The dockable Viewport target is fixed-resolution** (§24) — resizing
-  the ImGui panel scales the existing 1280×720 image rather than
-  re-rendering at a new resolution; would need swapchain-style resize
-  handling this project has never needed anywhere else.
+- **The dockable Viewport target is live-resized as of §36** — dragging
+  the panel border now recreates the offscreen scene target at the new
+  pixel size (applied at the top of the next frame, not mid-frame) rather
+  than stretching a fixed 1280×720 image. No debounce during an active
+  drag (a real, accepted per-frame stall while dragging, see §36) and no
+  live re-bake of IBL's baked-once assets (§33/§34/§35) - those stay
+  correct regardless of viewport size since they're not resolution-
+  dependent.
 - **Texture sampling is implemented and validated** (#13), and reunited
   with the primary demo mesh for LOD0 as of Phase 8 milestone 2 (§25) —
   `assets/suzanne_pbr.obj` has real `vt` data, unlike the original

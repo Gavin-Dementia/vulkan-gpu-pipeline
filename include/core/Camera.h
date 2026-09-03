@@ -13,7 +13,15 @@ public:
     // culling compute pass (frustum construction) and the geometry pass
     // (vertex transform), the same way getViewMatrix() already is. Bakes
     // in the Vulkan Y-flip (proj[1][1] *= -1) so callers never repeat it.
-    glm::mat4 getProjectionMatrix() const;
+    // aspectRatio is a required, live parameter (see
+    // docs/TECHNICAL_NOTES.md §36) - the offscreen scene target's
+    // resolution can change at runtime (docked Viewport panel resize),
+    // so there's no fixed "the" aspect ratio to bake in as a constant
+    // anymore; callers derive it fresh each frame from
+    // VulkanContext::sceneColorTarget().extent(), the same "recompute,
+    // don't cache" discipline this codebase already applies to frustum
+    // planes and lightViewProj().
+    glm::mat4 getProjectionMatrix(float aspectRatio) const;
 
     glm::vec3 position() const { return position_; }
 
@@ -35,7 +43,6 @@ public:
     static constexpr float FOV_DEGREES = 45.0f;
 
 private:
-    static constexpr float ASPECT_RATIO = 1280.0f / 720.0f;   // fixed window size, not resizable
     static constexpr float NEAR_PLANE   = 0.1f;
     static constexpr float FAR_PLANE    = 200.0f;
 

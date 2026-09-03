@@ -128,11 +128,11 @@ void VulkanContext::initCore()
     // (PassStage::Graphics) render here instead of directly to the
     // swapchain, so ImGui can display the result inside a dockable
     // "Viewport" panel alongside the debug windows instead of everything
-    // overlapping the same fullscreen image. Fixed resolution, matching
-    // Camera::ASPECT_RATIO's existing "fixed window size" assumption - see
-    // TECHNICAL_NOTES.md for why this doesn't need swapchain-style resize
-    // handling that doesn't exist anywhere else in this codebase either.
-    sceneColorTarget_.create(device_.getPhysical(), device_.get());
+    // overlapping the same fullscreen image. 1280x720 is just the
+    // startup default (matching the fixed GLFW window size) - resizable
+    // at runtime as of docs/TECHNICAL_NOTES.md §36, see
+    // VulkanContext::resizeSceneTarget().
+    sceneColorTarget_.create(device_.getPhysical(), device_.get(), 1280, 720);
     sceneColorDepth_.create(
         device_.getPhysical(), device_.get(), sceneColorTarget_.extent()
     );
@@ -193,6 +193,67 @@ void VulkanContext::initCore()
         device_.get(),
         shadowMap_.extent(),
         shadowRenderPass_.get()
+    );
+}
+
+// =========================================================
+// Live-resized viewport target (see docs/TECHNICAL_NOTES.md §36).
+// Recreates sceneColorTarget_/sceneColorDepth_/sceneFramebuffer_ and the
+// two pipelines whose VkViewport/scissor is baked in at creation time
+// (pipeline_, skyboxPipeline_) at a new size. sceneRenderPass_ is left
+// untouched - a VkRenderPass encodes attachment format/structure only,
+// not extent (the same fact IBL's bake reused one render pass across
+// several differently-sized framebuffers already relied on). Called by
+// FrameRenderer at the top of drawFrame(), never mid-frame - see that
+// call site for why.
+// =========================================================
+void VulkanContext::resizeSceneTarget(uint32_t width, uint32_t height)
+{
+    // Single authoritative clamp - callers (FrameRenderer) don't need to
+    // pre-clamp whatever ImGui::GetContentRegionAvail() reports, which
+    // can transiently be 0 while a dock panel is being torn down/rebuilt.
+    constexpr uint32_t kMinDimension = 64;
+    width  = std::max(width, kMinDimension);
+    height = std::max(height, kMinDimension);
+
+    if (width == sceneColorTarget_.extent().width && height == sceneColorTarget_.extent().height)
+        return;   // no-op - avoids a needless vkDeviceWaitIdle stall
+
+    // sceneColorTarget_/sceneColorDepth_/pipeline_/skyboxPipeline_ are
+    // single, shared instances (not duplicated per frame-in-flight), so
+    // a per-slot fence wait isn't enough to know the GPU is done with
+    // them - only every in-flight frame across both slots being fully
+    // retired is provably sufficient. A full device idle is a real stall
+    // (visible as a brief hitch while dragging the Viewport panel's
+    // border), an accepted tradeoff for keeping this resize path simple.
+    vkDeviceWaitIdle(device_.get());
+
+    sceneFramebuffer_.destroy(device_.get());
+    pipeline_.destroy(device_.get());
+    skyboxPipeline_.destroy(device_.get());
+    sceneColorDepth_.destroy(device_.get());
+    sceneColorTarget_.destroy(device_.get());
+
+    sceneColorTarget_.create(device_.getPhysical(), device_.get(), width, height);
+    sceneColorDepth_.create(
+        device_.getPhysical(), device_.get(), sceneColorTarget_.extent()
+    );
+    sceneFramebuffer_.create(
+        device_.get(),
+        sceneRenderPass_.get(),
+        { sceneColorTarget_.view() },
+        sceneColorDepth_.view(),
+        sceneColorTarget_.extent()
+    );
+    pipeline_.create(
+        device_.get(),
+        sceneColorTarget_.extent(),
+        sceneRenderPass_.get(),
+        descriptor_.layout(),
+        iblDescriptor_.layout()
+    );
+    skyboxPipeline_.create(
+        device_.get(), sceneColorTarget_.extent(), sceneRenderPass_.get(), skyboxDescriptor_.layout()
     );
 }
 

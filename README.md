@@ -11,10 +11,6 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 
 ![LOD Demo](docs/assets/lod_demo_01.gif)
 
-### Projectile with collision
-
-![Projectile Collision Demo](docs/assets/projectile_demo_01.gif)
-
 ### Shadow mapping
 
 ![Shadow mapping Demo](docs/assets/shadow_mapping_01.gif)
@@ -52,6 +48,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Shadow Mapping (depth-only pass, 3×3 PCF) | ✅ |
 | GPU Timestamp Performance Instrumentation | ✅ |
 | Dockable Editor UI (ImGui docking, offscreen viewport) | ✅ |
+| Live-Resized Viewport Target | ✅ |
 | Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only — see below |
 | Image-Based Lighting (procedural-sky cubemap, diffuse irradiance, specular prefilter + BRDF LUT) | ✅ |
 

@@ -434,6 +434,7 @@ the debug UI is an extra area alongside the 3D view, not overlapping it.
   resize handling anywhere else either, so building live-resize plumbing
   for just this one target was scoped out. See `TECHNICAL_NOTES.md` §24
   for the full Qt-vs-ImGui-docking tradeoff analysis behind this choice.
+  **Later revisited and closed — Phase 16.**
 
 **Addendum — a real interaction bug surfaced afterward, user-reported:**
 docking the debug windows over the entire client area made a pre-existing
@@ -672,12 +673,56 @@ light direction at all, so this doesn't apply to it).
 
 ---
 
+## Phase 16 — Live-Resized Viewport Target
+
+**Status: Complete**
+
+Closes the "Live-resized viewport target" item Phase 11 had carried
+since the dockable-editor-UI work: the offscreen scene target
+(`sceneColorTarget_`) was fixed at 1280×720, so resizing the docked
+"Viewport" panel just stretched the existing image rather than
+re-rendering at the panel's actual pixel size (see `TECHNICAL_NOTES.md`
+§36 for the full design).
+
+- `VulkanSceneColorTarget::create()` takes `width`/`height` as required
+  runtime parameters instead of baked-in `1280`/`720` constants.
+- `Camera::getProjectionMatrix()` takes `aspectRatio` as a required
+  parameter (removing the `Camera::ASPECT_RATIO` compile-time constant);
+  every call site recomputes it fresh each frame from
+  `sceneColorTarget().extent()` - the same "recompute, don't cache"
+  discipline already applied to frustum planes and `lightViewProj()`.
+  The screen-space LOD threshold's projection scale (Phase 14) picked up
+  the same fix, since it also depended on the target's height.
+- `VulkanContext::resizeSceneTarget(width, height)` destroys and
+  recreates `sceneFramebuffer_`/`pipeline_`/`skyboxPipeline_`/
+  `sceneColorDepth_`/`sceneColorTarget_` at the new size (`pipeline_`/
+  `skyboxPipeline_` need it since every pipeline in this codebase bakes
+  a static viewport at creation time, confirmed no dynamic-viewport-
+  state precedent exists to use instead); `sceneRenderPass_` itself is
+  untouched (a `VkRenderPass` doesn't encode extent). Blocks on a full
+  `vkDeviceWaitIdle`, not a per-frame-slot fence wait, since these
+  resources are shared across both frames-in-flight, not per-slot.
+- Detected in `ImGuiPass` (comparing `ImGui::GetContentRegionAvail()`
+  against the current extent) but *applied* at the top of the *next*
+  frame in `FrameRenderer::drawFrame()`, not immediately - by the time
+  `ImGuiPass` runs, `GeometryPass` has already recorded draws this frame
+  against the current target.
+- The ImGui-registered "Viewport" texture (`sceneViewportSet_`) is
+  re-registered (`ImGui_ImplVulkan_RemoveTexture`/`AddTexture`) right
+  after a resize, since it was bound to the now-destroyed old
+  `VkImageView`.
+
+**Known, accepted limitation:** no debounce - while the panel border is
+actively being dragged, this can trigger a `vkDeviceWaitIdle` stall on
+consecutive frames, a real but accepted stutter traded for keeping the
+resize path simple, matching this project's existing "simplest correct
+implementation" bar elsewhere. IBL's baked-once assets (Phase 15) are
+unaffected by viewport size and don't need any re-bake.
+
+---
+
 ## Open / not yet started
 
-- **Live-resized viewport target** (Phase 11) — the offscreen scene
-  texture is fixed-resolution; resizing the "Viewport" panel scales the
-  existing image rather than re-rendering at a new resolution. Would need
-  swapchain-style resize handling this project doesn't have anywhere else.
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
   was swapped to a UV/normal-mapped mesh; the far LOD meshes sample a
   constant `(0,0)` texel, same flat-tinted look as before this milestone.

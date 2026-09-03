@@ -48,6 +48,10 @@ private:
     // a manually-rearranged layout isn't stomped on every frame after.
     bool dockLayoutInitialized_ = false;
 
+    bool     resizePending_ = false;
+    uint32_t pendingWidth_  = 0;
+    uint32_t pendingHeight_ = 0;
+
 private:
     void createSyncObjects();
     void createCommandBuffers();

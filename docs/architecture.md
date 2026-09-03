@@ -447,12 +447,13 @@ on top of the rendered grid. See `TECHNICAL_NOTES.md` §24 for the full
 tradeoff analysis (why not just reposition the windows, why not a custom
 static `VkViewport` split, why not Qt) behind the approach below.
 
-- `VulkanSceneColorTarget` — a fixed-resolution (1280×720, matching
-  `Camera::ASPECT_RATIO`), sampled (`VK_FORMAT_B8G8R8A8_SRGB`) color
-  image/view, independent of swapchain size — same "sampled render
-  target, own render pass" shape as `VulkanShadowMap`, just a color
-  attachment instead of depth. Paired with its own `VulkanDepthBuffer`
-  instance (`sceneColorDepth_`), separate from the swapchain's.
+- `VulkanSceneColorTarget` — originally a fixed 1280×720, sampled
+  (`VK_FORMAT_B8G8R8A8_SRGB`) color image/view, independent of swapchain
+  size — same "sampled render target, own render pass" shape as
+  `VulkanShadowMap`, just a color attachment instead of depth. Paired
+  with its own `VulkanDepthBuffer` instance (`sceneColorDepth_`),
+  separate from the swapchain's. Live-resizable as of Phase 16 (see
+  below) — `create()` now takes `width`/`height` as runtime parameters.
 - `VulkanRenderPass::createOffscreenColor()` — a third render-pass
   variant alongside `create()`/`createDepthOnly()`: color + depth
   attachments like `create()`, but the color attachment's final layout is
@@ -480,10 +481,40 @@ static `VkViewport` split, why not Qt) behind the approach below.
 - `third_party/imgui` repointed from a non-docking commit to the
   `docking` branch (`ImGuiConfigFlags_DockingEnable` didn't exist
   before). No new source files.
-- Deliberately fixed-resolution, not resized to the panel's pixel size —
-  this codebase has no swapchain resize handling anywhere else either
-  (`Camera::ASPECT_RATIO` is a hardcoded constant); `ImGui::Image()`
-  scales the existing texture to whatever size the panel ends up being.
+- Originally fixed-resolution, not resized to the panel's pixel size —
+  `ImGui::Image()` just scaled the existing texture to whatever size the
+  panel ended up being. Live-resized as of Phase 16, see below.
+
+### Live-resized viewport target (Phase 16)
+
+Closes the fixed-resolution limitation the section above originally
+shipped with — see `TECHNICAL_NOTES.md` §36 for the full design
+(why `vkDeviceWaitIdle` and not a per-slot fence wait, why the resize is
+detected in `ImGuiPass` but applied at the top of the *next* frame, why
+no debounce).
+
+- `VulkanContext::resizeSceneTarget(width, height)` — destroys and
+  recreates `sceneFramebuffer_`/`pipeline_`/`skyboxPipeline_`/
+  `sceneColorDepth_`/`sceneColorTarget_` at a new size (`pipeline_`/
+  `skyboxPipeline_` need it since both bake a static `VkViewport` at
+  creation time, this codebase's universal pipeline pattern — see §35's
+  same finding for the specular prefilter's 5 pipeline instances).
+  `sceneRenderPass_` is untouched (format/structure only, no extent).
+  Clamps to a 64px floor itself; no-ops if the size already matches.
+- `Camera::getProjectionMatrix(aspectRatio)` — `Camera::ASPECT_RATIO`
+  (a `1280/720` compile-time constant) is gone; every call site
+  (`GPUCullingPass`'s frustum construction, `GeometryPass`'s grid and
+  projectile UBOs) recomputes the aspect ratio fresh each frame from
+  `sceneColorTarget().extent()`. The screen-space LOD threshold's
+  projection scale (`Tunable LOD thresholds` above) picked up the same
+  fix, since it also read the target's height.
+- `FrameRenderer` detects a size mismatch in `ImGuiPass` (comparing
+  `ImGui::GetContentRegionAvail()` against the current extent) and
+  queues it (`resizePending_`/`pendingWidth_`/`pendingHeight_`);
+  `drawFrame()` applies it at the very top of the next call, before any
+  per-frame-slot state is touched, then re-registers `sceneViewportSet_`
+  (`ImGui_ImplVulkan_RemoveTexture`/`AddTexture`) against the new
+  `VkImageView`.
 
 ### FrameRenderer
 
@@ -870,7 +901,8 @@ Write timestamp 2 (BOTTOM_OF_PIPE) — closes the Shadow interval
 Image Memory Barrier (LATE_FRAGMENT_TESTS write → FRAGMENT_SHADER read)
         │
 Begin Offscreen Scene Render Pass (sceneRenderPass_/sceneFramebuffer_,
-   fixed 1280×720 resolution - see "Dockable viewport" module notes)
+   live-resized to the docked Viewport panel's size - see "Live-resized
+   viewport target" module notes)
         │
 Graphics: GeometryPass
    upload SceneData (light + camera + lightViewProj + shadow bias) →

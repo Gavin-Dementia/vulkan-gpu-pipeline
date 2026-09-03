@@ -76,10 +76,10 @@ glm::mat4 Camera::getViewMatrix() const
     return glm::lookAt(position_, position_ + getForward(), glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
-glm::mat4 Camera::getProjectionMatrix() const
+glm::mat4 Camera::getProjectionMatrix(float aspectRatio) const
 {
     glm::mat4 proj = glm::perspective(
-        glm::radians(FOV_DEGREES), ASPECT_RATIO, NEAR_PLANE, FAR_PLANE);
+        glm::radians(FOV_DEGREES), aspectRatio, NEAR_PLANE, FAR_PLANE);
     proj[1][1] *= -1;   // Vulkan's Y axis is flipped relative to OpenGL
     return proj;
 }

@@ -186,6 +186,21 @@ public:
     VulkanRenderPass&       sceneRenderPass()    { return sceneRenderPass_; }
     VulkanFramebuffer&      sceneFramebuffer()   { return sceneFramebuffer_; }
 
+    // Recreates sceneColorTarget_/sceneColorDepth_/sceneFramebuffer_ and
+    // the two pipelines whose VkViewport/scissor is baked in at creation
+    // time (pipeline_, skyboxPipeline_) at a new size - called by
+    // FrameRenderer when the docked "Viewport" panel is resized, see
+    // docs/TECHNICAL_NOTES.md §36. sceneRenderPass_ is untouched (a
+    // VkRenderPass doesn't encode extent). Blocks on vkDeviceWaitIdle -
+    // these resources are shared across both frames-in-flight, not
+    // per-slot, so nothing lighter-weight is provably sufficient. Clamps
+    // width/height to a 64px floor itself, the single authoritative
+    // enforcement point (same "a public setter clamps its own invariant"
+    // convention as setLod1ScreenSize()/setRestitution() below) - callers
+    // don't need to pre-clamp. No-ops if width/height already match the
+    // current size.
+    void resizeSceneTarget(uint32_t width, uint32_t height);
+
     // Directional light's orthographic view-projection matrix, framed
     // around a fixed scene-radius constant covering the 7x7x7 grid's
     // footprint plus scatter margin - single source of truth, same

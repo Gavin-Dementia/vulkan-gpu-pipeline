@@ -10,7 +10,9 @@
 #include <stdexcept>
 #include <iostream>
 #include <array>
+#include <algorithm>
 #include <cstdint>
+#include <cmath>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -62,8 +64,11 @@ void FrameRenderer::init(VulkanContext& ctx)
             );
 
             // 2. update frustum
+            VkExtent2D sceneExtent = context->sceneColorTarget().extent();
+            float aspectRatio = static_cast<float>(sceneExtent.width) / static_cast<float>(sceneExtent.height);
+
             glm::mat4 view = context->camera().getViewMatrix();
-            glm::mat4 proj = context->camera().getProjectionMatrix();
+            glm::mat4 proj = context->camera().getProjectionMatrix(aspectRatio);
 
             glm::vec3 camPos = context->camera().position();
             FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view, camPos);
@@ -77,11 +82,11 @@ void FrameRenderer::init(VulkanContext& ctx)
             // world-space distance, so the same thresholds stay meaningful
             // regardless of FOV or output resolution. Derived from the
             // same Camera::FOV_DEGREES getProjectionMatrix() already uses
-            // (single source of truth) and the fixed scene render target's
-            // height (see "Dockable viewport" in architecture.md - the
+            // (single source of truth) and the scene render target's
+            // *current* height (see docs/TECHNICAL_NOTES.md §36 - the
             // offscreen scene pass, not the swapchain, is what's actually
-            // rasterized).
-            float screenScale = static_cast<float>(VulkanSceneColorTarget::HEIGHT)
+            // rasterized, and its resolution is no longer fixed).
+            float screenScale = static_cast<float>(sceneExtent.height)
                 / (2.0f * glm::tan(glm::radians(Camera::FOV_DEGREES) * 0.5f));
             frustum.lodParams = glm::vec4(
                 context->lod1ScreenSize(), context->lod2ScreenSize(), screenScale, 0.0f);
@@ -231,6 +236,12 @@ void FrameRenderer::init(VulkanContext& ctx)
         {cullingPass, shadowPass},
         [this](VkCommandBuffer cmd)
         {
+            // Recomputed fresh every frame, not cached - the scene target's
+            // aspect ratio can change at runtime (docked Viewport panel
+            // resize, see docs/TECHNICAL_NOTES.md §36).
+            VkExtent2D sceneExtent = context->sceneColorTarget().extent();
+            float aspectRatio = static_cast<float>(sceneExtent.width) / static_cast<float>(sceneExtent.height);
+
             // update MVP each frame
             UBOData ubo{};
             // model matrix - accumulated angle (not raw glfwGetTime()) so
@@ -242,7 +253,7 @@ void FrameRenderer::init(VulkanContext& ctx)
                 glm::vec3(0.0f, 1.0f, 0.0f)
             );
             ubo.view = context->camera().getViewMatrix();
-            ubo.proj = context->camera().getProjectionMatrix();
+            ubo.proj = context->camera().getProjectionMatrix(aspectRatio);
 
             context->uniformBuffer().update(context->device().get(), ubo);
 
@@ -342,7 +353,7 @@ void FrameRenderer::init(VulkanContext& ctx)
                 UBOData projUbo{};
                 projUbo.model = glm::mat4(1.0f);
                 projUbo.view  = context->camera().getViewMatrix();
-                projUbo.proj  = context->camera().getProjectionMatrix();
+                projUbo.proj  = context->camera().getProjectionMatrix(aspectRatio);
                 context->projectileUniformBuffer().update(context->device().get(), projUbo);
 
                 InstanceData projInstance{ glm::vec4(context->projectile().position(), 0.0f) };
@@ -444,7 +455,31 @@ void FrameRenderer::init(VulkanContext& ctx)
             // this is the "extra area" change: debug windows dock beside
             // this instead of floating on top of the rendered grid.
             ImGui::Begin("Viewport");
-            ImGui::Image((ImTextureID)(intptr_t)sceneViewportSet_, ImGui::GetContentRegionAvail());
+
+            // Live-resized viewport target (see docs/TECHNICAL_NOTES.md
+            // §36): detect the docked panel's current pixel size and, if
+            // it differs from the offscreen target's, queue a resize -
+            // applied at the top of the *next* frame (see drawFrame()),
+            // not here, since this frame's GeometryPass has already
+            // recorded draws against the current sceneFramebuffer_/
+            // pipeline_ by the time ImGuiPass runs. No debounce: while
+            // the panel border is actively being dragged, this can queue
+            // (and drawFrame() apply) a resize on consecutive frames -
+            // a real, accepted stall/hitch during an active drag, traded
+            // for keeping this path simple (see resizeSceneTarget()'s
+            // own comment).
+            ImVec2 viewportAvail = ImGui::GetContentRegionAvail();
+            VkExtent2D sceneExtent = context->sceneColorTarget().extent();
+            uint32_t availWidth  = static_cast<uint32_t>(std::max(viewportAvail.x, 1.0f));
+            uint32_t availHeight = static_cast<uint32_t>(std::max(viewportAvail.y, 1.0f));
+            if (availWidth != sceneExtent.width || availHeight != sceneExtent.height)
+            {
+                resizePending_ = true;
+                pendingWidth_  = availWidth;
+                pendingHeight_ = availHeight;
+            }
+
+            ImGui::Image((ImTextureID)(intptr_t)sceneViewportSet_, viewportAvail);
             ImGui::End();
 
             ImGui::Begin("GPU Culling Stats");
@@ -577,6 +612,24 @@ void FrameRenderer::drawFrame()
     auto& swapchain = context->swapchain();
     auto& renderPass = context->renderPass();
     auto& framebuffer = context->framebuffer();
+
+    // Live-resized viewport target (see docs/TECHNICAL_NOTES.md §36):
+    // apply a resize queued by the *previous* frame's ImGuiPass here, at
+    // the very top of the next frame, before any per-frame-slot state is
+    // touched - resizeSceneTarget() does its own vkDeviceWaitIdle, which
+    // subsumes the per-slot fence wait below. sceneViewportSet_ (the
+    // ImGui-registered texture ID for the "Viewport" window) has to be
+    // re-registered afterward: it was bound to the old, now-destroyed
+    // VkImageView, and ImGui has no way to know that image view changed
+    // out from under it otherwise.
+    if (resizePending_)
+    {
+        context->resizeSceneTarget(pendingWidth_, pendingHeight_);
+        ImGui_ImplVulkan_RemoveTexture(sceneViewportSet_);
+        sceneViewportSet_ = ImGui_ImplVulkan_AddTexture(
+            context->sceneColorTarget().view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        resizePending_ = false;
+    }
 
     FrameContext& frame = frames[currentFrame];
 
