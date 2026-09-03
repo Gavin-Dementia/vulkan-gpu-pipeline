@@ -8,11 +8,16 @@ struct FrustumPlanes
     std::array<glm::vec4, 6> planes;
     glm::vec4 cameraPos;      // xyz=cam pos, w=0（padding）
 
-    // LOD distance thresholds - runtime-tunable via the "GPU Culling
-    // Stats" ImGui window (VulkanContext::lod1Distance()/lod2Distance())
-    // instead of culling.comp's former hardcoded LOD1_DIST/LOD2_DIST
-    // constants. x = LOD1_DIST, y = LOD2_DIST, zw unused.
-    glm::vec4 lodDistances = glm::vec4(12.0f, 20.0f, 0.0f, 0.0f);
+    // LOD selection parameters, screen-space rather than world-space
+    // distance (see docs/TECHNICAL_NOTES.md for the transition from a
+    // flat world-space distance pair): x = LOD1 screen-size threshold
+    // (px, runtime-tunable via VulkanContext::lod1ScreenSize()), y = LOD2
+    // screen-size threshold (px, lod2ScreenSize()), z = screen projection
+    // scale (sceneHeightPx / (2*tan(fovY/2)), recomputed every frame in
+    // GPUCullingPass from Camera::FOV_DEGREES and the fixed scene render
+    // target height - a bounding sphere of radius r at distance d projects
+    // to roughly r*z/d pixels), w unused.
+    glm::vec4 lodParams = glm::vec4(120.0f, 60.0f, 0.0f, 0.0f);
 
     // zeroToOne selects the near-plane formula matching how viewProj was
     // built: false (default) for GLM's default OpenGL-style z_ndc in
@@ -52,6 +57,6 @@ struct FrustumPlanes
     }
 };
 static_assert(sizeof(FrustumPlanes) == 128,
-    "FrustumPlanes must be 128 bytes (6 vec4 planes + cameraPos + lodDistances) to match FrustumData's std140 GLSL layout");
+    "FrustumPlanes must be 128 bytes (6 vec4 planes + cameraPos + lodParams) to match FrustumData's std140 GLSL layout");
 
 

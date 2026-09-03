@@ -36,7 +36,7 @@ layout(binding = 7) uniform FrustumData
 {
     vec4 planes[6];
     vec4 cameraPos;
-    vec4 lodDistances;
+    vec4 lodParams;   // unused here - LOD selection is culling.comp's job
 } frustum;
 
 layout(binding = 10) uniform LightFrustumData

@@ -313,7 +313,7 @@ void VulkanContext::initCullingResources()
         );
     }
 
-    // Frustum buffer: 6 planes + cameraPos + lodDistances = 8 vec4 = 128 bytes
+    // Frustum buffer: 6 planes + cameraPos + lodParams = 8 vec4 = 128 bytes
     VkDeviceSize frustumSize = sizeof(FrustumPlanes);
 
     frustumBuffer_.create(
@@ -324,7 +324,7 @@ void VulkanContext::initCullingResources()
 
     // Shadow pass's light-frustum-culled instance set - same shapes as a
     // single LOD's {visibleInstanceBuffer, indirectDrawBuffer} above, plus
-    // its own frustum UBO (only planes[6] is used - camera pos/lodDistances
+    // its own frustum UBO (only planes[6] is used - camera pos/lodParams
     // are meaningless for the light, but reusing FrustumPlanes keeps the
     // std140 layout identical to the camera frustum's, no separate GLSL
     // struct needed). Sized for worst case (all OBJECT_COUNT visible),

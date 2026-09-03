@@ -1654,7 +1654,7 @@ pass:
 restitution()`/`setRestitution()` (default `0.3f`, clamped to `[0,1]`),
 exposed via a new "Collision" section in the "GPU Culling Stats" ImGui
 window (`FrameRenderer.cpp`). Same reasoning already applied to
-`shadowBias_`/`lod1Distance_`/`lod2Distance_`: the right-feeling value
+`shadowBias_`/`lod1ScreenSize_`/`lod2ScreenSize_`: the right-feeling value
 depends on scene scale and blast strength in ways easier to dial in by
 eye than to derive, and this project already has the "expose it, don't
 guess it" pattern established for exactly that situation.
@@ -1784,7 +1784,8 @@ sometimes skips was already cheap. The value here is closing the
 roadmap's explicitly named architectural gap and demonstrating the
 two-stage GPU-driven culling pattern correctly at a scale small enough to
 verify by eye, consistent with how this project already treats several
-other features (placeholder PBR textures, flat LOD distances) as "prove
+other features (placeholder PBR textures, a single LOD threshold pair
+shared across every mesh regardless of its detail level - §32) as "prove
 the mechanism works, be honest that it's not tuned/scaled for production
 numbers."
 
@@ -1796,8 +1797,9 @@ members are no longer physically close together — correctness still
 holds (the containment proof above doesn't depend on spatial locality),
 but the coarse pass's *rejection efficacy* degrades the more scattered
 the grid gets. Not fixed here — an accepted tradeoff, same "documented
-gap, not a silent one" bar as the flat world-space LOD thresholds (Phase
-12) or LOD1/LOD2's missing UV data (Phase 8).
+gap, not a silent one" bar as the LOD threshold pair not accounting for
+per-mesh detail level (Phase 12/14, §32) or LOD1/LOD2's missing UV data
+(Phase 8).
 
 **Verification.** With the camera at a fixed position, "Total visible"
 counts and the rendered image are unchanged from before this change
@@ -1808,6 +1810,91 @@ by that cluster's member count in the same frame — the same "make the
 culling behavior visible and interactively verifiable" bar established
 in Phase 5's oscillation test and reused in Phase 6/9/12, just applied
 one level up at cluster granularity.
+
+### 32. LOD thresholds: from flat world-space distance to screen-space projected size
+
+§26 (Phase 12) made `culling.comp`'s `LOD1_DIST`/`LOD2_DIST` runtime-
+tunable data instead of `const float` shader constants, but left their
+*meaning* unchanged — a flat world-space distance, compared against raw
+`camDist = length(center - cameraPos)`. That section's own "Not yet
+done" note already named the gap: *"not derived from mesh detail or
+screen-space size."* This section closes the screen-space half of that.
+
+**Why a flat distance threshold isn't actually the right quantity.** The
+thing that should decide whether an object needs its highest-detail mesh
+is how large it *appears* — its projected size in pixels — not its raw
+distance from the camera. Two scenes with the same distance threshold
+but different vertical FOV (a wider FOV makes everything look smaller at
+the same distance) or different output resolution (more pixels means the
+same apparent size covers more of them) would classify the same physical
+scene differently under the old metric, purely because the threshold
+never accounted for either factor. A screen-space threshold is invariant
+to both, which is exactly why real GPU-driven LOD systems (Nanite-style
+cluster LOD, id Tech's virtual texturing/geometry systems, and most
+production engines' distance-based LOD in general) use a projected-size
+or "screen-space error" metric rather than raw distance.
+
+**The math — small-angle approximation, not an exact projection.** A
+bounding sphere of radius `r` at distance `d` from the camera, viewed
+through a perspective projection with vertical FOV `fovY`, subtends a
+half-angle of `atan(r/d)`. For the small angles this project's objects
+actually subtend (grid spacing 3.0, `boundingSphereRadius_` well under
+that, viewed from typical camera distances well outside contact range),
+`atan(r/d) ≈ r/d` is an accurate enough approximation, and converting
+that angular size to pixels against a viewport of height `H` gives:
+
+```
+screenSize (px) ≈ r * (H / (2*tan(fovY/2))) / d
+                 = r * screenScale / d
+```
+
+`screenScale = H / (2*tan(fovY/2))` is a per-frame constant (H and fovY
+don't change at runtime in this project — no live-resize, see "Dockable
+viewport" in architecture.md) computed fresh each frame in
+`GPUCullingPass` anyway, matching the existing "just recompute it, don't
+special-case caching a value that's cheap to derive" discipline this
+codebase already applies to the frustum planes themselves. `H` is
+`VulkanSceneColorTarget::HEIGHT` (720) — the *offscreen scene render
+target's* height, not the swapchain's or the ImGui panel's displayed
+size, since that's what's actually rasterized; `fovY` is
+`Camera::FOV_DEGREES`, made `public` for this (previously private) so
+`FrameRenderer.cpp` can read the same single source of truth
+`Camera::getProjectionMatrix()` already uses, rather than a second,
+possibly-drifting copy of the FOV constant.
+
+**No new buffer, no new binding.** `FrustumPlanes::lodDistances` was
+renamed to `lodParams` and repurposed in place: `x`/`y` are now the
+LOD1/LOD2 screen-size thresholds (pixels) instead of distances, and the
+previously-unused `z` component now carries `screenScale`. `w` stays
+unused. This keeps the struct at exactly 128 bytes (the existing
+`static_assert`), so no descriptor/binding changes were needed anywhere
+— `culling.comp` already had this data plumbed to it every frame, only
+its *meaning* and the comparison shader-side changed.
+
+**The inverted invariant.** `VulkanContext::lod1Distance()`/
+`lod2Distance()` (and their setters, which enforced `lod2Distance_ >=
+lod1Distance_`) became `lod1ScreenSize()`/`lod2ScreenSize()`, now
+enforcing the *opposite* ordering: `lod1ScreenSize_ >= lod2ScreenSize_`.
+This isn't an arbitrary flip — screen size is inversely related to
+distance (closer = bigger on screen), so the LOD0/LOD1 boundary (which
+happens at a *closer* distance than the LOD1/LOD2 boundary) now happens
+at a *larger* screen-size threshold than the LOD1/LOD2 boundary. Getting
+this backwards would have silently inverted the LOD selection (distant
+objects rendering at full detail, near ones at the lowest), a bug that
+would only show up as "why does everything look wrong now" rather than a
+crash or validation error — worth calling out explicitly since it's the
+easiest mistake to make porting a distance-based invariant to a
+size-based one without re-deriving which direction it should go.
+
+**Interview-relevant:** *"Why not just divide the old distance
+thresholds by some FOV/resolution-dependent constant instead of
+reworking the shader math?"* — because the *shape* of the relationship
+is what's wrong, not just the scale. Distance and screen size aren't
+linearly related (`screenSize ∝ 1/distance`), so no single constant
+factor converts one threshold scheme into the other correctly across the
+full range of distances objects can be at; the comparison itself has to
+move from `camDist < threshold` to `screenSize > threshold`, not just
+have its right-hand side rescaled.
 
 ---
 
@@ -1863,10 +1950,12 @@ one level up at cluster granularity.
   the scene-radius computation only considers grid instances, not the
   projectile's own position (§29) — a deliberate, accepted omission, not
   an oversight.
-- **LOD is implemented** (§15) as 3 distance buckets, runtime-tunable
-  since §26 (default `LOD1_DIST = 12.0`, `LOD2_DIST = 20.0`) but still
-  not derived from mesh detail level or screen-space projected size - a
-  flat world-space distance, just no longer a shader constant. A bucket
+- **LOD is implemented** (§15) as 3 buckets, runtime-tunable since §26
+  (data, not a shader constant) and screen-space-projected-size-based
+  since §32 (default `lod1ScreenSize_ = 120px`, `lod2ScreenSize_ = 60px`,
+  not a flat world-space distance) but still not derived from per-mesh
+  detail level - one threshold pair shared across all LOD transitions
+  regardless of how detailed each specific mesh actually is. A bucket
   with 0 instances this frame still costs a full
   `vkCmdDrawIndexedIndirect` call — fine at 3 LOD levels, would need
   revisiting (e.g. skip empty buckets, or a 4th "culled entirely" bucket

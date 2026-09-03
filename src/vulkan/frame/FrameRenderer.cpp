@@ -66,7 +66,24 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             glm::vec3 camPos = context->camera().position();
             FrustumPlanes frustum = FrustumPlanes::extractFromMatrix(proj * view, camPos);
-            frustum.lodDistances = glm::vec4(context->lod1Distance(), context->lod2Distance(), 0.0f, 0.0f);
+
+            // Screen-space projection scale: pixels-per-world-unit at
+            // distance 1 from the camera, along the vertical FOV. A
+            // bounding sphere of radius r at distance d projects to
+            // roughly r*screenScale/d pixels (small-angle approximation) -
+            // culling.comp uses this to compare an object's on-screen size
+            // against lod1ScreenSize()/lod2ScreenSize() instead of a flat
+            // world-space distance, so the same thresholds stay meaningful
+            // regardless of FOV or output resolution. Derived from the
+            // same Camera::FOV_DEGREES getProjectionMatrix() already uses
+            // (single source of truth) and the fixed scene render target's
+            // height (see "Dockable viewport" in architecture.md - the
+            // offscreen scene pass, not the swapchain, is what's actually
+            // rasterized).
+            float screenScale = static_cast<float>(VulkanSceneColorTarget::HEIGHT)
+                / (2.0f * glm::tan(glm::radians(Camera::FOV_DEGREES) * 0.5f));
+            frustum.lodParams = glm::vec4(
+                context->lod1ScreenSize(), context->lod2ScreenSize(), screenScale, 0.0f);
             context->frustumBuffer().upload(
                 context->device().get(),
                 &frustum,
@@ -78,7 +95,7 @@ void FrameRenderer::init(VulkanContext& ctx)
             // lightViewProj()), which uses Vulkan's [0,1] z_ndc
             // convention rather than the camera's default [-1,1] one.
             // zeroToOne=true selects the matching near-plane formula -
-            // see Frustum.h. cameraPos/lodDistances are unused by the
+            // see Frustum.h. cameraPos/lodParams are unused by the
             // light-frustum test in culling.comp, left default.
             FrustumPlanes lightFrustum = FrustumPlanes::extractFromMatrix(
                 context->lightViewProj(), glm::vec3(0.0f), /*zeroToOne=*/true);
@@ -417,19 +434,23 @@ void FrameRenderer::init(VulkanContext& ctx)
             ImGui::Text("Clusters visible (light):   %u / %u",
                 context->getLastClusterVisibleLight(), VulkanContext::CLUSTER_COUNT);
 
-            // LOD distance thresholds - runtime-tunable instead of
-            // culling.comp's former hardcoded LOD1_DIST/LOD2_DIST
-            // constants (see docs/TECHNICAL_NOTES.md). Setters keep
-            // LOD2 >= LOD1 so the shader's if/else-if chain stays sane.
+            // LOD thresholds - screen-space projected size (px), not a
+            // flat world-space distance (see docs/TECHNICAL_NOTES.md for
+            // why: a flat distance pair means the same threshold implies
+            // a different apparent size at a different FOV/resolution,
+            // where a screen-size threshold stays meaningful). Setters
+            // keep LOD1 >= LOD2 so the shader's if/else-if chain stays
+            // sane (screen size shrinks with distance, the inverse of the
+            // old distance-based invariant).
             ImGui::Separator();
-            ImGui::Text("LOD Thresholds (distance)");
-            float lod1Dist = context->lod1Distance();
-            if (ImGui::SliderFloat("LOD1 Distance", &lod1Dist, 1.0f, 60.0f, "%.1f"))
-                context->setLod1Distance(lod1Dist);
+            ImGui::Text("LOD Thresholds (screen size, px)");
+            float lod1Size = context->lod1ScreenSize();
+            if (ImGui::SliderFloat("LOD1 Screen Size", &lod1Size, 1.0f, 400.0f, "%.1f px"))
+                context->setLod1ScreenSize(lod1Size);
 
-            float lod2Dist = context->lod2Distance();
-            if (ImGui::SliderFloat("LOD2 Distance", &lod2Dist, 1.0f, 60.0f, "%.1f"))
-                context->setLod2Distance(lod2Dist);
+            float lod2Size = context->lod2ScreenSize();
+            if (ImGui::SliderFloat("LOD2 Screen Size", &lod2Size, 1.0f, 400.0f, "%.1f px"))
+                context->setLod2ScreenSize(lod2Size);
 
             // Mutual-collision bounciness (TECHNICAL_NOTES.md §30) -
             // runtime-tunable for the same "find the feel by eye" reason

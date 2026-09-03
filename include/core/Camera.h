@@ -28,8 +28,13 @@ public:
     // of truth, same rationale as getViewMatrix()/getProjectionMatrix().
     glm::vec3 getForward() const;
 
+    // Public so FrameRenderer can derive the screen-space projection scale
+    // for LOD selection (see VulkanContext::lod1ScreenSize()/lod2ScreenSize())
+    // from the same vertical FOV getProjectionMatrix() itself uses - single
+    // source of truth, same rationale as getViewMatrix()/getProjectionMatrix().
+    static constexpr float FOV_DEGREES = 45.0f;
+
 private:
-    static constexpr float FOV_DEGREES  = 45.0f;
     static constexpr float ASPECT_RATIO = 1280.0f / 720.0f;   // fixed window size, not resizable
     static constexpr float NEAR_PLANE   = 0.1f;
     static constexpr float FAR_PLANE    = 200.0f;

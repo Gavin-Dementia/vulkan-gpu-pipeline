@@ -51,8 +51,10 @@ layout(binding = 7) uniform FrustumData
 {
     vec4 planes[6];
     vec4 cameraPos;      // xyz=camera pos, w not yet
-    vec4 lodDistances;   // x = LOD1_DIST, y = LOD2_DIST, zw unused -
-                          // runtime-tunable, see VulkanContext::lod1Distance()
+    vec4 lodParams;      // x = LOD1 screen-size threshold (px), y = LOD2
+                          // screen-size threshold (px), z = screen
+                          // projection scale, w unused - see Frustum.h and
+                          // VulkanContext::lod1ScreenSize()/lod2ScreenSize()
 } frustum;
 
 // Shadow pass's light-frustum-culled instance set - same objects[], own
@@ -146,15 +148,22 @@ void main()
     if (!sphereInsideFrustum(center, radius, frustum.planes))
         return;
 
-    // distance influence LOD
+    // Screen-space size drives LOD, not raw world-space distance: a
+    // bounding sphere of radius r at distance d projects to roughly
+    // r * screenScale / d pixels (small-angle approximation, screenScale
+    // baked in CPU-side from Camera::FOV_DEGREES and the scene render
+    // target's height - see Frustum.h/VulkanContext::lod1ScreenSize()).
+    // This makes the threshold meaningful across different FOVs/output
+    // resolutions, where a flat world-unit distance wasn't.
     float camDist = length(center - frustum.cameraPos.xyz);
+    float screenSize = (radius * frustum.lodParams.z) / max(camDist, 0.0001);
 
-    if (camDist < frustum.lodDistances.x)
+    if (screenSize > frustum.lodParams.x)
     {
         uint slot = atomicAdd(cmd0.instanceCount, 1u);
         visibleLOD0[slot].position = vec4(center, 1.0);
     }
-    else if (camDist < frustum.lodDistances.y)
+    else if (screenSize > frustum.lodParams.y)
     {
         uint slot = atomicAdd(cmd1.instanceCount, 1u);
         visibleLOD1[slot].position = vec4(center, 1.0);

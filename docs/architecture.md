@@ -162,7 +162,7 @@ collision tradeoff.
   resting overlap an impulse alone can't resolve. `restitution()`/
   `setRestitution()` (default `0.3f`) is runtime-tunable via the "GPU
   Culling Stats" ImGui window's "Collision" section, same reasoning as
-  `lod1Distance()`/`lod2Distance()`. See `TECHNICAL_NOTES.md` §21/§30.
+  `lod1ScreenSize()`/`lod2ScreenSize()`. See `TECHNICAL_NOTES.md` §21/§30.
 - `VulkanContext::resetInstanceFormation()` — restores
   `instanceCurrentPositions_` from the permanent `cachedInstances_` rest
   formation and zeroes all velocities. Triggered by an edge-detected
@@ -504,10 +504,10 @@ place).
      (early `return`) if the whole cluster already failed the coarse
      camera test — otherwise unchanged from the original single-LOD
      design
-  4. for threads that pass the camera test, a distance check against the
-     camera (`frustum.lodDistances.x`/`.y`, runtime-tunable — see
-     "Tunable LOD thresholds" below) buckets the instance into exactly
-     one of 3 output sets
+  4. for threads that pass the camera test, a screen-space projected-size
+     check (`frustum.lodParams.x`/`.y`, runtime-tunable — see "Tunable
+     LOD thresholds" below) buckets the instance into exactly one of 3
+     output sets
   5. the winning bucket's thread claims a slot via `atomicAdd` on that
      bucket's own `DrawCommand.instanceCount` and writes into that
      bucket's own `VisibleLODN` buffer
@@ -563,19 +563,34 @@ static-clustering limitation.
   "Clusters visible (camera/light): N / 64" in the "GPU Culling Stats"
   ImGui window.
 
-### Tunable LOD thresholds (Phase 12)
+### Tunable LOD thresholds (Phase 12, screen-space since Phase 14)
 
-`culling.comp`'s LOD1/LOD2 distance cutoffs used to be `const float`
-shader constants. `FrustumPlanes` (`include/vulkan/culling/Frustum.h`)
-now carries a 4th field, `lodDistances` (x = LOD1_DIST, y = LOD2_DIST),
-uploaded every frame alongside the existing 6 frustum planes + camera
-position in `GPUCullingPass` — piggybacking on a buffer that's already
-re-uploaded every frame rather than adding a new one (see
-`TECHNICAL_NOTES.md` §26). `VulkanContext::lod1Distance()`/
-`lod2Distance()`/setters keep `lod2Distance_ >= lod1Distance_`, since
-`culling.comp`'s if/else-if bucketing chain misbehaves if the thresholds
-invert. Two sliders in the "GPU Culling Stats" ImGui window (next to the
-LOD0/1/2 visible counts they control) drive it live, no shader recompile.
+`culling.comp`'s LOD1/LOD2 cutoffs used to be `const float` shader
+constants (Phase 12 made them runtime-tunable `FrustumPlanes` data
+instead — see `TECHNICAL_NOTES.md` §26 — but still a flat world-space
+distance pair); Phase 14 (`TECHNICAL_NOTES.md` §32) changed what that
+data *means*, from a raw distance to a screen-space projected size in
+pixels, without reintroducing a shader constant.
+
+`FrustumPlanes` (`include/vulkan/culling/Frustum.h`) carries a 4th
+field, `lodParams`: `x` = LOD1 screen-size threshold (px), `y` = LOD2
+screen-size threshold (px), `z` = the frame's screen projection scale
+(`sceneHeightPx / (2*tan(fovY/2))`, derived every frame in
+`GPUCullingPass` from `Camera::FOV_DEGREES` — the same vertical FOV
+`Camera::getProjectionMatrix()` itself uses — and
+`VulkanSceneColorTarget::HEIGHT`, the fixed offscreen render target's
+height), `w` unused. `culling.comp` derives each object's approximate
+on-screen size as `radius * lodParams.z / camDist` (small-angle
+approximation) and compares that against `lodParams.x`/`.y`, instead of
+comparing raw distance against a flat threshold — so the same threshold
+means the same apparent size regardless of camera FOV or output
+resolution, where a flat world-unit distance didn't.
+`VulkanContext::lod1ScreenSize()`/`lod2ScreenSize()`/setters keep
+`lod1ScreenSize_ >= lod2ScreenSize_` (the inverse of the old distance
+invariant — screen size shrinks with distance, so LOD1's threshold, the
+closer/bigger boundary, must stay the larger pixel value). Two sliders
+in the "GPU Culling Stats" ImGui window (next to the LOD0/1/2 visible
+counts they control) drive it live, no shader recompile.
 - Each `IndirectDrawBuffer.instanceCount` is reset to 0 by the CPU each
   frame before dispatch, exactly as in the single-LOD design — the
   reset now happens 3 times (once per LOD) instead of once

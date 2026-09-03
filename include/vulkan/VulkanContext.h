@@ -174,24 +174,31 @@ public:
     float shadowBias() const          { return shadowBias_; }
     void  setShadowBias(float b)      { shadowBias_ = b; }
 
-    // LOD distance thresholds (culling.comp's former hardcoded LOD1_DIST/
-    // LOD2_DIST constants) - runtime-tunable via the "GPU Culling Stats"
-    // ImGui window instead of a shader constant, same "easier to find by
-    // eye than to compute, expose it" reasoning as shadowBias_ above.
-    // Uploaded to the GPU every frame as part of FrustumPlanes
-    // (GPUCullingPass in FrameRenderer.cpp), not a separate buffer.
-    float lod1Distance() const { return lod1Distance_; }
-    float lod2Distance() const { return lod2Distance_; }
-    // Setters keep lod2Distance_ >= lod1Distance_ - culling.comp's
-    // if/else-if chain (camDist < LOD1 -> LOD0, camDist < LOD2 -> LOD1,
-    // else -> LOD2) silently misbehaves if the thresholds cross (e.g. an
-    // instance between LOD2 and LOD1 would wrongly pass the first check).
-    void setLod1Distance(float d)
+    // LOD selection thresholds, in screen-space projected pixels rather
+    // than world-space distance (see docs/TECHNICAL_NOTES.md for the
+    // transition) - runtime-tunable via the "GPU Culling Stats" ImGui
+    // window, same "easier to find by eye than to compute, expose it"
+    // reasoning as shadowBias_ above. Uploaded to the GPU every frame as
+    // part of FrustumPlanes::lodParams (GPUCullingPass in
+    // FrameRenderer.cpp), not a separate buffer; culling.comp derives an
+    // object's approximate on-screen size from its bounding sphere,
+    // camera distance, and the frame's screen-projection scale, then
+    // compares against these thresholds.
+    float lod1ScreenSize() const { return lod1ScreenSize_; }
+    float lod2ScreenSize() const { return lod2ScreenSize_; }
+    // Setters keep lod1ScreenSize_ >= lod2ScreenSize_ - the inverse of the
+    // old world-distance invariant, since screen size shrinks as distance
+    // grows: LOD1's threshold (the LOD0/LOD1 boundary, closer/bigger) must
+    // stay the larger pixel value, LOD2's (the LOD1/LOD2 boundary,
+    // farther/smaller) the smaller one. culling.comp's if/else-if chain
+    // (screenSize > LOD1 -> LOD0, screenSize > LOD2 -> LOD1, else -> LOD2)
+    // silently misbehaves if the thresholds cross.
+    void setLod1ScreenSize(float s)
     {
-        lod1Distance_ = d;
-        if (lod2Distance_ < lod1Distance_) lod2Distance_ = lod1Distance_;
+        lod1ScreenSize_ = s;
+        if (lod2ScreenSize_ > lod1ScreenSize_) lod2ScreenSize_ = lod1ScreenSize_;
     }
-    void setLod2Distance(float d) { lod2Distance_ = (d < lod1Distance_) ? lod1Distance_ : d; }
+    void setLod2ScreenSize(float s) { lod2ScreenSize_ = (s > lod1ScreenSize_) ? lod1ScreenSize_ : s; }
 
     // Grid collision + scatter (Phase 7 milestone 2). Re-uploads
     // objectBuffer_ every frame from CPU-simulated positions - no compute
@@ -213,7 +220,7 @@ public:
     // response - 0 = fully inelastic (no bounce), 1 = fully elastic.
     // Runtime-tunable via the "GPU Culling Stats" ImGui window, same
     // "easier to find the right feel by eye than to compute" reasoning as
-    // shadowBias_/lod1Distance_/lod2Distance_. Only used by
+    // shadowBias_/lod1ScreenSize_/lod2ScreenSize_. Only used by
     // updateInstanceSimulation()'s mutual-collision impulse (see
     // TECHNICAL_NOTES.md §30); clamped since values outside [0,1] are
     // physically meaningless.
@@ -314,8 +321,10 @@ private:
     float                 lightIntensity_ = 3.0f;
     float                 shadowBias_     = 0.002f;
 
-    // Matches culling.comp's former hardcoded LOD1_DIST/LOD2_DIST values.
-    float                 lod1Distance_   = 12.0f;
-    float                 lod2Distance_   = 20.0f;
+    // Screen-space LOD thresholds, in projected pixels (see accessor
+    // comments above) - defaults chosen to roughly match the old flat
+    // 12.0/20.0 world-space distance pair at typical grid-viewing ranges.
+    float                 lod1ScreenSize_ = 120.0f;
+    float                 lod2ScreenSize_ = 60.0f;
 };
 

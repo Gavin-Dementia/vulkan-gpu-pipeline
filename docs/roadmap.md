@@ -480,10 +480,10 @@ looking at the scene.
   visibly swapping every instance to the higher-detail mesh with no
   restart.
 
-Not yet done: thresholds are still a flat distance in world units, not
-derived from mesh screen-space size or per-mesh detail level - still a
-manually-tuned pair of numbers, just no longer ones that need a shader
-recompile to change.
+Not yet done at the time: thresholds were still a flat distance in world
+units, not derived from mesh screen-space size - closed by Phase 14
+below. Still not derived from per-mesh detail level, and still a
+manually-tuned pair of numbers rather than an automatically-computed one.
 
 ---
 
@@ -538,6 +538,49 @@ is unaffected). See `TECHNICAL_NOTES.md` §31.
 
 ---
 
+## Phase 14 — Screen-Space LOD Thresholds
+
+**Status: Complete**
+
+Closes the "Not yet done" item Phase 12 carried: LOD selection compared
+raw world-space camera distance against a flat threshold pair, which
+means the same threshold implies a different apparent on-screen size at
+a different FOV or output resolution - not meaningful across scenes with
+different camera setups, even though the values themselves were already
+runtime data (Phase 12), not shader constants.
+
+- `culling.comp` now derives each object's approximate on-screen size
+  from its bounding sphere, camera distance, and a screen projection
+  scale (`radius * screenScale / camDist`, the standard small-angle
+  approximation for a sphere's projected pixel size), and compares that
+  against the LOD1/LOD2 thresholds instead of comparing raw distance.
+- `FrustumPlanes::lodDistances` renamed to `lodParams`; `x`/`y` are now
+  screen-size thresholds in pixels, `z` is the frame's screen projection
+  scale (`sceneHeightPx / (2*tan(fovY/2))`, derived every frame in
+  `GPUCullingPass` from `Camera::FOV_DEGREES` - the same vertical FOV
+  `Camera::getProjectionMatrix()` already uses, now made public for this
+  - and `VulkanSceneColorTarget::HEIGHT`, the fixed offscreen render
+  target the scene actually rasterizes into).
+- `VulkanContext::lod1Distance()`/`lod2Distance()` renamed to
+  `lod1ScreenSize()`/`lod2ScreenSize()` (default 120px/60px); setters now
+  keep `lod1ScreenSize_ >= lod2ScreenSize_`, the inverse of the old
+  distance invariant, since screen size shrinks with distance rather than
+  growing with it.
+- ImGui sliders relabeled "LOD1/LOD2 Screen Size" (px), same live-tuning
+  UX Phase 12 established, no shader recompile needed.
+- Verified interactively: at a fixed camera distance, moving the camera
+  closer/farther now crosses the LOD boundary at a screen-size-consistent
+  point regardless of which direction the grid is viewed from, rather
+  than a fixed radius around the camera that didn't account for how large
+  an object actually appears.
+
+Not yet done: still not derived from per-mesh detail level (a low-poly
+LOD2 mesh and a high-poly LOD0 mesh use the same threshold pair even
+though their "acceptable" screen size arguably differs) - still a
+manually-tuned pair of numbers, just now a resolution/FOV-independent one.
+
+---
+
 ## Open / not yet started
 
 - **Live-resized viewport target** (Phase 11) — the offscreen scene
@@ -558,10 +601,11 @@ is unaffected). See `TECHNICAL_NOTES.md` §31.
 - **IBL / environment lighting** — current ambient term is a flat
   `0.03 * albedo` constant (shadow mapping for the direct term is now
   implemented — see Phase 9)
-- **LOD thresholds are still a flat world-space distance** (Phase 12
-  made them runtime-tunable, not shader constants, but they're still a
-  manually-set pair of numbers, not derived from mesh screen-space size
-  or per-mesh detail level)
+- **LOD thresholds not derived from per-mesh detail level** (Phase 12
+  made them runtime-tunable data, Phase 14 made them screen-space-size-
+  based instead of world-space-distance-based, but they're still one
+  manually-set pair of numbers shared by every LOD transition rather than
+  accounting for how detailed each specific mesh is)
 
 ---
 
