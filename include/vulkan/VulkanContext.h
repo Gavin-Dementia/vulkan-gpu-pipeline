@@ -326,6 +326,14 @@ public:
     bool  transparencySortEnabled() const { return transparencySortEnabled_; }
     void  setTransparencySortEnabled(bool e) { transparencySortEnabled_ = e; }
 
+    // Master texture toggle (§44) - default off, so the grid/projectile
+    // render with Phase 8 milestone 1's flat, push-constant-only PBR
+    // shading (real lighting/shadows/IBL, no material texture detail)
+    // until explicitly enabled. Drives MaterialPushConstants::
+    // metallicRoughness.z, which triangle.frag branches on.
+    bool  texturesEnabled() const { return texturesEnabled_; }
+    void  setTexturesEnabled(bool e) { texturesEnabled_ = e; }
+
     // Grid collision + scatter (Phase 7 milestone 2). Re-uploads
     // objectBuffer_ every frame from CPU-simulated positions - no compute
     // shader or descriptor changes needed, since culling.comp already
@@ -511,5 +519,10 @@ private:
     // Transparency (§43) - see accessor comments above.
     float                 gridAlpha_ = 1.0f;
     bool                  transparencySortEnabled_ = true;
+
+    // Master texture toggle (§44) - see accessor comment above. Default
+    // off - existing behavior since Phase 8 milestone 2 was always-on,
+    // so this is a deliberate, visible default change, not a no-op one.
+    bool                  texturesEnabled_ = false;
 };
 

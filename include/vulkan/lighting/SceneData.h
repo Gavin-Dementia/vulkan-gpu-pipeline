@@ -21,6 +21,10 @@ static_assert(sizeof(SceneData) == 128, "SceneData must be 128 bytes (4 x vec4 +
 struct MaterialPushConstants
 {
     glm::vec4 albedo;            // rgb used, a = opacity (see VulkanContext::gridAlpha() / §43)
-    glm::vec4 metallicRoughness; // x = metallic, y = roughness, zw unused
+    glm::vec4 metallicRoughness; // x = metallic, y = roughness,
+                                 // z = use texture maps (1.0) vs. flat
+                                 // push-constant-only shading (0.0) - see
+                                 // VulkanContext::texturesEnabled() / §44,
+                                 // w unused
 };
 static_assert(sizeof(MaterialPushConstants) == 32, "MaterialPushConstants must be 32 bytes (2 x vec4)");

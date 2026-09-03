@@ -46,7 +46,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Dockable Editor UI (ImGui docking, offscreen viewport) | ✅ |
 | Live-Resized Viewport Target | ✅ |
 | Live-Resized Window / Swapchain | ✅ |
-| Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only — see below |
+| Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only, toggle default **off** — see below |
 | Image-Based Lighting (procedural-sky cubemap, diffuse irradiance, specular prefilter + BRDF LUT) | ✅ |
 | Alpha Blending + GPU-Sorted Transparency (odd-even transposition sort) | ✅ infrastructure only — see below |
 
@@ -56,6 +56,13 @@ sorting work, using the existing shared material at reduced opacity. The
 actual translucent shading model (jelly/glass/liquid — refraction, IOR,
 subsurface) this was built toward is planned future work, not yet
 implemented. See `docs/TECHNICAL_NOTES.md` §43.*
+
+*Textures are off by default: an "Enable Textures" checkbox (also in "GPU
+Culling Stats") switches material texture sampling on, reproducing the
+brick material above; off shows the same real lighting/shadows/IBL with
+flat push-constant-only shading instead — a deliberate on-demand
+comparison, not a claim that flat shading is the better permanent
+default. See `docs/TECHNICAL_NOTES.md` §44.*
 
 ---
 

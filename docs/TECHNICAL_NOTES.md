@@ -3118,6 +3118,79 @@ than a single-threaded shader looping over the array - a workgroup with
 sequential logic would still be one GPU "thread" doing all the work,
 throwing away the parallelism a compute shader exists to provide.
 
+### 44. Master texture toggle, default off
+
+A runtime switch for material texture sampling, requested explicitly as
+default-**off** - a deliberate visible-default change, not the usual
+"new feature off by default preserves existing behavior" pattern this
+codebase's other toggles follow (`clampDeltaTimeEnabled_`,
+`transparencySortEnabled_`). Since real textures have been the shipped
+default since Phase 8 milestone 2/§25, and a real sourced material since
+Phase 20/§42, turning texture sampling off by default is a genuine
+regression in default visual fidelity - accepted here because the point
+is to make the *comparison* available on demand (flat PBR vs. textured
+PBR, both real lighting), not because flat shading is now the intended
+steady state.
+
+**Where the flag lives.** `MaterialPushConstants::metallicRoughness.z`
+was documented "unused" since Phase 8 milestone 1 - the same "repurpose
+an already-there, already-zero-cost vec4 slot" move this session already
+made twice (`InstanceData.position.w` for §43's sort key,
+`MaterialPushConstants.albedo.a` for §43's opacity). No struct size
+change, no new descriptor, no new buffer.
+
+**Why branching in the shader is safe.** `material.metallicRoughness.z`
+is a push constant - identical for every fragment in a given draw call,
+not a per-fragment varying value. Branching around `texture()` calls
+with implicit LOD (derivative-based mip selection, which `dFdx`/`dFdy`-
+based `perturbNormal()` also depends on) is only undefined behavior
+under *non-uniform* control flow (different fragments in the same
+sub-group taking different branches, which breaks derivative
+computation); a value constant across the whole draw call is uniform
+control flow by definition, so this branch has no such hazard.
+
+**Why "off" reproduces Phase 8 milestone 1 exactly, not a new flat
+look.** `finalAlbedo`/`metallic`/`roughness`/`ao` all already had the
+*shape* "push-constant factor × texture sample" (§25's own design, kept
+specifically so a texture swap or removal wouldn't need new math) -
+setting the texture-sample side of each product to a neutral `1.0`
+(`vec3(1.0)` for albedo/metallic-roughness, `1.0` for AO) when
+`useTextures` is false reproduces exactly what those expressions
+evaluated to before Phase 8 milestone 2 ever added real texture
+sampling, not an approximation of it. The normal map needed an actual
+branch (not a neutral-multiply trick) since `perturbNormal()` isn't a
+multiplicative factor on `fragNormal` - off falls back to
+`normalize(fragNormal)`, the pre-milestone-2 behavior exactly.
+
+**Why one shared toggle drives both the grid and the projectile.**
+Same reasoning as `gridAlpha()` (§43): both already read from the same
+shared `Material material_` instance, and this codebase's per-object
+distinctness comes entirely from the push constant's other channels
+(different albedo/metallic/roughness factors, §17), not from having
+independently-textured materials. Adding a second, projectile-only
+toggle would be inventing a distinction the architecture doesn't
+otherwise have.
+
+**Verification.** Screenshotted both states directly (not just read the
+code): off renders the flat, uniformly gray-white grid with real IBL
+reflections/shadows but no brick pattern; on (temporarily forced,
+reverted before committing) reproduces the exact brick-textured look
+Phase 20 shipped, pixel-for-pixel indistinguishable from before this
+toggle existed. Confirms the neutral-multiply/fallback-normal approach
+above is actually equivalent to the pre-texture code path, not merely
+argued to be.
+
+**Interview-relevant:** *"Why default it off if that's a visible
+regression from what the project already shipped?"* - because the
+toggle's purpose is explicitly to make a comparison available on demand
+for a portfolio/interview context (this project's established pattern -
+§37's deltaTime clamp exists for the same "prove the mechanism, verify
+by eye" reason), not to change what the project looks like when someone
+just runs it to see the finished result. Whether "off" or "on" is the
+better *permanent* default is a separate, legitimate product question
+this section doesn't resolve - it was an explicit instruction, not a
+default this document is claiming is obviously correct in general.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -3232,6 +3305,13 @@ throwing away the parallelism a compute shader exists to provide.
   ordering/blending infrastructure it will need. Mixed opaque+transparent
   scenes and the projectile's blend order relative to the grid are also
   explicitly out of scope (§43).
+- **Material texture sampling is now a runtime toggle, default off, as
+  of §44** — `texturesEnabled()` gates all 4 material texture samples in
+  `triangle.frag`; off reproduces Phase 8 milestone 1's flat PBR look
+  exactly, on reproduces Phase 20's real brick material exactly. An
+  explicit instruction, not this document's own judgment that
+  texture-off is the better permanent default (see §44's own
+  interview-relevant note).
 
 ---
 

@@ -359,10 +359,11 @@ void FrameRenderer::init(VulkanContext& ctx)
             // range in the same command buffer and must each set it fresh.
             // Alpha (w) is gridAlpha() - 1.0 (opaque) by default, so this
             // is byte-identical to the pre-§43 behavior unless transparency
-            // is actually in use.
+            // is actually in use. metallicRoughness.z is the master texture
+            // toggle (§44), default off.
             MaterialPushConstants gridMat{
                 glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
-                glm::vec4(0.0f, 0.5f, 0.0f, 0.0f) };
+                glm::vec4(0.0f, 0.5f, context->texturesEnabled() ? 1.0f : 0.0f, 0.0f) };
             vkCmdPushConstants(
                 cmd, activePipeline.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
                 0, sizeof(MaterialPushConstants), &gridMat
@@ -431,7 +432,7 @@ void FrameRenderer::init(VulkanContext& ctx)
                 // isn't sorted - a known limitation, not addressed here.
                 MaterialPushConstants projMat{
                     glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
-                    glm::vec4(1.0f, 0.2f, 0.0f, 0.0f) };
+                    glm::vec4(1.0f, 0.2f, context->texturesEnabled() ? 1.0f : 0.0f, 0.0f) };
                 vkCmdPushConstants(
                     cmd, activePipeline.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
                     0, sizeof(MaterialPushConstants), &projMat
@@ -627,6 +628,18 @@ void FrameRenderer::init(VulkanContext& ctx)
                 if (ImGui::SliderFloat("Max Delta Time (s)", &maxDt, 1.0f / 60.0f, 0.5f, "%.3f"))
                     context->setMaxDeltaTime(maxDt);
             }
+
+            // Master texture toggle (§44) - off by default, reproducing
+            // Phase 8 milestone 1's flat, push-constant-only PBR shading
+            // (no material texture detail, but still real lighting/
+            // shadows/IBL). Lets the improvement Phase 8 milestone 2/
+            // Phase 20 made be demonstrated on demand instead of only
+            // ever seen as the permanent default.
+            ImGui::Separator();
+            ImGui::Text("Material");
+            bool texturesEnabled = context->texturesEnabled();
+            if (ImGui::Checkbox("Enable Textures", &texturesEnabled))
+                context->setTexturesEnabled(texturesEnabled);
 
             // Alpha-blended grid/projectile material (see
             // docs/TECHNICAL_NOTES.md §43) - dragging Grid Alpha below 1.0

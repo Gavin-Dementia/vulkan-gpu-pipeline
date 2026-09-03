@@ -894,6 +894,21 @@ transposition (not bitonic).
   one scene, and the projectile's blend order relative to the grid
   (always drawn last, unsorted) — see roadmap.md's Phase 21 notes.
 
+### Master texture toggle (Phase 22)
+
+See `docs/TECHNICAL_NOTES.md` §44. `MaterialPushConstants::
+metallicRoughness.z` (previously unused) is `1.0`/`0.0` for use-textures/
+flat-shading, set from `VulkanContext::texturesEnabled()` (default
+**false**) when the grid's and projectile's push constants are built
+each frame. `triangle.frag` branches on it — since it's a push constant,
+identical for every fragment in a draw, branching around the `texSampler`/
+`normalMap`/`metallicRoughnessMap`/`aoMap` samples is uniform control
+flow, not per-fragment divergence. Off reproduces Phase 8 milestone 1's
+flat, push-constant-only PBR shading (still real lighting/shadows/IBL);
+on is Phase 20's real brick material, unchanged. A new "Material"
+section in the "GPU Culling Stats" ImGui window exposes it as an
+"Enable Textures" checkbox.
+
 ---
 
 ## Current Dependency Graph

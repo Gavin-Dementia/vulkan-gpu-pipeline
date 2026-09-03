@@ -41,7 +41,9 @@ layout(set = 1, binding = 2) uniform sampler2D brdfLUT;
 
 layout(push_constant) uniform MaterialPushConstants {
     vec4 albedo;             // rgb used, a = opacity (transparentPipeline_ only)
-    vec4 metallicRoughness;  // x = metallic, y = roughness
+    vec4 metallicRoughness;  // x = metallic, y = roughness, z = use
+                             // texture maps (1.0) vs. flat push-constant-
+                             // only shading (0.0) - see §44
 } material;
 
 float distributionGGX(vec3 N, vec3 H, float roughness)
@@ -176,20 +178,37 @@ float calcShadow(vec4 lightSpacePos, vec3 N, vec3 L)
 
 void main()
 {
-    vec3 texColor    = texture(texSampler, fragUV).rgb;
+    // Master texture toggle (§44) - material.metallicRoughness.z is a
+    // push constant, identical for every fragment in a draw call, so
+    // branching around the texture() calls below is uniform control flow
+    // (safe for implicit-LOD sampling, no derivative undefined-behavior
+    // concern). Off (0.0, the default) reproduces Phase 8 milestone 1's
+    // flat, push-constant-only PBR shading - real lighting/shadows/IBL,
+    // no material texture detail.
+    bool useTextures = material.metallicRoughness.z > 0.5;
+
+    vec3 texColor    = useTextures ? texture(texSampler, fragUV).rgb : vec3(1.0);
     vec3 finalAlbedo = material.albedo.rgb * texColor;
 
     // glTF channel convention: G = roughness, B = metallic. The push
     // constant stays a *factor* multiplying the texture (same pattern as
     // finalAlbedo above), so grid vs. projectile keep looking visually
     // distinct even sampling the same shared Material (see TECHNICAL_NOTES).
-    vec3 mr = texture(metallicRoughnessMap, fragUV).rgb;
+    vec3 mr = useTextures ? texture(metallicRoughnessMap, fragUV).rgb : vec3(1.0);
     float metallic  = material.metallicRoughness.x * mr.b;
     float roughness = material.metallicRoughness.y * mr.g;
-    float ao        = texture(aoMap, fragUV).r;
+    float ao        = useTextures ? texture(aoMap, fragUV).r : 1.0;
 
-    vec3 mapNormal = texture(normalMap, fragUV).rgb * 2.0 - 1.0;
-    vec3 N = normalize(perturbNormal(normalize(fragNormal), fragWorldPos, fragUV, mapNormal));
+    vec3 N;
+    if (useTextures)
+    {
+        vec3 mapNormal = texture(normalMap, fragUV).rgb * 2.0 - 1.0;
+        N = normalize(perturbNormal(normalize(fragNormal), fragWorldPos, fragUV, mapNormal));
+    }
+    else
+    {
+        N = normalize(fragNormal);
+    }
     vec3 V = normalize(scene.cameraPos.xyz - fragWorldPos);
     vec3 L = normalize(-scene.lightDirection.xyz);
     vec3 H = normalize(V + L);

@@ -935,6 +935,32 @@ opaque (depth test alone resolves occlusion), wrong for alpha blending
 
 ---
 
+## Phase 22 — Master Texture Toggle
+
+**Status: Complete**
+
+Adds a runtime on/off switch for material texture sampling, default
+**off** — a deliberate, visible default change, not a no-op one. See
+`docs/TECHNICAL_NOTES.md` §44 for the full rationale.
+
+- `MaterialPushConstants::metallicRoughness.z` (previously unused) is
+  now `1.0` (use texture maps) or `0.0` (flat push-constant-only
+  shading) — set from `VulkanContext::texturesEnabled()` for both the
+  grid and projectile's push constants.
+- `triangle.frag` branches on it (uniform per-draw, so branching around
+  the `texture()` calls is safe/uniform control flow): off skips
+  `texSampler`/`normalMap`/`metallicRoughnessMap`/`aoMap` sampling
+  entirely, reproducing Phase 8 milestone 1's flat PBR look (real
+  lighting/shadows/IBL, no material texture detail) rather than a
+  fabricated "no texture" placeholder.
+- New "Material" section in the "GPU Culling Stats" ImGui window: an
+  "Enable Textures" checkbox.
+- Verified both states: off (default) renders flat/untextured, matching
+  Phase 8 milestone 1's look; on reproduces the real brick material
+  (Phase 20) pixel-for-pixel as before this toggle existed.
+
+---
+
 ## Open / not yet started
 
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
