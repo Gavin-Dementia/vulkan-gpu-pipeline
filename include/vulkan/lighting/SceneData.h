@@ -20,7 +20,7 @@ static_assert(sizeof(SceneData) == 128, "SceneData must be 128 bytes (4 x vec4 +
 // for this struct, so this layout matches the GLSL push_constant block exactly.
 struct MaterialPushConstants
 {
-    glm::vec4 albedo;            // rgb used, a unused
+    glm::vec4 albedo;            // rgb used, a = opacity (see VulkanContext::gridAlpha() / §43)
     glm::vec4 metallicRoughness; // x = metallic, y = roughness, zw unused
 };
 static_assert(sizeof(MaterialPushConstants) == 32, "MaterialPushConstants must be 32 bytes (2 x vec4)");

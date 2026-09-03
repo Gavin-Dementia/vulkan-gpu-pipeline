@@ -850,6 +850,50 @@ detailed the LOD1/LOD2 meshes actually are relative to each other. See
   a CPU-side default-derivation and ImGui-display change; the shader
   still just reads whatever's in `lodParams.x`/`.y`.
 
+### Transparency: alpha blending + GPU sort (Phase 21)
+
+Lays the groundwork for planned future translucent materials (jelly,
+glass, liquid). See `docs/TECHNICAL_NOTES.md` §43 for the full
+rationale, including why sorting (not OIT) and why odd-even
+transposition (not bitonic).
+
+- `culling.comp` writes camera distance (already computed for the LOD
+  test) into each compacted instance's `position.w` — previously an
+  unused `1.0`, since `triangle.vert` only ever reads `.xyz`.
+- `sortInstances.comp` (new) — dispatched `(3,1,1)`, one workgroup per
+  LOD bucket (`gl_WorkGroupID.x` selects which). Loads the bucket into
+  shared memory, runs a parallel odd-even transposition sort descending
+  by that distance, writes it back in place. Shares
+  `computeDescriptor_`'s existing bindings 1-6 (`VisibleLODN`/
+  `IndirectLODN`) — no new buffers or descriptor changes.
+  `VulkanContext::sortPipeline_` shares `computePipelineCoarse_`'s
+  `shaderPath`-parameter pattern.
+- `GPUCullingPass` (`FrameRenderer.cpp`) dispatches this after the fine
+  culling pass, behind one more compute→compute `VkMemoryBarrier` (same
+  shape as the coarse→fine one) — only when
+  `transparencySortEnabled() && isTransparent()`, a zero-cost no-op
+  otherwise.
+- `GeometryPass` draws LOD buckets `2,1,0` (farthest-to-nearest) instead
+  of `0,1,2` once transparent — provably correct macro-ordering between
+  buckets already, since `lod1ScreenSize_ >= lod2ScreenSize_` means
+  LOD0's camera-distance range is strictly less than LOD1's, which is
+  strictly less than LOD2's. The sort only needs to fix ordering
+  *within* a bucket.
+- `VulkanContext::transparentPipeline_` — a sibling of `pipeline_`
+  (`VulkanPipeline::create()`'s new `transparent` parameter: blend on,
+  depth-write off, depth-test still on), since this codebase bakes
+  pipeline state at creation with no dynamic-blend precedent.
+  `resizeSceneTarget()` recreates it alongside `pipeline_`/
+  `skyboxPipeline_` for the same reason all three target
+  `sceneColorTarget_`'s extent.
+- `gridAlpha()` (default `1.0`) selects which pipeline `GeometryPass`
+  binds and feeds `MaterialPushConstants::albedo.a`, which
+  `triangle.frag` now outputs directly instead of a hardcoded `1.0`.
+- Out of scope here: the actual jelly/glass/liquid shading model
+  (refraction, IOR, subsurface), mixed opaque+transparent instances in
+  one scene, and the projectile's blend order relative to the grid
+  (always drawn last, unsorted) — see roadmap.md's Phase 21 notes.
+
 ---
 
 ## Current Dependency Graph

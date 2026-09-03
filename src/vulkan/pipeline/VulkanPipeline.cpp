@@ -12,7 +12,8 @@ void VulkanPipeline::create(
     VkExtent2D extent,
     VkRenderPass renderPass,
     VkDescriptorSetLayout materialLayout,
-    VkDescriptorSetLayout iblLayout)
+    VkDescriptorSetLayout iblLayout,
+    bool transparent)
 {
     // =========================================================
     // 1. Shader modules
@@ -130,7 +131,16 @@ void VulkanPipeline::create(
         VK_COLOR_COMPONENT_B_BIT |
         VK_COLOR_COMPONENT_A_BIT;
 
-    cbAttach.blendEnable = VK_FALSE;
+    cbAttach.blendEnable = transparent ? VK_TRUE : VK_FALSE;
+    if (transparent)
+    {
+        cbAttach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cbAttach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cbAttach.colorBlendOp        = VK_BLEND_OP_ADD;
+        cbAttach.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cbAttach.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cbAttach.alphaBlendOp        = VK_BLEND_OP_ADD;
+    }
 
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -167,7 +177,7 @@ void VulkanPipeline::create(
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.sType                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable       = VK_TRUE;
-    depthStencil.depthWriteEnable      = VK_TRUE;
+    depthStencil.depthWriteEnable      = transparent ? VK_FALSE : VK_TRUE;
     depthStencil.depthCompareOp        = VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable     = VK_FALSE;

@@ -40,7 +40,7 @@ layout(set = 1, binding = 1) uniform samplerCube prefilteredMap;
 layout(set = 1, binding = 2) uniform sampler2D brdfLUT;
 
 layout(push_constant) uniform MaterialPushConstants {
-    vec4 albedo;             // rgb used, a unused
+    vec4 albedo;             // rgb used, a = opacity (transparentPipeline_ only)
     vec4 metallicRoughness;  // x = metallic, y = roughness
 } material;
 
@@ -251,5 +251,9 @@ void main()
     // encodes on write; an extra pow() here would double-gamma and wash out.
     color = color / (color + vec3(1.0));
 
-    outColor = vec4(color, 1.0);
+    // material.albedo.a is 1.0 for every draw using the opaque pipeline_
+    // (VulkanContext::gridAlpha()'s default), so this is a no-op change
+    // for existing behavior - only meaningful once transparentPipeline_
+    // (blendEnable=true) is bound instead. See docs/TECHNICAL_NOTES.md §43.
+    outColor = vec4(color, material.albedo.a);
 }

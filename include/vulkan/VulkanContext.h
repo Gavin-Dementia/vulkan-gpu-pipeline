@@ -106,6 +106,14 @@ public:
     VulkanRenderPass&      renderPass()        { return renderPass_; }
     VulkanFramebuffer&     framebuffer()       { return framebuffer_; }
     VulkanPipeline&        pipeline()          { return pipeline_; }
+    // Alpha-blended sibling of pipeline_ - same shaders/descriptor
+    // layout, blendEnable=true and depthWriteEnable=false instead (see
+    // VulkanPipeline::create()'s transparent parameter and
+    // docs/TECHNICAL_NOTES.md §43). Bound by GeometryPass instead of
+    // pipeline_ whenever gridAlpha() < 1.0. Targets sceneRenderPass_/
+    // sceneColorTarget_ just like pipeline_, so resizeSceneTarget() must
+    // recreate this too.
+    VulkanPipeline&        transparentPipeline() { return transparentPipeline_; }
     UniformBuffer&         uniformBuffer()     { return uniformBuffer_; }
     VulkanDescriptor&      descriptor()        { return descriptor_; }
     VulkanDepthBuffer&     depthBuffer()       { return depthBuffer_; }
@@ -115,6 +123,14 @@ public:
     // with computePipeline_ (the fine pass) - both dispatches happen back
     // to back inside GPUCullingPass in FrameRenderer.cpp.
     VulkanComputePipeline& computePipelineCoarse() { return computePipelineCoarse_; }
+    // Back-to-front sort of each LOD bucket's compacted visible-instance
+    // list, keyed on the camera distance culling.comp writes into
+    // InstanceData.position.w - see sortInstances.comp and
+    // docs/TECHNICAL_NOTES.md §43. Shares computeDescriptor_'s set/layout
+    // like computePipelineCoarse_ does; dispatched by GPUCullingPass
+    // right after the fine pass, only when transparencySortEnabled() and
+    // gridAlpha() < 1.0 (a no-op, unreached dispatch otherwise).
+    VulkanComputePipeline& sortPipeline()       { return sortPipeline_; }
     ComputeDescriptor&     computeDescriptor() { return computeDescriptor_; }
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
@@ -292,6 +308,24 @@ public:
     // invariant above is still enforced.
     void resetLod2ScreenSizeToMeshDefault() { setLod2ScreenSize(lod1ScreenSize_ * lod2DetailRatio()); }
 
+    // Grid/projectile opacity (see docs/TECHNICAL_NOTES.md §43) - drives
+    // both the material push constant's alpha (triangle.frag) and which
+    // pipeline GeometryPass binds: pipeline_ (opaque) at 1.0, or
+    // transparentPipeline_ (alpha-blended) for anything less. Default 1.0
+    // keeps existing behavior byte-for-byte unchanged - the transparent
+    // path is entirely opt-in.
+    float gridAlpha() const { return gridAlpha_; }
+    void  setGridAlpha(float a) { gridAlpha_ = glm::clamp(a, 0.0f, 1.0f); }
+    bool  isTransparent() const { return gridAlpha_ < 1.0f; }
+
+    // Gates sortInstances.comp's dispatch (see sortPipeline() above) -
+    // default on, so transparency looks correct out of the box; exposed
+    // as a toggle purely to demonstrate the blending-order bug it fixes,
+    // same "prove the mechanism, verify by eye" pattern as
+    // clampDeltaTimeEnabled_.
+    bool  transparencySortEnabled() const { return transparencySortEnabled_; }
+    void  setTransparencySortEnabled(bool e) { transparencySortEnabled_ = e; }
+
     // Grid collision + scatter (Phase 7 milestone 2). Re-uploads
     // objectBuffer_ every frame from CPU-simulated positions - no compute
     // shader or descriptor changes needed, since culling.comp already
@@ -403,6 +437,7 @@ private:
     VulkanRenderPass      renderPass_;
     VulkanFramebuffer     framebuffer_;
     VulkanPipeline        pipeline_;
+    VulkanPipeline        transparentPipeline_;   // see accessor comment above (§43)
     UniformBuffer         uniformBuffer_;
     VulkanDescriptor      descriptor_;
     VulkanDepthBuffer     depthBuffer_;
@@ -410,6 +445,7 @@ private:
     ComputeDescriptor     computeDescriptor_;
     VulkanComputePipeline computePipeline_;
     VulkanComputePipeline computePipelineCoarse_;
+    VulkanComputePipeline sortPipeline_;          // see accessor comment above (§43)
     VulkanBuffer          frustumBuffer_;
     Material              material_;
 
@@ -471,5 +507,9 @@ private:
     uint32_t              lod0TriangleCount_ = 0;
     uint32_t              lod1TriangleCount_ = 0;
     uint32_t              lod2TriangleCount_ = 0;
+
+    // Transparency (§43) - see accessor comments above.
+    float                 gridAlpha_ = 1.0f;
+    bool                  transparencySortEnabled_ = true;
 };
 

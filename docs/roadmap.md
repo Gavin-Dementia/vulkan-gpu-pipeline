@@ -875,6 +875,66 @@ the full sourcing and channel-combination process.
 
 ---
 
+## Phase 21 — Transparency: Alpha Blending + GPU Sort
+
+**Status: Complete**
+
+Lays the groundwork for planned future materials with real transparency
+(jelly, glass, liquid) — see `docs/TECHNICAL_NOTES.md` §43 for the full
+design. The graphics pipeline had `blendEnable = VK_FALSE` everywhere,
+and the GPU-driven culling pass compacts visible instances via
+`atomicAdd`, so draw order is whichever thread finishes first — fine for
+opaque (depth test alone resolves occlusion), wrong for alpha blending
+(overlapping transparent instances would composite in undefined order).
+
+- `culling.comp` now writes camera distance (already computed for the
+  LOD test) into each compacted instance's otherwise-unused
+  `position.w` — `triangle.vert` never reads it, so this costs nothing.
+- New `sortInstances.comp`, dispatched `(3,1,1)` (one workgroup per LOD
+  bucket): loads each bucket into shared memory and runs a parallel
+  odd-even transposition sort, descending by that distance — farthest
+  first, the order back-to-front blending needs. Chosen over a bitonic
+  network for simplicity (no power-of-2 partner-index math) at a scale
+  (≤343 elements) where the extra O(n²) phases cost microseconds either
+  way. Shares `computeDescriptor_`'s existing bindings — no new buffers.
+- `GeometryPass` reverses the LOD bucket draw order (`2,1,0` instead of
+  `0,1,2`) once transparent — provably correct macro-ordering between
+  buckets, since LOD0's camera-distance range is strictly less than
+  LOD1's, which is strictly less than LOD2's, by the existing
+  `lod1ScreenSize_ >= lod2ScreenSize_` invariant. The sort only needs to
+  fix ordering *within* each bucket.
+- New `VulkanContext::transparentPipeline_` (blend on, depth-write off,
+  depth-test still on) — a sibling of `pipeline_`, since this codebase
+  bakes pipeline state at creation with no dynamic-blend precedent.
+  `VulkanContext::gridAlpha()` (default 1.0, byte-identical to prior
+  behavior) selects which pipeline `GeometryPass` binds.
+- `triangle.frag` now outputs `material.albedo.a` instead of a hardcoded
+  `1.0` — the push constant's alpha channel was already there, just
+  unused until now.
+- "GPU Culling Stats" ImGui window gained a "Transparency" section: a
+  "Grid Alpha" slider and an "Enable Transparency Sort" checkbox (default
+  on) that demonstrates the blending-order bug it fixes when toggled off.
+- Verified by temporarily forcing `gridAlpha_ < 1.0` and screenshotting:
+  confirmed correct translucent rendering with the sort on, and no
+  crash/corruption with it off (the bucket-level ordering alone already
+  gives a reasonable approximation from typical camera angles, which is
+  why the within-bucket sort's effect is subtle in a static screenshot —
+  expected, not a sign it's not working).
+
+**Explicitly out of scope, left for follow-up work:**
+- The actual jelly/glass/liquid **shading model** (refraction sampling
+  of the offscreen scene target, IOR, fake subsurface/wrap lighting).
+- Mixed opaque+transparent instances in the same scene — `gridAlpha()`
+  is one shared toggle for the whole material, matching the existing
+  single-shared-`Material` architecture.
+- The projectile's blend order relative to the grid isn't sorted (it's
+  always drawn last) — a known, accepted limitation, not addressed here.
+- Order-independent transparency (weighted blended OIT) as an
+  alternative to sorting — considered, not pursued since sorting was
+  the requested direction.
+
+---
+
 ## Open / not yet started
 
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0

@@ -174,6 +174,21 @@ void VulkanContext::initCore()
         iblDescriptor_.layout()
     );
 
+    // Alpha-blended sibling of pipeline_ (see docs/TECHNICAL_NOTES.md
+    // §43) - same shaders/layout/extent, only the blend/depth-write state
+    // differs (VulkanPipeline::create()'s transparent parameter).
+    // GeometryPass binds this instead of pipeline_ whenever
+    // gridAlpha() < 1.0; resizeSceneTarget() below recreates it alongside
+    // pipeline_ for the same reason both target sceneColorTarget_'s extent.
+    transparentPipeline_.create(
+        device_.get(),
+        sceneColorTarget_.extent(),
+        sceneRenderPass_.get(),
+        descriptor_.layout(),
+        iblDescriptor_.layout(),
+        /*transparent=*/true
+    );
+
     framebuffer_.create(
         device_.get(),
         renderPass_.get(),
@@ -236,6 +251,7 @@ void VulkanContext::resizeSceneTarget(uint32_t width, uint32_t height)
 
     sceneFramebuffer_.destroy(device_.get());
     pipeline_.destroy(device_.get());
+    transparentPipeline_.destroy(device_.get());
     skyboxPipeline_.destroy(device_.get());
     sceneColorDepth_.destroy(device_.get());
     sceneColorTarget_.destroy(device_.get());
@@ -257,6 +273,14 @@ void VulkanContext::resizeSceneTarget(uint32_t width, uint32_t height)
         sceneRenderPass_.get(),
         descriptor_.layout(),
         iblDescriptor_.layout()
+    );
+    transparentPipeline_.create(
+        device_.get(),
+        sceneColorTarget_.extent(),
+        sceneRenderPass_.get(),
+        descriptor_.layout(),
+        iblDescriptor_.layout(),
+        /*transparent=*/true
     );
     skyboxPipeline_.create(
         device_.get(), sceneColorTarget_.extent(), sceneRenderPass_.get(), skyboxDescriptor_.layout()
@@ -962,6 +986,12 @@ void VulkanContext::initCullingResources()
     computePipelineCoarse_.create(
         device_.get(), computeDescriptor_.layout(),
         "shaders/compiled/cullingCoarse.comp.spv");
+    // Transparency back-to-front sort (§43) - shares computeDescriptor_'s
+    // set/layout like computePipelineCoarse_ does; dispatched by
+    // GPUCullingPass right after the fine culling pass.
+    sortPipeline_.create(
+        device_.get(), computeDescriptor_.layout(),
+        "shaders/compiled/sortInstances.comp.spv");
 
     // cachedInstances_ is kept alive as the permanent rest formation
     // (used by resetInstanceFormation()) instead of being freed here.
@@ -1245,6 +1275,7 @@ void VulkanContext::cleanup()
     imguiLayer_.destroy(device_.get());
     computePipeline_.destroy(device_.get());
     computePipelineCoarse_.destroy(device_.get());
+    sortPipeline_.destroy(device_.get());
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
     objectBuffer_.destroy(device_.get());
@@ -1280,6 +1311,7 @@ void VulkanContext::cleanup()
     uniformBuffer_.destroy(device_.get());
 
     pipeline_.destroy(device_.get());
+    transparentPipeline_.destroy(device_.get());
     sceneFramebuffer_.destroy(device_.get());
     sceneRenderPass_.destroy(device_.get());
     sceneColorDepth_.destroy(device_.get());

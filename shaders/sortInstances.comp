@@ -1,0 +1,115 @@
+#version 450
+
+// Sorts each LOD bucket's compacted visible-instance list back-to-front
+// by camera distance, so an alpha-blended draw of that bucket composites
+// correctly instead of in whatever order culling.comp's atomicAdd
+// compaction happened to produce (see docs/TECHNICAL_NOTES.md §43).
+// Dispatched (3,1,1) - one workgroup per LOD bucket, selected by
+// gl_WorkGroupID.x. No effect on opaque rendering (draw order doesn't
+// matter when depth test alone resolves occlusion) - only meaningful
+// once VulkanContext::gridAlpha() < 1.0 selects the transparent pipeline.
+//
+// 512 must stay >= VulkanContext::OBJECT_COUNT (343) - the same manual
+// C++/GLSL sync discipline culling.comp's GRID_SIZE/CLUSTER_DIM already
+// requires, no shared header exists in this codebase.
+layout(local_size_x = 512) in;
+
+struct InstanceData
+{
+    vec4 position;   // xyz = world position, w = camera distance (culling.comp)
+};
+
+struct DrawCommand
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+// Read-write here (unlike culling.comp's writeonly) - this pass loads
+// the compacted entries, sorts them in shared memory, then writes the
+// sorted order back to the same buffer.
+layout(std430, binding = 1) buffer VisibleLOD0 { InstanceData visibleLOD0[]; };
+layout(std430, binding = 2) buffer VisibleLOD1 { InstanceData visibleLOD1[]; };
+layout(std430, binding = 3) buffer VisibleLOD2 { InstanceData visibleLOD2[]; };
+
+// Only instanceCount is read - already written by this frame's fine
+// culling dispatch, guarded by the compute->compute barrier in
+// FrameRenderer.cpp's GPUCullingPass, same shape as the coarse->fine one.
+layout(std430, binding = 4) readonly buffer IndirectLOD0 { DrawCommand cmd0; };
+layout(std430, binding = 5) readonly buffer IndirectLOD1 { DrawCommand cmd1; };
+layout(std430, binding = 6) readonly buffer IndirectLOD2 { DrawCommand cmd2; };
+
+const uint N = 512u;
+shared InstanceData sharedData[N];
+
+void main()
+{
+    uint tid    = gl_LocalInvocationID.x;
+    uint bucket = gl_WorkGroupID.x;   // 0 = LOD0, 1 = LOD1, 2 = LOD2
+
+    uint count;
+    if (bucket == 0u)      count = cmd0.instanceCount;
+    else if (bucket == 1u) count = cmd1.instanceCount;
+    else                   count = cmd2.instanceCount;
+
+    // Load into shared memory. Padding slots (tid >= count) get a
+    // distance of -1.0 - camera distance is never negative, so these
+    // always sort to the tail past index [count), which the indirect
+    // draw's instanceCount never reads anyway.
+    InstanceData entry;
+    if (tid < count)
+    {
+        if (bucket == 0u)      entry = visibleLOD0[tid];
+        else if (bucket == 1u) entry = visibleLOD1[tid];
+        else                   entry = visibleLOD2[tid];
+    }
+    else
+    {
+        entry.position = vec4(0.0, 0.0, 0.0, -1.0);
+    }
+    sharedData[tid] = entry;
+    barrier();
+    memoryBarrierShared();
+
+    // Parallel odd-even transposition sort, descending by position.w
+    // (camera distance) - farthest first, so index 0 is drawn first and
+    // the nearest instance last, the correct order for back-to-front
+    // alpha blending. N phases guarantee a full sort of N elements (the
+    // worst-case distance any single element must travel across the
+    // array); each phase only needs N/2 threads, since it compares N/2
+    // disjoint adjacent pairs, alternating which pairs those are between
+    // even and odd phases - the standard construction, chosen over a
+    // bitonic network for this project's "simplest correct
+    // implementation" bar: no power-of-2 partner-index bit math, no
+    // sentinel-value edge cases beyond the one already needed for
+    // padding above. At n<=343 the O(n^2) phase count costs
+    // microseconds regardless on a GPU, so there's no real performance
+    // reason to prefer bitonic's O(n log^2 n) here.
+    for (uint phase = 0u; phase < N; phase++)
+    {
+        uint i = 2u * tid + (phase & 1u);
+        if (tid < (N / 2u) && i + 1u < N)
+        {
+            if (sharedData[i].position.w < sharedData[i + 1u].position.w)
+            {
+                InstanceData tmp   = sharedData[i];
+                sharedData[i]      = sharedData[i + 1u];
+                sharedData[i + 1u] = tmp;
+            }
+        }
+        barrier();
+        memoryBarrierShared();
+    }
+
+    // Write back only the real entries - padding slots are now at the
+    // tail (w = -1.0) and never need writing back.
+    if (tid < count)
+    {
+        if (bucket == 0u)      visibleLOD0[tid] = sharedData[tid];
+        else if (bucket == 1u) visibleLOD1[tid] = sharedData[tid];
+        else                   visibleLOD2[tid] = sharedData[tid];
+    }
+}

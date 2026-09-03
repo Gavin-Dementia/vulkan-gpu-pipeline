@@ -158,20 +158,26 @@ void main()
     float camDist = length(center - frustum.cameraPos.xyz);
     float screenSize = (radius * frustum.lodParams.z) / max(camDist, 0.0001);
 
+    // w carries camera distance, not a homogeneous 1.0 - triangle.vert
+    // only ever reads .xyz for translation, so this is free to repurpose.
+    // sortInstances.comp uses it as the sort key for back-to-front
+    // transparency ordering (see docs/TECHNICAL_NOTES.md §43); an opaque
+    // draw ignores it entirely, so this has zero effect until that pass
+    // is enabled.
     if (screenSize > frustum.lodParams.x)
     {
         uint slot = atomicAdd(cmd0.instanceCount, 1u);
-        visibleLOD0[slot].position = vec4(center, 1.0);
+        visibleLOD0[slot].position = vec4(center, camDist);
     }
     else if (screenSize > frustum.lodParams.y)
     {
         uint slot = atomicAdd(cmd1.instanceCount, 1u);
-        visibleLOD1[slot].position = vec4(center, 1.0);
+        visibleLOD1[slot].position = vec4(center, camDist);
     }
     else
     {
         uint slot = atomicAdd(cmd2.instanceCount, 1u);
-        visibleLOD2[slot].position = vec4(center, 1.0);
+        visibleLOD2[slot].position = vec4(center, camDist);
     }
 }
 

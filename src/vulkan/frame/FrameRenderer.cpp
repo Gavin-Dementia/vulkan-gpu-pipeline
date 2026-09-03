@@ -150,6 +150,35 @@ void FrameRenderer::init(VulkanContext& ctx)
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().get());
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().layout(), 0, 1, &ds, 0, nullptr);
             vkCmdDispatch(cmd, (VulkanContext::OBJECT_COUNT + 63) / 64, 1, 1);
+
+            // 3c. Transparency sort (see docs/TECHNICAL_NOTES.md §43) -
+            // only dispatched when it could actually matter: gridAlpha()
+            // selects the transparent pipeline, and the toggle is on
+            // (default). Skipped entirely for the default opaque case, so
+            // this is a zero-cost no-op unless transparency is in use.
+            if (context->transparencySortEnabled() && context->isTransparent())
+            {
+                // Same compute->compute barrier shape as the coarse->fine
+                // one above - sortInstances.comp reads and rewrites the
+                // fine pass's VisibleLODN/IndirectLODN output, so it must
+                // not start until those writes are visible.
+                VkMemoryBarrier fineBarrier{};
+                fineBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                fineBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                fineBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(
+                    cmd,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0, 1, &fineBarrier, 0, nullptr, 0, nullptr
+                );
+
+                // One workgroup per LOD bucket (gl_WorkGroupID.x selects
+                // which) - see sortInstances.comp.
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->sortPipeline().get());
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->sortPipeline().layout(), 0, 1, &ds, 0, nullptr);
+                vkCmdDispatch(cmd, 3, 1, 1);
+            }
         },
         PassStage::Compute
     });
@@ -290,7 +319,15 @@ void FrameRenderer::init(VulkanContext& ctx)
             );
             vkCmdDraw(cmd, 3, 1, 0, 0);
 
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
+            // Alpha-blended sibling of pipeline_ once gridAlpha() < 1.0
+            // (see docs/TECHNICAL_NOTES.md §43) - same shaders/layout, so
+            // every descriptor bind/push-constant call below reads
+            // activePipeline.getLayout() and stays correct either way.
+            bool transparent = context->isTransparent();
+            VulkanPipeline& activePipeline = transparent
+                ? context->transparentPipeline() : context->pipeline();
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline.get());
 
             // IBL Milestones 2-3 (see docs/TECHNICAL_NOTES.md §34/§35):
             // set 1, ambient-lighting data (diffuse irradiance + specular
@@ -302,7 +339,7 @@ void FrameRenderer::init(VulkanContext& ctx)
             vkCmdBindDescriptorSets(
                 cmd,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
-                context->pipeline().getLayout(),
+                activePipeline.getLayout(),
                 1, 1, &iblDs,
                 0, nullptr
             );
@@ -312,7 +349,7 @@ void FrameRenderer::init(VulkanContext& ctx)
             vkCmdBindDescriptorSets(
                 cmd,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
-                context->pipeline().getLayout(),
+                activePipeline.getLayout(),
                 0, 1, &ds,
                 0, nullptr
             );
@@ -320,14 +357,29 @@ void FrameRenderer::init(VulkanContext& ctx)
             // Grid material - rough dielectric. Pushed before the loop since
             // the grid and projectile share this pipeline's push-constant
             // range in the same command buffer and must each set it fresh.
-            MaterialPushConstants gridMat{ glm::vec4(1.0f), glm::vec4(0.0f, 0.5f, 0.0f, 0.0f) };
+            // Alpha (w) is gridAlpha() - 1.0 (opaque) by default, so this
+            // is byte-identical to the pre-§43 behavior unless transparency
+            // is actually in use.
+            MaterialPushConstants gridMat{
+                glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
+                glm::vec4(0.0f, 0.5f, 0.0f, 0.0f) };
             vkCmdPushConstants(
-                cmd, context->pipeline().getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+                cmd, activePipeline.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
                 0, sizeof(MaterialPushConstants), &gridMat
             );
 
-            for (int i = 0; i < 3; i++)
+            // Bucket draw order: nearest-first (0,1,2) is better for
+            // opaque early-z rejection; back-to-front (2,1,0) is required
+            // for correct alpha blending once transparent - see
+            // sortInstances.comp for why this order is already correct
+            // *between* buckets (LOD0's camera-distance range is strictly
+            // less than LOD1's, which is strictly less than LOD2's, by
+            // the lod1ScreenSize_ >= lod2ScreenSize_ invariant), leaving
+            // only *within*-bucket order for that shader to fix.
+            for (int step = 0; step < 3; step++)
             {
+                int i = transparent ? (2 - step) : step;
+
                 context->lod(i).vertexBuffer.bind(cmd);
                 context->lod(i).indexBuffer.bind(cmd);
 
@@ -364,16 +416,24 @@ void FrameRenderer::init(VulkanContext& ctx)
                 vkCmdBindDescriptorSets(
                     cmd,
                     VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    context->pipeline().getLayout(),
+                    activePipeline.getLayout(),
                     0, 1, &projDs,
                     0, nullptr
                 );
 
                 // Shiny metal - visually distinct from the grid's rough
                 // dielectric, proving the push constant varies per-draw.
-                MaterialPushConstants projMat{ glm::vec4(1.0f), glm::vec4(1.0f, 0.2f, 0.0f, 0.0f) };
+                // Shares gridAlpha() rather than its own slider - this
+                // scoped fix treats "transparent" as one shared material
+                // toggle, not per-object (see docs/TECHNICAL_NOTES.md §43).
+                // Note this draw is still issued after the grid loop
+                // unconditionally, so its blend order relative to the grid
+                // isn't sorted - a known limitation, not addressed here.
+                MaterialPushConstants projMat{
+                    glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
+                    glm::vec4(1.0f, 0.2f, 0.0f, 0.0f) };
                 vkCmdPushConstants(
-                    cmd, context->pipeline().getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+                    cmd, activePipeline.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
                     0, sizeof(MaterialPushConstants), &projMat
                 );
 
@@ -567,6 +627,23 @@ void FrameRenderer::init(VulkanContext& ctx)
                 if (ImGui::SliderFloat("Max Delta Time (s)", &maxDt, 1.0f / 60.0f, 0.5f, "%.3f"))
                     context->setMaxDeltaTime(maxDt);
             }
+
+            // Alpha-blended grid/projectile material (see
+            // docs/TECHNICAL_NOTES.md §43) - dragging Grid Alpha below 1.0
+            // switches GeometryPass onto transparentPipeline_ and reverses
+            // the LOD draw order for correct back-to-front blending.
+            // "Enable Transparency Sort" only matters once alpha < 1.0 -
+            // turn it off to see the blending-order bug it fixes (nearby
+            // grid instances overlapping incorrectly), same demonstrate-
+            // the-bug pattern as Clamp Delta Time above.
+            ImGui::Separator();
+            ImGui::Text("Transparency");
+            float gridAlpha = context->gridAlpha();
+            if (ImGui::SliderFloat("Grid Alpha", &gridAlpha, 0.0f, 1.0f, "%.2f"))
+                context->setGridAlpha(gridAlpha);
+            bool sortEnabled = context->transparencySortEnabled();
+            if (ImGui::Checkbox("Enable Transparency Sort", &sortEnabled))
+                context->setTransparencySortEnabled(sortEnabled);
 
             ImGui::Separator();
             ImGui::Text("GPU Timing (ms)");

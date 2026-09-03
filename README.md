@@ -48,6 +48,14 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Live-Resized Window / Swapchain | ✅ |
 | Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only — see below |
 | Image-Based Lighting (procedural-sky cubemap, diffuse irradiance, specular prefilter + BRDF LUT) | ✅ |
+| Alpha Blending + GPU-Sorted Transparency (odd-even transposition sort) | ✅ infrastructure only — see below |
+
+*Transparency infrastructure only: `VulkanContext::gridAlpha()` and a "GPU
+Culling Stats" ImGui slider prove alpha blending + correct back-to-front
+sorting work, using the existing shared material at reduced opacity. The
+actual translucent shading model (jelly/glass/liquid — refraction, IOR,
+subsurface) this was built toward is planned future work, not yet
+implemented. See `docs/TECHNICAL_NOTES.md` §43.*
 
 ---
 

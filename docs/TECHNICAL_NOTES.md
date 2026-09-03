@@ -2969,6 +2969,155 @@ bumps look more complex," it's "sample data that actually came from
 measuring something real" - a synthetic-but-elaborate map wouldn't
 close this gap any more than the original flat one did.
 
+### 43. Transparency: alpha blending + GPU-side back-to-front sort
+
+Motivated by planned future work: swapping the grid's material for
+something genuinely translucent (jelly, glass, liquid). The graphics
+pipeline had `blendEnable = VK_FALSE` everywhere - fully opaque, no
+blend state existed at all. Enabling blending exposes a real
+architectural mismatch this section closes.
+
+**The actual problem.** `culling.comp` compacts visible instances into
+each LOD bucket via `atomicAdd` - draw order is whichever GPU thread's
+atomic increment lands first, which is unspecified and can vary frame to
+frame. For opaque rendering this is invisible: the depth test resolves
+occlusion regardless of draw order. For alpha blending it's not -
+overlapping transparent instances composite in whatever order they
+happen to land in, which can flicker between frames and looks visibly
+wrong wherever the grid's 343 instances overlap on screen, which is
+constantly from most camera angles.
+
+**Why sorting, not order-independent transparency (OIT).** Weighted
+blended OIT (accumulate color×weight and revealage into two render
+targets, composite once at the end) sidesteps the sorting problem
+entirely and would have needed zero changes to `culling.comp`'s
+compaction scheme - a legitimate, arguably more idiomatic choice for a
+GPU-driven renderer that already embraces unordered compaction
+everywhere else. Sorting was the requested direction for this pass, so
+that's what got built; OIT remains a valid alternative if approximate
+compositing (weighted OIT's known tradeoff) ever proves visually
+insufficient.
+
+**Why the LOD bucket structure already gives free coarse ordering.**
+`lod1ScreenSize_ >= lod2ScreenSize_` is an existing, already-enforced
+invariant (§26/§40), and screen size is monotonically decreasing with
+camera distance for a fixed bounding radius. So LOD0's camera-distance
+range is *provably* smaller than LOD1's, which is provably smaller than
+LOD2's - the buckets are already distance-sorted relative to each other,
+for free, as a side effect of an invariant that exists for an unrelated
+reason. Drawing bucket order `2, 1, 0` (farthest bucket first) instead
+of the existing `0, 1, 2` therefore gives a *provably correct*
+back-to-front macro-order between buckets with a one-line loop-direction
+change - no new data, no new computation. Sorting only needs to solve
+the *within-bucket* problem: instances in the same bucket can still be
+at different distances and overlap on screen.
+
+**Why odd-even transposition, not a bitonic network.** A single-
+workgroup, shared-memory sort was the right call either way (≤343
+elements per bucket comfortably fits one workgroup's shared memory and
+avoids any multi-dispatch/multi-barrier orchestration - the whole sort
+is internal to one shader invocation, synchronized with GLSL `barrier()`
+calls). Between the two classic parallel sort networks, bitonic needs
+power-of-2-sized input (padding/sentinel handling) and partner-index bit
+manipulation per stage; odd-even transposition needs neither - just N
+phases of "compare adjacent pairs, alternate which pairs are compared
+each phase." At this scale (≤343 real elements, padded to a fixed
+512-wide array) bitonic's O(n log²n) vs. odd-even's O(n²) phase count is
+a difference of microseconds on a GPU, not a difference that matters -
+so the simpler, easier-to-verify-correct construction won, matching this
+codebase's recurring bar (the O(n²) mutual-collision pass, §21, made the
+same call for the same reason).
+
+**The padding sentinel.** Slots beyond a bucket's real `instanceCount`
+(the array is fixed at 512 wide, but a bucket rarely has 343 real
+entries in it, let alone 512) get `position.w = -1.0` - camera distance
+is never negative, so padding always sorts to the tail past index
+`[count)`, which the indirect draw's `instanceCount` never reads anyway.
+No branch needed to skip padding during the sort itself; the compare
+function doesn't need to know which slots are real.
+
+**Why `.w`, not a new field.** `InstanceData` stays exactly `vec4
+position` - `triangle.vert` was confirmed (by reading it, not assuming)
+to only ever consume `.xyz` for translation, so repurposing the
+previously-hardcoded `1.0` as a sort key costs zero bytes, zero buffer
+changes, zero descriptor changes. `culling.comp` already computes camera
+distance for the screen-size LOD test (`camDist`), so writing it into
+`.w` instead of a literal `1.0` is a one-line change, not new work.
+
+**Why a second pipeline, not a flag on the existing one.** This
+codebase bakes pipeline state (blend, depth-write, viewport) at creation
+time throughout, with no dynamic-state precedent anywhere - confirmed
+the same way §35/§36 already confirmed no `VK_DYNAMIC_STATE_VIEWPORT`
+precedent exists (`grep -r VK_DYNAMIC_STATE`, zero hits outside
+`third_party/`). Adding a `transparent` parameter to `VulkanPipeline::
+create()` and instantiating a second `transparentPipeline_` matches that
+existing pattern rather than introducing dynamic blend state as a new
+one. `resizeSceneTarget()` (§36) has to recreate it alongside
+`pipeline_`/`skyboxPipeline_` for the same reason all three exist:
+they all bake a `VkViewport` against `sceneColorTarget_`'s extent.
+
+**Depth test stays on; only depth *write* turns off.** A transparent
+draw still needs to be occluded by opaque geometry in front of it
+(depth test on), but must not occlude *other* transparent instances via
+the depth buffer the way opaque draws do (depth write off) - correctness
+between transparent instances relies entirely on draw order (the sort)
+instead. This is the standard transparency pipeline convention, not
+something specific to this codebase.
+
+**`material.albedo.a` was always there, just discarded.**
+`MaterialPushConstants::albedo` was already a `vec4`, with `.a`
+documented as simply "unused" since Phase 8 milestone 1 -
+`triangle.frag` hardcoded `outColor = vec4(color, 1.0)` regardless of
+what the push constant carried. Wiring `.a` through to the actual output
+alpha is necessary plumbing for transparency to mean anything at all
+(without it, `transparentPipeline_`'s blend state would have nothing to
+blend with - source alpha would always read as 1.0, fully opaque
+regardless of `gridAlpha()`), not itself part of "the shading model" -
+no refraction, IOR, or subsurface approximation was added here.
+
+**One shared toggle, not per-instance.** `gridAlpha()` drives the whole
+grid *and* the projectile together, matching the existing single-shared-
+`Material` architecture (`material_` bound by both `descriptor_` and
+`projectileDescriptor_`). The projectile is drawn via a single direct
+`vkCmdDrawIndexed` (not part of the sorted indirect buckets) and always
+issued after the grid loop regardless of its own distance - its blend
+order relative to the grid is a known, accepted gap this pass doesn't
+address, the same "explicitly out of scope" treatment given to mixed
+opaque+transparent scenes and the actual jelly/glass shading model.
+
+**Verification.** Rebuilt with all 3 new/changed shaders compiling
+cleanly (`culling.comp`, `triangle.frag`, the new `sortInstances.comp`),
+confirmed the default (`gridAlpha_ = 1.0`) case renders byte-identically
+to before (same brick-textured grid, no visible change) - the whole
+transparent path is unreachable at the default, by construction, so
+there's no risk of regressing existing behavior. Then temporarily forced
+`gridAlpha_ = 0.4` and screenshotted: correct translucent rendering with
+the sort enabled (could see through nearer instances to farther ones,
+coherently). With the sort disabled, the app still ran without
+crash/corruption - the bucket-level ordering alone already gives a
+reasonable approximation from the default camera framing, which is why
+the within-bucket sort's marginal visual effect wasn't dramatically
+obvious in a single static screenshot comparison; it's still the
+provably-necessary piece for the general case (an oblique angle looking
+along a row, or a denser/more-overlapping arrangement, would expose it
+more clearly). Both temporary overrides were reverted before committing.
+
+**Interview-relevant:** *"Why does sorting only 3 small buckets
+(≤343 elements total) need a real parallel sort algorithm instead of
+just reading them back to the CPU and using `std::sort`?"* - because
+this codebase's entire culling/LOD pipeline is deliberately GPU-driven:
+the CPU never reads back which instances passed culling or how many,
+only aggregate counts *after* the frame for the debug overlay (§11). A
+CPU-side sort would mean reading the compacted buffer back every frame
+before the draw that needs it - a GPU→CPU→GPU round trip and stall on
+every frame transparency is active, exactly the kind of synchronization
+this architecture has avoided everywhere else. A same-frame, GPU-side
+sort keeps the whole pipeline's data dependency chain on the GPU, which
+is also *why* it has to be a real (if simple) parallel algorithm rather
+than a single-threaded shader looping over the array - a workgroup with
+sequential logic would still be one GPU "thread" doing all the work,
+throwing away the parallelism a compute shader exists to provide.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -3075,6 +3224,14 @@ close this gap any more than the original flat one did.
   newly reachable. Mutual instance-vs-instance collision (§21/§30) is
   unaffected — it was never the concern this gap named, since it's driven
   by damped velocity impulses, not a single fast-moving projectile.
+- **Alpha blending + GPU-side transparency sort landed as of §43** —
+  `transparentPipeline_`, `sortInstances.comp`, and `gridAlpha()` exist,
+  proven with the shared brick material at reduced alpha. The actual
+  jelly/glass/liquid shading model (refraction, IOR, subsurface) that
+  motivated this work is still future work — this section only built the
+  ordering/blending infrastructure it will need. Mixed opaque+transparent
+  scenes and the projectile's blend order relative to the grid are also
+  explicitly out of scope (§43).
 
 ---
 
