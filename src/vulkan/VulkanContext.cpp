@@ -2,6 +2,8 @@
 #include "vulkan/resource/ObjLoader.h"
 #include "vulkan/pipeline/VulkanEnvCapturePipeline.h"
 #include "vulkan/pipeline/VulkanIrradiancePipeline.h"
+#include "vulkan/pipeline/VulkanPrefilterPipeline.h"
+#include "vulkan/pipeline/VulkanBRDFLutPipeline.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -145,25 +147,25 @@ void VulkanContext::initCore()
         sceneColorTarget_.extent()
     );
 
-    // IBL (see docs/TECHNICAL_NOTES.md §33/§34): must run here, not as a
-    // separate step after initCore() returns - it needs sceneRenderPass_/
-    // sceneColorTarget_ (just created above) for skyboxPipeline_, and
-    // pipeline_.create() right below now needs irradianceDescriptor_'s
-    // layout as its second descriptor set, so the whole bake has to
-    // complete before that call.
+    // IBL (see docs/TECHNICAL_NOTES.md §33/§34/§35): must run here, not
+    // as a separate step after initCore() returns - it needs
+    // sceneRenderPass_/sceneColorTarget_ (just created above) for
+    // skyboxPipeline_, and pipeline_.create() right below now needs
+    // iblDescriptor_'s layout as its second descriptor set, so the whole
+    // bake has to complete before that call.
     initEnvironment();
 
     // Geometry pipeline now targets the offscreen scene render pass, not
     // the swapchain's - the swapchain's renderPass_/framebuffer_ below are
     // used only to host the UI-stage pass (see FrameGraph::PassStage::UI).
     // Set 0 = descriptor_ (per-object material data), set 1 =
-    // irradianceDescriptor_ (ambient-lighting data, shared globally).
+    // iblDescriptor_ (ambient-lighting data, shared globally).
     pipeline_.create(
         device_.get(),
         sceneColorTarget_.extent(),
         sceneRenderPass_.get(),
         descriptor_.layout(),
-        irradianceDescriptor_.layout()
+        iblDescriptor_.layout()
     );
 
     framebuffer_.create(
@@ -195,14 +197,15 @@ void VulkanContext::initCore()
 }
 
 // =========================================================
-// IBL Milestones 1-2 (see docs/TECHNICAL_NOTES.md §33/§34): environment
-// cubemap + procedural sky bake + skybox pipeline (M1), then a diffuse
-// irradiance cubemap convolved from the just-baked environment (M2).
-// Both bakes run once at startup, not per-frame - the sky (and its
-// convolved irradiance) are a pure function of lightDirection_ at this
-// point in time, so a later live change to the light direction (the
-// "Lighting" ImGui window) will not move the sun in the skybox or update
-// the ambient term, an accepted limitation carried over from M1.
+// IBL Milestones 1-3 (see docs/TECHNICAL_NOTES.md §33/§34/§35):
+// environment cubemap + procedural sky bake + skybox pipeline (M1), a
+// diffuse irradiance cubemap convolved from the environment (M2), and a
+// GGX-importance-sampled specular prefilter + BRDF integration LUT (M3,
+// Karis's split-sum specular IBL approximation). All four bakes run once
+// at startup, not per-frame - they're pure functions of lightDirection_
+// at this point in time, so a later live change to the light direction
+// (the "Lighting" ImGui window) will not move the sun in the skybox or
+// update the ambient term, an accepted limitation carried over from M1.
 // =========================================================
 void VulkanContext::initEnvironment()
 {
@@ -227,13 +230,15 @@ void VulkanContext::initEnvironment()
     );
 
     // Locally-scoped bake resources - created, used, destroyed within
-    // this function; only environmentCubemap_/irradianceCubemap_ (and the
-    // persistent skyboxDescriptor_/irradianceDescriptor_/skyboxPipeline_
-    // created at the end) survive it. One render pass, reused for both
-    // bakes - a VkRenderPass encodes attachment format/structure only,
-    // not extent, so the same color-only/no-depth shape backs both the
-    // 512^2 environment bake and the 32^2 irradiance bake below (via two
-    // different framebuffers).
+    // this function; only environmentCubemap_/irradianceCubemap_/
+    // prefilteredCubemap_/brdfLut_ (and the persistent
+    // skyboxDescriptor_/iblDescriptor_/skyboxPipeline_ created at the
+    // end) survive it. One render pass, reused for three bakes - a
+    // VkRenderPass encodes attachment format/structure only, not extent,
+    // so the same color-only/no-depth shape backs the 512^2 environment
+    // bake, the 32^2 irradiance bake, and the 128^2..8^2 prefilter mip
+    // chain below (via several different framebuffers; the BRDF LUT
+    // bake needs its own render pass, different format).
     VulkanRenderPass captureRenderPass;
     captureRenderPass.createColorOnly(device_.get(), kEnvFormat);
 
@@ -419,6 +424,149 @@ void VulkanContext::initEnvironment()
         0, 0, nullptr, 0, nullptr, 1, &irrBarrier
     );
 
+    // --- IBL Milestone 3: specular prefilter, same command buffer,
+    // right after the irradiance bake it doesn't depend on but shares
+    // captureRenderPass/skyboxDescriptor_/the capture-direction table
+    // with. 5 mips (roughness 0.0/0.25/0.5/0.75/1.0), one
+    // VulkanPrefilterPipeline per mip since every pipeline class in this
+    // codebase bakes a static viewport at creation time (no dynamic-
+    // viewport-state precedent exists to reuse instead). ---
+    constexpr uint32_t kPrefilterMipLevels    = 5;
+    constexpr uint32_t kPrefilterBaseFaceSize = 128;
+
+    prefilteredCubemap_.create(
+        device_.getPhysical(), device_.get(), kPrefilterBaseFaceSize, kEnvFormat,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        kPrefilterMipLevels
+    );
+
+    std::vector<VulkanFramebuffer> prefilterFramebuffers(kPrefilterMipLevels);
+    std::vector<VulkanPrefilterPipeline> prefilterPipelines(kPrefilterMipLevels);
+
+    for (uint32_t mip = 0; mip < kPrefilterMipLevels; mip++)
+    {
+        uint32_t mipFaceSize = kPrefilterBaseFaceSize >> mip;
+        VkExtent2D mipExtent{ mipFaceSize, mipFaceSize };
+
+        std::vector<VkImageView> mipFaceViews;
+        for (int face = 0; face < 6; face++)
+            mipFaceViews.push_back(prefilteredCubemap_.faceView(face, mip));
+
+        prefilterFramebuffers[mip].createColorOnly(device_.get(), captureRenderPass.get(), mipFaceViews, mipExtent);
+        prefilterPipelines[mip].create(device_.get(), mipExtent, captureRenderPass.get(), skyboxDescriptor_.layout());
+
+        float roughness = float(mip) / float(kPrefilterMipLevels - 1);
+
+        for (int face = 0; face < 6; face++)
+        {
+            glm::mat4 captureView = glm::lookAt(glm::vec3(0.0f), kCaptureForward[face], kCaptureUp[face]);
+
+            PrefilterPushConstants pc{};
+            pc.invViewProj = glm::inverse(captureProj * captureView);
+            pc.cameraPos   = glm::vec4(0.0f);
+            pc.roughness   = roughness;
+
+            VkClearValue clearValue{};
+            clearValue.color = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+            VkRenderPassBeginInfo rp{};
+            rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            rp.renderPass = captureRenderPass.get();
+            rp.framebuffer = prefilterFramebuffers[mip].get()[face];
+            rp.renderArea.offset = {0, 0};
+            rp.renderArea.extent = mipExtent;
+            rp.clearValueCount = 1;
+            rp.pClearValues = &clearValue;
+
+            vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, prefilterPipelines[mip].get());
+            VkDescriptorSet prefilterEnvDs = skyboxDescriptor_.set();
+            vkCmdBindDescriptorSets(
+                cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, prefilterPipelines[mip].layout(),
+                0, 1, &prefilterEnvDs, 0, nullptr
+            );
+            vkCmdPushConstants(
+                cmd, prefilterPipelines[mip].layout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+                0, sizeof(PrefilterPushConstants), &pc
+            );
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+
+            vkCmdEndRenderPass(cmd);
+        }
+    }
+
+    VkImageMemoryBarrier prefilterBarrier = barrier;
+    prefilterBarrier.image                       = prefilteredCubemap_.image();
+    prefilterBarrier.subresourceRange.levelCount  = kPrefilterMipLevels;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &prefilterBarrier
+    );
+
+    // --- IBL Milestone 3: BRDF integration LUT, same command buffer.
+    // Zero dependency on anything else baked here (a pure function of
+    // UV, no texture input) - ordered last purely for readability.
+    // Different format than the HDR cubemaps, so it needs its own
+    // VulkanRenderPass (can't reuse captureRenderPass). ---
+    constexpr uint32_t kBrdfLutSize = 512;
+    constexpr VkFormat kBrdfLutFormat = VK_FORMAT_R16G16_SFLOAT;
+
+    brdfLut_.create(
+        device_.getPhysical(), device_.get(), kBrdfLutSize, kBrdfLutFormat,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    );
+
+    VulkanRenderPass brdfRenderPass;
+    brdfRenderPass.createColorOnly(device_.get(), kBrdfLutFormat);
+
+    VkExtent2D brdfExtent{ kBrdfLutSize, kBrdfLutSize };
+    VulkanFramebuffer brdfFramebuffer;
+    brdfFramebuffer.createColorOnly(device_.get(), brdfRenderPass.get(), { brdfLut_.view() }, brdfExtent);
+
+    VulkanBRDFLutPipeline brdfPipeline;
+    brdfPipeline.create(device_.get(), brdfExtent, brdfRenderPass.get());
+
+    VkClearValue brdfClear{};
+    brdfClear.color = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+    VkRenderPassBeginInfo brdfRp{};
+    brdfRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    brdfRp.renderPass = brdfRenderPass.get();
+    brdfRp.framebuffer = brdfFramebuffer.get()[0];
+    brdfRp.renderArea.offset = {0, 0};
+    brdfRp.renderArea.extent = brdfExtent;
+    brdfRp.clearValueCount = 1;
+    brdfRp.pClearValues = &brdfClear;
+
+    vkCmdBeginRenderPass(cmd, &brdfRp, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, brdfPipeline.get());
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
+
+    VkImageMemoryBarrier brdfBarrier{};
+    brdfBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    brdfBarrier.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    brdfBarrier.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    brdfBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    brdfBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    brdfBarrier.image               = brdfLut_.image();
+    brdfBarrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    brdfBarrier.subresourceRange.baseMipLevel   = 0;
+    brdfBarrier.subresourceRange.levelCount     = 1;
+    brdfBarrier.subresourceRange.baseArrayLayer = 0;
+    brdfBarrier.subresourceRange.layerCount     = 1;
+    brdfBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    brdfBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &brdfBarrier
+    );
+
     vkEndCommandBuffer(cmd);
 
     VkSubmitInfo submitInfo{};
@@ -433,12 +581,26 @@ void VulkanContext::initEnvironment()
 
     irradiancePipeline.destroy(device_.get());
     irradianceFramebuffer.destroy(device_.get());
+    for (uint32_t mip = 0; mip < kPrefilterMipLevels; mip++)
+    {
+        prefilterPipelines[mip].destroy(device_.get());
+        prefilterFramebuffers[mip].destroy(device_.get());
+    }
+    brdfPipeline.destroy(device_.get());
+    brdfFramebuffer.destroy(device_.get());
+    brdfRenderPass.destroy(device_.get());
     capturePipeline.destroy(device_.get());
     captureFramebuffer.destroy(device_.get());
     captureRenderPass.destroy(device_.get());
 
-    irradianceDescriptor_.create(
-        device_.get(), irradianceCubemap_.cubeView(), irradianceCubemap_.sampler()
+    // Bundles all three ambient-lighting textures (irradiance + M2,
+    // prefiltered specular + BRDF LUT + M3) into one 3-binding set,
+    // bound as descriptor set 1 on the main graphics pipeline.
+    iblDescriptor_.create(
+        device_.get(),
+        irradianceCubemap_.cubeView(), irradianceCubemap_.sampler(),
+        prefilteredCubemap_.cubeView(), prefilteredCubemap_.sampler(),
+        brdfLut_.view(), brdfLut_.sampler()
     );
 
     // Persistent skybox pipeline - sampled every frame by GeometryPass's
@@ -448,7 +610,7 @@ void VulkanContext::initEnvironment()
         device_.get(), sceneColorTarget_.extent(), sceneRenderPass_.get(), skyboxDescriptor_.layout()
     );
 
-    std::cout << "[VulkanContext] IBL: environment cubemap + diffuse irradiance baked, skybox pipeline ready\n";
+    std::cout << "[VulkanContext] IBL: environment + diffuse irradiance + specular prefilter + BRDF LUT baked, skybox pipeline ready\n";
 }
 
 // =========================================================
@@ -936,7 +1098,9 @@ void VulkanContext::cleanup()
     clusterVisibleLightBuffer_.destroy(device_.get());
 
     skyboxPipeline_.destroy(device_.get());
-    irradianceDescriptor_.destroy(device_.get());
+    iblDescriptor_.destroy(device_.get());
+    brdfLut_.destroy(device_.get());
+    prefilteredCubemap_.destroy(device_.get());
     irradianceCubemap_.destroy(device_.get());
     skyboxDescriptor_.destroy(device_.get());
     environmentCubemap_.destroy(device_.get());

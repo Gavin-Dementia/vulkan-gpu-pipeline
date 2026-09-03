@@ -30,11 +30,14 @@ layout(binding = 4) uniform sampler2D normalMap;
 layout(binding = 5) uniform sampler2D metallicRoughnessMap;
 layout(binding = 6) uniform sampler2D aoMap;
 
-// IBL Milestone 2 (see docs/TECHNICAL_NOTES.md §34): ambient-lighting
-// data, shared globally rather than per-material, so it lives in its own
-// descriptor set (set 1) instead of growing the material set above (set
-// 0, implicit). Diffuse-only for now - specular IBL is Milestone 3.
+// IBL Milestones 2-3 (see docs/TECHNICAL_NOTES.md §34/§35): ambient-
+// lighting data, shared globally rather than per-material, so it lives
+// in its own descriptor set (set 1) instead of growing the material set
+// above (set 0, implicit). irradianceMap = diffuse (M2); prefilteredMap
+// + brdfLUT together = specular, Karis's split-sum approximation (M3).
 layout(set = 1, binding = 0) uniform samplerCube irradianceMap;
+layout(set = 1, binding = 1) uniform samplerCube prefilteredMap;
+layout(set = 1, binding = 2) uniform sampler2D brdfLUT;
 
 layout(push_constant) uniform MaterialPushConstants {
     vec4 albedo;             // rgb used, a unused
@@ -73,6 +76,22 @@ float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
 vec3 fresnelSchlick(float cosTheta, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Roughness-aware Fresnel for ambient/IBL use (Sébastien Lagarde's
+// variant, standard in split-sum IBL implementations) - the plain
+// fresnelSchlick() above is only meaningful for a single incident
+// direction (the direct light term below uses dot(H,V)); ambient light
+// arrives from every direction, and a rough surface's Fresnel edge
+// brightening is less pronounced than a smooth one's, which this clamps
+// for via max(vec3(1.0-roughness), F0) instead of a flat vec3(1.0).
+// IBL Milestone 3 (see docs/TECHNICAL_NOTES.md §35) - M2 originally used
+// plain fresnelSchlick(NdotV, F0) for the ambient term as a staged
+// simplification; this upgrade was predicted in §34 and applies to both
+// the diffuse and specular ambient terms below, not just the new one.
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 // Derivative-based tangent frame ("normal mapping without precomputed
@@ -196,20 +215,35 @@ void main()
     vec3 radiance = scene.lightColor.rgb * scene.lightColor.a;
     vec3 Lo = (kD * finalAlbedo / PI + specular) * radiance * NdotL * shadow;
 
-    // IBL Milestone 2 (see docs/TECHNICAL_NOTES.md §34): diffuse-only
-    // image-based ambient, replacing the old flat 0.03*albedo*ao term.
-    // Ambient-specific Fresnel uses NdotV, not dot(H,V) - H is undefined
-    // here, there's no single incident light direction for ambient the
-    // way there is for the direct term above. Specular IBL (prefiltered
-    // environment + BRDF LUT split-sum) is explicitly Milestone 3, not
-    // computed here - only the diffuse half of the split-sum exists.
-    // AO occludes this term only, same "don't touch the shadowed direct
-    // term" precedent calcShadow() already set for the shadow map.
-    vec3 kS_ambient = fresnelSchlick(NdotV, F0);
+    // IBL Milestones 2-3 (see docs/TECHNICAL_NOTES.md §34/§35): full
+    // split-sum image-based ambient (diffuse + specular), replacing the
+    // old flat 0.03*albedo*ao term. Ambient-specific Fresnel uses NdotV,
+    // not dot(H,V) - H is undefined here, there's no single incident
+    // light direction for ambient the way there is for the direct term
+    // above - and is roughness-aware (fresnelSchlickRoughness, not the
+    // direct term's plain fresnelSchlick), used for both halves below.
+    vec3 kS_ambient = fresnelSchlickRoughness(NdotV, F0, roughness);
     vec3 kD_ambient = (vec3(1.0) - kS_ambient) * (1.0 - metallic);
     vec3 irradiance = texture(irradianceMap, N).rgb;
     vec3 diffuseIBL = kD_ambient * irradiance * finalAlbedo;
-    vec3 ambient = diffuseIBL * ao;
+
+    // Specular half (Milestone 3): prefilteredMap's mip chosen by
+    // roughness (mip 0 = mirror-sharp, mip 4 = fully rough - trilinear
+    // filtering blends fractional levels), combined with the BRDF LUT's
+    // precomputed (scale, bias) pair - Karis's split-sum approximation.
+    vec3 R = reflect(-V, N);
+    const float MAX_REFLECTION_LOD = 4.0; // prefilteredCubemap_'s mipLevels-1 (5-1) - see VulkanContext::initEnvironment()
+    vec3 prefilteredColor = textureLod(prefilteredMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+    vec2 envBRDF = texture(brdfLUT, vec2(NdotV, roughness)).rg;
+    vec3 specularIBL = prefilteredColor * (kS_ambient * envBRDF.x + envBRDF.y);
+
+    // AO occludes the combined ambient sum, not just the diffuse half -
+    // same "don't touch the shadowed direct term" precedent calcShadow()
+    // already set for the shadow map, generalized: AO is a general
+    // occlusion factor for indirect light reaching a point, with no
+    // principled reason to darken diffuse ambient in a crevice but leave
+    // a full-brightness specular highlight there.
+    vec3 ambient = (diffuseIBL + specularIBL) * ao;
     vec3 color = ambient + Lo;
 
     // Reinhard tonemap only - no pow(color, 1/2.2) gamma step. The swapchain

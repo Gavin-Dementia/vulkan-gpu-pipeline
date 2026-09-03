@@ -581,9 +581,9 @@ manually-tuned pair of numbers, just now a resolution/FOV-independent one.
 
 ---
 
-## Phase 15 — Image-Based Lighting, Milestone 1: Cubemap Infra + Procedural Sky
+## Phase 15 — Image-Based Lighting
 
-**Status: Milestones 1-2 of 3 complete**
+**Status: Complete (Milestones 1-3 of 3)**
 
 Full IBL (diffuse irradiance convolution + specular prefilter/BRDF LUT)
 was requested but explicitly staged across multiple milestones rather
@@ -634,13 +634,41 @@ term (see `TECHNICAL_NOTES.md` §34):
   Fresnel split since there's no single incident direction for ambient)
   - specular IBL is still not computed.
 
-Not yet done: Milestone 3 (specular prefilter + BRDF LUT split-sum,
-adding the specular half of the ambient term) - will read
-`environmentCubemap_` again, and needs `VulkanCubemap` extended for a
-roughness-indexed mip chain (currently single-mip only). Also still not
-done: re-baking on a live light-direction change (both the skybox and
-the irradiance term are baked once from whatever `lightDirection_` is at
-startup).
+**Milestone 3** — specular prefilter + BRDF LUT, Karis's split-sum
+specular IBL approximation, completing the ambient term (see
+`TECHNICAL_NOTES.md` §35):
+
+- `VulkanCubemap` gained mip-chain support (backward-compatible -
+  `mipLevels` defaults to 1, M1/M2's cubemaps unchanged). Fixed a real,
+  previously-silent sampler bug in the process: `minLod`/`maxLod` were
+  never set, which clamps every sampled LOD to 0 regardless of what a
+  shader requests - harmless at 1 mip, would have been a real bug the
+  moment a multi-mip cubemap was sampled.
+- `prefilteredCubemap_` (5 mips, 128×128 down to 8×8, roughness
+  0.0/0.25/0.5/0.75/1.0) baked via `shaders/prefilterEnv.frag`
+  (GGX-importance-sampled, Karis/Epic's reference technique) - 5
+  short-lived `VulkanPrefilterPipeline` instances, one per mip (this
+  codebase has no dynamic-viewport-state precedent to use instead).
+- `brdfLut_` (new `VulkanBRDFLut` class, a 512×512 2D texture, not a
+  cubemap) baked via `shaders/brdfLUT.frag` - a pure function of
+  `(NdotV, roughness)`, needing no descriptor set or push constant at
+  all, unlike every other bake in this codebase.
+- `IBLDescriptor` (new, 3 bindings: irradiance/prefiltered/BRDF LUT)
+  replaces the single-binding `irradianceDescriptor_` as the main
+  pipeline's set 1.
+- `triangle.frag` gained the specular IBL term and upgraded its ambient
+  Fresnel to the roughness-aware `fresnelSchlickRoughness` (used by both
+  the diffuse and specular halves) - a refinement `TECHNICAL_NOTES.md`
+  §34 had already predicted, not scope creep.
+- Real bake cost, not hand-waved: prefilter ≈134.1M texture samples,
+  BRDF LUT ≈268M ALU-only iterations, on top of §34's 97.5M irradiance
+  samples - a real, multi-hundred-millisecond one-time startup cost,
+  flagged explicitly rather than assumed negligible.
+
+Not yet done: re-baking on a live light-direction change - the skybox,
+irradiance, and specular prefilter are all baked once from whatever
+`lightDirection_` is at startup (the BRDF LUT itself doesn't depend on
+light direction at all, so this doesn't apply to it).
 
 ---
 
@@ -661,12 +689,6 @@ startup).
   checks position once per frame; not observable at the current
   speed/instance-radius ratio, but would need revisiting for a much
   faster projectile or much smaller instances (§20)
-- **IBL / environment lighting, Milestone 3 (specular)** — the ambient
-  term's diffuse half is real image-based lighting as of Phase 15
-  Milestone 2; the specular half is still not computed (no prefiltered
-  environment mip chain, no BRDF LUT split-sum), so rough/metallic
-  surfaces don't yet show environment reflections/highlights outside the
-  single direct light.
 - **LOD thresholds not derived from per-mesh detail level** (Phase 12
   made them runtime-tunable data, Phase 14 made them screen-space-size-
   based instead of world-space-distance-based, but they're still one

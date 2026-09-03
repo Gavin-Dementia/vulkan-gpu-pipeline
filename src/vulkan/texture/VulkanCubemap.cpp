@@ -6,13 +6,15 @@ void VulkanCubemap::create(
     VkDevice device,
     uint32_t faceSize,
     VkFormat format,
-    VkImageUsageFlags usage)
+    VkImageUsageFlags usage,
+    uint32_t mipLevels)
 {
     faceSize_ = faceSize;
+    mipLevels_ = mipLevels;
 
     // No staging buffer/upload here, unlike VulkanTexture - the image
-    // starts UNDEFINED and is filled entirely by whatever render pass
-    // bakes content into its 6 face views (see initEnvironment() in
+    // starts UNDEFINED and is filled entirely by whatever render pass(es)
+    // bake content into its face views (see initEnvironment() in
     // VulkanContext.cpp).
     VkImageCreateInfo imageInfo{};
     imageInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -20,7 +22,7 @@ void VulkanCubemap::create(
     imageInfo.imageType     = VK_IMAGE_TYPE_2D;
     imageInfo.format        = format;
     imageInfo.extent        = { faceSize, faceSize, 1 };
-    imageInfo.mipLevels     = 1;
+    imageInfo.mipLevels     = mipLevels_;
     imageInfo.arrayLayers   = 6;
     imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
@@ -43,7 +45,8 @@ void VulkanCubemap::create(
 
     vkBindImageMemory(device, image_, memory_, 0);
 
-    // Cube view - all 6 layers, for sampling as samplerCube.
+    // Cube view - all 6 layers, all mip levels, for sampling as
+    // samplerCube (mip selection via textureLod() in the shader).
     VkImageViewCreateInfo cubeViewInfo{};
     cubeViewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     cubeViewInfo.image                           = image_;
@@ -51,29 +54,34 @@ void VulkanCubemap::create(
     cubeViewInfo.format                          = format;
     cubeViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
     cubeViewInfo.subresourceRange.baseMipLevel   = 0;
-    cubeViewInfo.subresourceRange.levelCount     = 1;
+    cubeViewInfo.subresourceRange.levelCount     = mipLevels_;
     cubeViewInfo.subresourceRange.baseArrayLayer = 0;
     cubeViewInfo.subresourceRange.layerCount     = 6;
 
     if (vkCreateImageView(device, &cubeViewInfo, nullptr, &cubeView_) != VK_SUCCESS)
         throw std::runtime_error("Failed to create cubemap cube view");
 
-    // 6 face views - one array layer each, for render-pass attachments.
-    for (uint32_t i = 0; i < 6; i++)
+    // Per-(mip,face) views - one array layer, one mip level each, for
+    // render-pass attachments when baking one mip level at a time.
+    faceViews_.resize(mipLevels_);
+    for (uint32_t mip = 0; mip < mipLevels_; mip++)
     {
-        VkImageViewCreateInfo faceViewInfo{};
-        faceViewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        faceViewInfo.image                           = image_;
-        faceViewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
-        faceViewInfo.format                          = format;
-        faceViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-        faceViewInfo.subresourceRange.baseMipLevel   = 0;
-        faceViewInfo.subresourceRange.levelCount     = 1;
-        faceViewInfo.subresourceRange.baseArrayLayer = i;
-        faceViewInfo.subresourceRange.layerCount     = 1;
+        for (uint32_t face = 0; face < 6; face++)
+        {
+            VkImageViewCreateInfo faceViewInfo{};
+            faceViewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            faceViewInfo.image                           = image_;
+            faceViewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+            faceViewInfo.format                          = format;
+            faceViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+            faceViewInfo.subresourceRange.baseMipLevel   = mip;
+            faceViewInfo.subresourceRange.levelCount     = 1;
+            faceViewInfo.subresourceRange.baseArrayLayer = face;
+            faceViewInfo.subresourceRange.layerCount     = 1;
 
-        if (vkCreateImageView(device, &faceViewInfo, nullptr, &faceViews_[i]) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create cubemap face view");
+            if (vkCreateImageView(device, &faceViewInfo, nullptr, &faceViews_[mip][face]) != VK_SUCCESS)
+                throw std::runtime_error("Failed to create cubemap face view");
+        }
     }
 
     // CLAMP_TO_EDGE on all 3 axes - REPEAT (VulkanTexture's default) is
@@ -92,6 +100,14 @@ void VulkanCubemap::create(
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp     = VK_COMPARE_OP_ALWAYS;
     samplerInfo.mipmapMode    = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    // minLod/maxLod: left unset (VkSamplerCreateInfo{} zero-inits both to
+    // 0.0), every sampled LOD would clamp into [0,0] regardless of what a
+    // shader's textureLod() requests - silently harmless at mipLevels=1,
+    // a real bug the moment a multi-mip cubemap (prefilteredCubemap_,
+    // IBL Milestone 3) is sampled with a nonzero level. See
+    // docs/TECHNICAL_NOTES.md §35.
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = static_cast<float>(mipLevels_ - 1);
 
     if (vkCreateSampler(device, &samplerInfo, nullptr, &sampler_) != VK_SUCCESS)
         throw std::runtime_error("Failed to create cubemap sampler");
@@ -100,8 +116,9 @@ void VulkanCubemap::create(
 void VulkanCubemap::destroy(VkDevice device)
 {
     vkDestroySampler(device, sampler_, nullptr);
-    for (auto view : faceViews_)
-        vkDestroyImageView(device, view, nullptr);
+    for (auto& mipViews : faceViews_)
+        for (auto view : mipViews)
+            vkDestroyImageView(device, view, nullptr);
     vkDestroyImageView(device, cubeView_, nullptr);
     vkDestroyImage(device, image_, nullptr);
     vkFreeMemory(device, memory_, nullptr);

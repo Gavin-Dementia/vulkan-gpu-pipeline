@@ -281,12 +281,13 @@ void FrameRenderer::init(VulkanContext& ctx)
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
 
-            // IBL Milestone 2 (see docs/TECHNICAL_NOTES.md §34): set 1,
-            // ambient-lighting data shared by every material - bound once
+            // IBL Milestones 2-3 (see docs/TECHNICAL_NOTES.md §34/§35):
+            // set 1, ambient-lighting data (diffuse irradiance + specular
+            // prefilter + BRDF LUT) shared by every material - bound once
             // per frame here, stays bound across the grid's and
             // projectile's later set-0-only rebinds below (Vulkan's
             // descriptor-set binding-persistence rule).
-            VkDescriptorSet iblDs = context->irradianceDescriptor().set();
+            VkDescriptorSet iblDs = context->iblDescriptor().set();
             vkCmdBindDescriptorSets(
                 cmd,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,

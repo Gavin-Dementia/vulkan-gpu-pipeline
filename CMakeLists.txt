@@ -64,6 +64,8 @@ set(SHADER_SRC
     ${CMAKE_SOURCE_DIR}/shaders/envCapture.frag
     ${CMAKE_SOURCE_DIR}/shaders/skybox.frag
     ${CMAKE_SOURCE_DIR}/shaders/irradianceConvolve.frag
+    ${CMAKE_SOURCE_DIR}/shaders/prefilterEnv.frag
+    ${CMAKE_SOURCE_DIR}/shaders/brdfLUT.frag
 )
 
 set(SHADER_OUT_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/compiled)
@@ -133,6 +135,7 @@ set(VULKAN_DESCRIPTOR_SRC
     src/vulkan/descriptor/VulkanDescriptor.cpp
     src/vulkan/descriptor/ComputeDescriptor.cpp
     src/vulkan/descriptor/CubeSamplerDescriptor.cpp
+    src/vulkan/descriptor/IBLDescriptor.cpp
 )
 
 set(VULKAN_FRAME_SRC
@@ -148,6 +151,8 @@ set(VULKAN_PIPELINE_SRC
     src/vulkan/pipeline/VulkanEnvCapturePipeline.cpp
     src/vulkan/pipeline/VulkanSkyboxPipeline.cpp
     src/vulkan/pipeline/VulkanIrradiancePipeline.cpp
+    src/vulkan/pipeline/VulkanPrefilterPipeline.cpp
+    src/vulkan/pipeline/VulkanBRDFLutPipeline.cpp
 )
 
 set(VULKAN_RESOURCE_SRC
@@ -171,6 +176,7 @@ set(VULKAN_TEXTURE_SRC
     src/vulkan/texture/VulkanTexture.cpp
     src/vulkan/texture/Material.cpp
     src/vulkan/texture/VulkanCubemap.cpp
+    src/vulkan/texture/VulkanBRDFLut.cpp
 )
 
 # =========================================================

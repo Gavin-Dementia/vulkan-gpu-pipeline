@@ -235,20 +235,19 @@ Tunable at runtime via an ImGui "Lighting" window (direction/color/
 intensity/shadow-bias sliders) — `FrameRenderer`'s `ImGuiPass` lambda
 mutates `VulkanContext`'s light state directly.
 
-### Image-Based Lighting (Milestones 1-2: cubemap infra + procedural sky + diffuse irradiance)
+### Image-Based Lighting (Milestones 1-3: cubemap infra + procedural sky + diffuse irradiance + specular prefilter/BRDF LUT)
 
-Closes the diffuse half of the roadmap's "IBL / environment lighting"
-gap — staged across multiple milestones (see `TECHNICAL_NOTES.md`
-§33/§34). **Specular IBL is still not implemented** — that's Milestone 3
-(prefiltered environment mip chain + BRDF LUT split-sum), which will
-read the same `environmentCubemap_` these milestones built.
+Closes the roadmap's "IBL / environment lighting" gap entirely — staged
+across multiple milestones (see `TECHNICAL_NOTES.md` §33/§34/§35).
 
 - `VulkanCubemap` (`include/vulkan/texture/VulkanCubemap.h`) — this
   project's first cube image: one `VK_IMAGE_VIEW_TYPE_CUBE` view for
-  sampling (`samplerCube`) plus 6 `VK_IMAGE_VIEW_TYPE_2D` single-layer
-  views for use as render-pass color attachments (Vulkan render passes
-  attach 2D views per subresource, not cube views). Single mip level;
-  a later milestone baking a prefiltered specular chain will extend this.
+  sampling (`samplerCube`) plus, per mip level, 6 `VK_IMAGE_VIEW_TYPE_2D`
+  single-layer views for use as render-pass color attachments (Vulkan
+  render passes attach 2D views per subresource, not cube views).
+  `mipLevels` defaults to 1 (still what `environmentCubemap_`/
+  `irradianceCubemap_` use) but is a real parameter as of Milestone 3,
+  which extended it for `prefilteredCubemap_`'s 5-mip chain.
 - `VulkanContext::initEnvironment()` — called right after `initCore()`,
   before `initSceneData()`/`initCullingResources()`. Creates the
   persistent `environmentCubemap_` (512×512/face,
@@ -287,30 +286,59 @@ read the same `environmentCubemap_` these milestones built.
   standard cosine-weighted hemisphere Riemann-sum integral), reusing the
   `inverse(viewProj)` direction-reconstruction technique and the same
   6-face capture table Milestone 1 already established.
-- Both bakes now share **one command buffer, one submit**: 6
-  environment-capture draws → a memory barrier → 6 irradiance-convolution
-  draws (sampling the just-baked `environmentCubemap_` through
-  `skyboxDescriptor_`) → a second barrier → submit. `initEnvironment()`'s
-  call site moved from after `initCore()` to inside it (right after
+- All bakes share **one command buffer, one submit** (extended further
+  by Milestone 3 below): 6 environment-capture draws → a memory barrier
+  → 6 irradiance-convolution draws (sampling the just-baked
+  `environmentCubemap_` through `skyboxDescriptor_`) → a second barrier
+  → 30 specular-prefilter draws (5 mips × 6 faces) → a barrier → 1 BRDF
+  LUT draw → a barrier → submit. `initEnvironment()`'s call site moved
+  from after `initCore()` to inside it (right after
   `sceneFramebuffer_.create()`, before `pipeline_.create()`) since
-  `pipeline_.create()` now needs `irradianceDescriptor_`'s layout.
+  `pipeline_.create()` needs `iblDescriptor_`'s layout.
 - `SkyboxDescriptor` renamed to `CubeSamplerDescriptor` (its shape was
-  always generic — one combined-image-sampler binding — and this
-  milestone gave it a second real use site: the irradiance bake's input,
-  reusing the same `skyboxDescriptor_` instance, plus a new
-  `irradianceDescriptor_` instance).
+  always generic — one combined-image-sampler binding — reused for the
+  live skybox draw, the irradiance-bake input, and the prefilter-bake
+  input, all bound to `environmentCubemap_` via the same
+  `skyboxDescriptor_` instance where applicable).
 - `VulkanPipeline` grew a **second descriptor set** — this codebase's
   first multi-set pipeline layout. Set 0 = `descriptor_`/
   `projectileDescriptor_`'s existing material data; set 1 =
-  `irradianceDescriptor_`, ambient-lighting data shared by every
-  material (scene-wide, not per-object), bound once per frame in
-  `GeometryPass` and left bound across the grid→projectile set-0 switch
-  (Vulkan's descriptor-set binding-persistence rule). `VulkanDescriptor`
-  itself needed zero changes.
-- `triangle.frag`'s ambient term is now real diffuse IBL:
-  `kD_ambient * irradiance * finalAlbedo * ao`, with an `NdotV`-based
-  Fresnel split (not `dot(H,V)` — there's no single incident direction
-  for ambient). The specular half of the split-sum is not computed.
+  `iblDescriptor_`, ambient-lighting data shared by every material
+  (scene-wide, not per-object), bound once per frame in `GeometryPass`
+  and left bound across the grid→projectile set-0 switch (Vulkan's
+  descriptor-set binding-persistence rule). `VulkanDescriptor` itself
+  needed zero changes.
+
+**Milestone 3 (specular prefilter + BRDF LUT — Karis's split-sum
+approximation, completing the ambient term):**
+
+- `prefilteredCubemap_` (5 mips, 128×128 down to 8×8, roughness
+  0.0/0.25/0.5/0.75/1.0) baked by 5 short-lived `VulkanPrefilterPipeline`
+  instances (one per mip — this codebase has no dynamic-viewport-state
+  precedent, every pipeline class bakes a static viewport) +
+  `shaders/prefilterEnv.frag` (GGX-importance-sampled, `N=V=R`
+  simplifying assumption).
+- `VulkanBRDFLut` (`include/vulkan/texture/VulkanBRDFLut.h`, new) — a
+  single 2D image+view+sampler (`R16G16_SFLOAT`, 512×512), baked by
+  `VulkanBRDFLutPipeline` + `shaders/brdfLUT.frag`: a pure function of
+  `(NdotV, roughness)`, needing no descriptor set or push constant at
+  all (unlike every other bake here). Uses its own IBL-specific
+  Schlick-GGX `k = roughness²/2`, deliberately different from
+  `triangle.frag`'s direct-light `k = (roughness+1)²/8`.
+- `IBLDescriptor` (`include/vulkan/descriptor/IBLDescriptor.h`, new, 3
+  bindings: irradiance cubemap / prefiltered cubemap / BRDF LUT)
+  replaces the single-binding `irradianceDescriptor_` as `pipeline_`'s
+  set 1 entirely.
+- `VulkanCubemap` fixed a real, previously-silent sampler bug in the
+  process of gaining mip support: `minLod`/`maxLod` were never set
+  (zero-initialized to 0), which clamps every sampled LOD to mip 0
+  regardless of what a shader requests — harmless at 1 mip, would have
+  been a real bug the moment `prefilteredCubemap_`'s 5 mips were sampled.
+- `triangle.frag` gained `prefilteredMap`/`brdfLUT` (set 1, bindings 1-2)
+  and a `specularIBL` term; upgraded `kS_ambient` from plain
+  `fresnelSchlick` to the roughness-aware `fresnelSchlickRoughness`
+  (used by both diffuse and specular ambient); `ambient =
+  (diffuseIBL + specularIBL) * ao`.
 
 ### Shadow mapping
 
@@ -723,9 +751,12 @@ Application
     │     Milestone 1 - baked-once procedural sky cubemap + the live
     │     skybox draw that samples it, see "Image-Based Lighting" module
     │     notes)
-    ├── irradianceCubemap_ / irradianceDescriptor_ (IBL Milestone 2 -
-    │     baked-once diffuse irradiance cubemap + the descriptor set
-    │     bound as pipeline_'s set 1; specular IBL still not implemented)
+    ├── irradianceCubemap_ (IBL Milestone 2 - baked-once diffuse
+    │     irradiance cubemap, see "Image-Based Lighting" module notes)
+    ├── prefilteredCubemap_ / brdfLut_ / iblDescriptor_ (IBL Milestone 3 -
+    │     baked-once specular-prefiltered mip-chain cubemap + BRDF LUT,
+    │     bundled with irradianceCubemap_ into the 3-binding
+    │     iblDescriptor_ bound as pipeline_'s set 1 - IBL is now complete)
     ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos,
     │     lightViewProj, shadow bias — bound at binding 2 on both descriptor_ and
     │     projectileDescriptor_, now also read by the vertex stage)
@@ -846,12 +877,13 @@ Graphics: GeometryPass
    draw skybox (fullscreen triangle, samples environmentCubemap_, depth
    test/write off - drawn first so the grid naturally overdraws it,
    see "Image-Based Lighting" module notes) →
-   bind pipeline_ → bind set 1 (irradianceDescriptor_, once - stays bound
-   for the rest of the pass) → push grid material constants → for each
-   LOD: bind set 0 (descriptor_), bind vertex/index/visible-instance
-   buffers, vkCmdDrawIndexedIndirect (GPU-supplied instance count,
-   fragment shader samples the shadow map for occlusion and
-   irradianceMap for diffuse ambient) →
+   bind pipeline_ → bind set 1 (iblDescriptor_: irradiance/prefiltered/
+   BRDF LUT, once - stays bound for the rest of the pass) → push grid
+   material constants → for each LOD: bind set 0 (descriptor_), bind
+   vertex/index/visible-instance buffers, vkCmdDrawIndexedIndirect
+   (GPU-supplied instance count, fragment shader samples the shadow map
+   for occlusion and irradianceMap/prefilteredMap/brdfLUT for full
+   split-sum ambient) →
    if projectile active: bind set 0 (projectileDescriptor_), push its own
    material constants, bind LOD2 mesh + its instance buffer,
    vkCmdDrawIndexed
