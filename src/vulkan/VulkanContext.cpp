@@ -985,30 +985,62 @@ void VulkanContext::updateInstanceSimulation(float deltaTime)
 
     if (projectile_.isActive())
     {
-        glm::vec3 projPos = projectile_.position();
+        // Swept (segment-vs-sphere), not a single end-of-frame point check
+        // (see docs/TECHNICAL_NOTES.md §41) - tests the whole path the
+        // projectile moved this frame, [previousPosition(), position()],
+        // against every instance's collision sphere, instead of only where
+        // it ended up. A large enough deltaTime/speed could otherwise let
+        // it move further in one frame than the hit radius, skipping clean
+        // over an instance without the old point check ever registering
+        // inside it.
+        glm::vec3 segStart = projectile_.previousPosition();
+        glm::vec3 segEnd   = projectile_.position();
+        glm::vec3 segDir   = segEnd - segStart;
+        float segLenSq = glm::dot(segDir, segDir);
         float hitDist = collisionRadius_ + kProjectileRadius;   // collision volume, not the render/culling radius
+
+        // Find the *earliest* hit along the segment, not just the first
+        // instance index that happens to overlap it - with a long enough
+        // sweep, more than one instance can be within hitDist of the path,
+        // and the projectile should stop at whichever it actually reaches
+        // first, not an arbitrary later one.
+        bool  hasHit = false;
+        float bestT  = 2.0f;   // sentinel above the [0,1] clamp range below
 
         for (uint32_t i = 0; i < OBJECT_COUNT; i++)
         {
-            if (glm::length(instanceCurrentPositions_[i] - projPos) < hitDist)
+            glm::vec3 toInstance = instanceCurrentPositions_[i] - segStart;
+            float t = segLenSq > 1e-8f
+                ? glm::clamp(glm::dot(toInstance, segDir) / segLenSq, 0.0f, 1.0f)
+                : 0.0f;
+            glm::vec3 closest = segStart + segDir * t;
+            if (glm::length(instanceCurrentPositions_[i] - closest) < hitDist && t < bestT)
             {
-                // Blast: radial push falling off with distance from the
-                // impact point, applied to every instance within range -
-                // not just the one instance that was actually touched.
-                for (uint32_t j = 0; j < OBJECT_COUNT; j++)
-                {
-                    glm::vec3 offset = instanceCurrentPositions_[j] - projPos;
-                    float dist = glm::length(offset);
-                    if (dist < kBlastRadius)
-                    {
-                        glm::vec3 dir = (dist > 0.001f) ? (offset / dist) : glm::vec3(0.0f, 1.0f, 0.0f);
-                        float falloff = 1.0f - (dist / kBlastRadius);
-                        instanceVelocities_[j] += dir * kImpulseStrength * falloff;
-                    }
-                }
-                projectile_.stop();
-                break;   // one explosion per flight
+                hasHit = true;
+                bestT  = t;
             }
+        }
+
+        if (hasHit)
+        {
+            // Blast: radial push falling off with distance from the actual
+            // impact point along the sweep (not wherever the projectile
+            // ended up this frame, which can be well past it for a fast-
+            // moving/large-deltaTime frame), applied to every instance
+            // within range - not just the one instance that was touched.
+            glm::vec3 impactPoint = segStart + segDir * bestT;
+            for (uint32_t j = 0; j < OBJECT_COUNT; j++)
+            {
+                glm::vec3 offset = instanceCurrentPositions_[j] - impactPoint;
+                float dist = glm::length(offset);
+                if (dist < kBlastRadius)
+                {
+                    glm::vec3 dir = (dist > 0.001f) ? (offset / dist) : glm::vec3(0.0f, 1.0f, 0.0f);
+                    float falloff = 1.0f - (dist / kBlastRadius);
+                    instanceVelocities_[j] += dir * kImpulseStrength * falloff;
+                }
+            }
+            projectile_.stop();
         }
     }
 

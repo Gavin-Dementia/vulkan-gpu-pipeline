@@ -13,6 +13,7 @@ void Projectile::update(float deltaTime)
 {
     if (!active_) return;
 
+    previousPosition_ = position_;
     position_ += direction_ * speed_ * deltaTime;
     elapsed_  += deltaTime;
 

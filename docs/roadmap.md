@@ -800,6 +800,43 @@ the full design.
 
 ---
 
+## Phase 19 — Swept Projectile Collision
+
+**Status: Complete**
+
+Closes the discrete-collision tradeoff §20 accepted as theoretical and
+§37 flagged as newly reachable once live-resize gave the frame loop a
+real stall source: the projectile's grid-impact test only checked its
+position once per frame, so a large enough `deltaTime`/speed could move
+it further in one frame than the hit radius, tunneling through an
+instance without the point check ever registering inside it. See
+`TECHNICAL_NOTES.md` §41 for the full design and a reproduced, then
+fixed, tunneling case.
+
+- `Projectile::previousPosition()` — the pre-move position, captured at
+  the top of `update()` before integrating this frame's movement.
+- `VulkanContext::updateInstanceSimulation()`'s projectile-vs-grid check
+  now sweeps the segment `[previousPosition(), position()]` against every
+  instance's collision sphere (closest-point-on-segment test), instead of
+  testing only the post-move point. Finds the *earliest* hit along the
+  segment (smallest `t`), not just the first instance index that happens
+  to overlap it, and applies the blast from that actual impact point
+  rather than wherever the projectile ended up this frame.
+- Verified by temporarily launching a 300 u/s projectile straight through
+  a column of instance centers with one artificially large (~250ms)
+  `deltaTime` frame: the old point check would have missed entirely
+  (confirmed via a temporary diagnostic comparison, `segLen≈79` vs. a
+  ~1.3-1.8 hit radius), while the new swept check caught it mid-segment
+  (`t≈0.52`). No change in normal-speed behavior — the swept test reduces
+  to the same result as the old point check whenever a frame's movement
+  is small relative to the hit radius, which is every frame at default
+  settings.
+- No `culling.comp`/`ComputeDescriptor`/GPU-side changes at all — this
+  entire fix is CPU-side, inside `updateInstanceSimulation()`'s existing
+  per-frame simulation step.
+
+---
+
 ## Open / not yet started
 
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
@@ -809,10 +846,6 @@ the full design.
   milestone 2) — `normal.png`/`metallic_roughness.png`/`ao.png` are small
   self-generated flat/gradient PNGs, good enough to validate the sampling
   mechanism, not real material photography.
-- **Swept (not discrete) projectile collision** — current hit test only
-  checks position once per frame; not observable at the current
-  speed/instance-radius ratio, but would need revisiting for a much
-  faster projectile or much smaller instances (§20)
 
 ---
 

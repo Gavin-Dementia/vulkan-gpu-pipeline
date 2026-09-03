@@ -139,21 +139,24 @@ startup. Zero compute shader or descriptor changes: `culling.comp` has
 no separate concept of a "static" position, so making the upload
 per-frame is a purely CPU-side change (cheap thanks to `VulkanBuffer`'s
 persistent mapping). See `TECHNICAL_NOTES.md` §20 for the full
-rationale, the framerate-independent damping formula, and the discrete-
-collision tradeoff.
+rationale and the framerate-independent damping formula; §20's original
+discrete-collision tradeoff (point check, not swept) is closed by §41.
 
 - `VulkanContext::updateInstanceSimulation(deltaTime)` — called once per
   frame from `Application::mainLoop()` (not from a `FrameRenderer` pass
   lambda — this is world-simulation state, not rendering state, and
   keeps `deltaTime` where it already lives). Integrates
   `instanceVelocities_` into `instanceCurrentPositions_` with damping,
-  checks the active projectile against every instance (cheap `O(343)`,
-  using `collisionRadius_` — a gameplay-tunable value independent of
-  `boundingSphereRadius_`, the render/culling radius `culling.comp`
-  uses; they start equal but can diverge), and on the first touch
-  applies a radial blast impulse (falloff by distance, `+=`'d so
-  overlapping blasts compound) to every instance within a blast radius,
-  then stops the projectile. Also resolves **mutual instance-vs-instance
+  sweeps the active projectile's `[previousPosition(), position()]`
+  segment (not just its end-of-frame point, see §41) against every
+  instance's collision sphere (cheap `O(343)`, using `collisionRadius_` —
+  a gameplay-tunable value independent of `boundingSphereRadius_`, the
+  render/culling radius `culling.comp` uses; they start equal but can
+  diverge), and on the *earliest* hit along that segment applies a radial
+  blast impulse (falloff by distance from the actual impact point, not
+  wherever the projectile ended up this frame, `+=`'d so overlapping
+  blasts compound) to every instance within a blast radius, then stops
+  the projectile. Also resolves **mutual instance-vs-instance
   overlap** every frame (`O(n²)` unique pairs, single pass) — without it,
   scattered instances settling near each other or near still-resting
   neighbors visibly clip through one another, since the grid's rest
@@ -180,13 +183,17 @@ collision tradeoff.
 
 Plain C++ class (no Vulkan includes), owned as a value member of
 `VulkanContext`, mirroring `Camera`'s shape. `launch(origin, direction,
-speed)` sets it flying; `update(deltaTime)` integrates position at
-constant velocity and deactivates it after a fixed lifetime (~5s), or
+speed)` sets it flying; `update(deltaTime)` records the pre-move
+position into `previousPosition_` before integrating position at
+constant velocity, and deactivates it after a fixed lifetime (~5s), or
 immediately via `stop()` on grid impact (see "Grid collision + scatter"
-above). Rendered by reusing LOD2's mesh + its own UBO/descriptor
-set/instance buffer (see `TECHNICAL_NOTES.md` §17); drawn with a plain
-`vkCmdDrawIndexed` inside `GeometryPass`, guarded by `isActive()` — no
-new `FrameGraph` pass.
+above). `previousPosition()` exposes that pre-move point alongside the
+existing `position()`, so `updateInstanceSimulation()` can sweep the
+segment between them against the grid instead of testing only the
+post-move point (§41). Rendered by reusing LOD2's mesh + its own
+UBO/descriptor set/instance buffer (see `TECHNICAL_NOTES.md` §17); drawn
+with a plain `vkCmdDrawIndexed` inside `GeometryPass`, guarded by
+`isActive()` — no new `FrameGraph` pass.
 
 ### Lighting (PBR, both milestones)
 

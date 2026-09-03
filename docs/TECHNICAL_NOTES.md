@@ -868,7 +868,8 @@ tolerance at this instance count, not a new gap this feature introduces
 *at the time this was written*. **§37 revisits this**: once §36 gave the
 frame loop its first real mid-loop stall source (`vkDeviceWaitIdle` on a
 viewport resize), the "large `deltaTime`" case stopped being purely
-theoretical.
+theoretical. **§41 closes it**: the hit test is now a swept segment
+test, not a point check.
 
 **Bundled addition — spin pause/resume (`T` key):** unrelated to the
 collision system, but small enough to fold into the same pass.
@@ -2784,6 +2785,101 @@ much surface detail" a mesh actually encodes, and it's what every
 LOD/decimation tool actually targets when simplifying a mesh in the
 first place.
 
+### 41. Swept projectile collision
+
+Closes the tradeoff §20 explicitly named and accepted as *theoretical*,
+which §37 later flagged as no longer purely hypothetical once live-
+resize gave the frame loop its first real mid-loop stall source: the
+projectile-vs-grid hit test only checked the projectile's position once
+per frame (`glm::length(instanceCurrentPositions_[i] - projPos) <
+hitDist`), so a large enough `deltaTime`/speed could move it further in
+one frame than the hit radius, skipping clean over an instance without
+the point check ever landing inside it.
+
+**Why this stopped being purely theoretical.** §37's `maxDeltaTime_`
+clamp (default `1/15s`) was added to tame a *different* symptom (the
+mutual-collision system looking visibly stepped after a resize stall),
+but it does nothing to prevent single-frame tunneling on its own - at
+the projectile's default speed (30 u/s) and the clamp's own default
+ceiling, one frame can still move it `30 * (1/15) = 2.0` units, already
+larger than the ~1.3-1.8 unit collision radius the point check compares
+against. The clamp bounds *how bad* a spike can get; it was never a fix
+for this specific gap, and turning it off (still the project default)
+removes even that bound.
+
+**The fix - closest-point-on-segment, not closest-point.** `Projectile`
+gained `previousPosition_`, captured at the top of `update()` before
+that frame's movement is applied, and a `previousPosition()` accessor
+alongside the existing `position()`. `updateInstanceSimulation()`'s
+projectile check now treats `[previousPosition(), position()]` as a line
+segment and finds each instance's closest point on it (`t = clamp(dot(
+toInstance, segDir) / segLenSq, 0, 1)`, standard segment-projection
+formula), comparing *that* distance against `hitDist` instead of the
+distance to the segment's endpoint alone. A point check is really just
+this same test degenerated to a zero-length segment - the fix
+generalizes the existing logic rather than replacing it with something
+structurally different.
+
+**Earliest hit along the segment, not first array index.** The old loop
+found the first instance (by array index) within `hitDist` of the point
+and immediately broke. Once the test segment can span a real distance,
+more than one instance can plausibly be within `hitDist` of *some* point
+along it, and the projectile should logically stop at whichever it
+reaches *first*, not an arbitrary later one that happens to sit at a
+lower array index. The fix tracks the smallest `t` (`bestT`) across all
+343 instances in one pass - same `O(343)` complexity as before, since
+each iteration is still one segment-distance computation instead of one
+point-distance computation, no algorithmic complexity change.
+
+**Blast origin moved to the actual impact point.** The pre-existing
+radial blast falloff used to originate from `projPos` (wherever the
+projectile ended up *this frame*) - harmless when the point check and
+the swept check agree (small movement per frame), but for exactly the
+large-movement case this fix targets, the post-move position can be
+well past the true impact point along the segment. The blast now
+originates from `segStart + segDir * bestT` - the actual point on the
+path closest to the hit instance - so the fix is internally consistent:
+the same generalization that finds the hit also relocates where its
+effect is centered.
+
+**Reproduced, then fixed - not fixed speculatively.** Verified by
+temporarily launching a projectile at 300 u/s (10× default) straight
+down a column of instance centers (the grid's `x=0, y=0` line passes
+through 7 instances exactly, one per `z` value, since `GRID_SIZE=7` is
+odd), combined with one artificially inflated (~250ms)
+`std::this_thread::sleep_for` right after `mainLoop()`'s first
+`glfwGetTime()` capture to force one genuinely large `deltaTime` frame.
+A temporary diagnostic print compared what the old point check would
+have found (checking `instanceCurrentPositions_[i]` against `segEnd`
+alone) against the new swept result in the same run:
+```
+[TEMP-VERIFY] swept hit at t=0.519691 segLen=78.893 old-point-check-would-hit=0
+```
+`segLen≈79` units in one frame, `old-point-check-would-hit=0` - the old
+algorithm would have missed this shot entirely, letting the projectile
+sail through the grid untouched - while the new swept check correctly
+caught it just past the segment's midpoint. All temporary test code
+(the fast launch, the sleep, the diagnostic print) was removed before
+committing; the fix itself needed none of it.
+
+**Why this needed no GPU-side changes at all.** Unlike every LOD/culling
+feature in this codebase, projectile collision has never touched
+`culling.comp`, `ComputeDescriptor`, or any GPU buffer - it's pure CPU
+simulation state (`Application::mainLoop()` → `updateInstanceSimulation()`,
+see §20), so this entire fix lives in two files
+(`Projectile.h`/`.cpp` for the new accessor, `VulkanContext.cpp` for the
+sweep test) with zero shader recompile or descriptor risk.
+
+**Interview-relevant:** *"Why not just clamp the projectile's per-frame
+movement distance instead of implementing a proper sweep?"* — that would
+cap *how far* it moves, silently changing the projectile's effective
+speed during a stall (it would appear to slow down exactly when the
+frame rate drops), rather than correctly resolving what it *passed
+through* while moving at its actual speed. A swept test answers the
+right question - "did the path this frame's real movement traced
+intersect anything" - without changing the simulation's actual physics,
+which a movement clamp would.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -2882,6 +2978,13 @@ first place.
   `suzanne.obj`. LOD1/LOD2 (`suzanne_lod1.obj`/`suzanne_lod2.obj`) still
   have none and sample a constant `(0,0)` texel — see §25's scoping
   decision for why, and `docs/roadmap.md`'s Open items for the tracked gap.
+- **Projectile collision is swept as of §41** — the grid-impact test
+  sweeps `[previousPosition(), position()]` against every instance's
+  collision sphere and finds the earliest hit along that segment, closing
+  the discrete point-check tradeoff §20 accepted and §37 later flagged as
+  newly reachable. Mutual instance-vs-instance collision (§21/§30) is
+  unaffected — it was never the concern this gap named, since it's driven
+  by damped velocity impulses, not a single fast-moving projectile.
 
 ---
 
