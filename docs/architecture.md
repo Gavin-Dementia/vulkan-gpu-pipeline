@@ -119,7 +119,7 @@ before this split — see `TECHNICAL_NOTES.md` §11):
   and pipeline (`shadowRenderPass_`/`shadowFramebuffer_`/
   `shadowPipeline_`) — see "Shadow mapping" below
 - `initSceneData()` — OBJ mesh loading + deduplication for 3 LOD meshes
-  (`suzanne.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`), vertex/index
+  (`suzanne_pbr.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`), vertex/index
   buffer upload per LOD, 7×7×7 instance grid generation, plus a 1-entry
   `projectileInstanceBuffer_` (binding-1 translation for the projectile)
 - `initCullingResources()` — one shared object bounding-sphere buffer
@@ -675,7 +675,7 @@ construction) and the geometry pass (vertex transform) — see
 
 Loads OBJ via tinyobjloader, deduplicates vertices into a `unordered_map`
 keyed by position+normal+uv (Suzanne LOD0: 2904 → 507 unique vertices).
-Called once per LOD mesh (`suzanne.obj` / `suzanne_lod1.obj` /
+Called once per LOD mesh (`suzanne_pbr.obj` / `suzanne_lod1.obj` /
 `suzanne_lod2.obj`), each returning its own `{ vertices, indices,
 boundingRadius }`. Also recenters the mesh to its own bounding-box
 center (raw OBJ coordinates aren't authored at local origin) and
