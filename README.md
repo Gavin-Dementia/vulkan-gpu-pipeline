@@ -38,7 +38,8 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Texture Sampling | ✅ |
 | Depth Buffer | ✅ |
 | GPU Frustum Culling (Compute Shader) | ✅ |
-| GPU LOD Selection | ✅ |
+| Hierarchical GPU Culling (coarse cluster pass + fine per-object pass) | ✅ |
+| GPU LOD Selection (screen-space projected size) | ✅ |
 | Multi-LOD Mesh Rendering | ✅ |
 | Indirect Draw Buffer | ✅ |
 | Mouse-Fired Projectile | ✅ |
@@ -48,6 +49,7 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | GPU Timestamp Performance Instrumentation | ✅ |
 | Dockable Editor UI (ImGui docking, offscreen viewport) | ✅ |
 | Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only — see below |
+| Image-Based Lighting (procedural-sky cubemap + skybox) | ✅ Milestone 1 of 3 — infra + skybox, ambient term not yet lit by it |
 
 ---
 
@@ -62,12 +64,15 @@ Application               input polling, deltaTime, world-sim tick
     │                     constants), grid collision/scatter simulation
     └── FrameRenderer     per-frame sync, command recording
         └── FrameGraph    DAG of render passes across 4 stages
-            ├── GPUCullingPass  [Compute] frustum culling + LOD selection
+            ├── GPUCullingPass  [Compute] coarse per-cluster frustum test,
+            │                   then fine per-object frustum test + LOD
+            │                   selection (screen-space projected size)
             ├── ShadowPass      [Shadow, own render pass] depth-only draw
             │                   of all instances from the light's view
-            ├── GeometryPass    [Graphics] grid (3× indirect draw, one
-            │                   per LOD) + projectile (1× direct draw),
-            │                   Cook-Torrance shading + shadow sampling
+            ├── GeometryPass    [Graphics] skybox (procedural-sky cubemap)
+            │                   + grid (3× indirect draw, one per LOD) +
+            │                   projectile (1× direct draw), Cook-Torrance
+            │                   shading + shadow sampling
             ├── LightingPass    (placeholder, not yet used)
             ├── PostProcess     (placeholder, not yet used)
             └── ImGuiPass       [UI, own render pass] dockable "Viewport"

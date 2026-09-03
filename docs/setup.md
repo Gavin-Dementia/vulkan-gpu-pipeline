@@ -87,19 +87,22 @@ vulkan-gpu-pipeline/
 │       ├── command/           VulkanCommandPool
 │       ├── core/              VulkanInstance
 │       ├── culling/           Frustum (Gribb-Hartmann plane extraction)
-│       ├── descriptor/        VulkanDescriptor, ComputeDescriptor
+│       ├── descriptor/        VulkanDescriptor, ComputeDescriptor, SkyboxDescriptor
 │       ├── device/            VulkanDevice
 │       ├── frame/             FrameContext, FrameRenderer, FrameGraph
 │       ├── instance/          InstanceData (per-instance vertex attribute)
 │       ├── lighting/          SceneData, MaterialPushConstants
-│       ├── pipeline/          VulkanPipeline, VulkanComputePipeline, VulkanShadowPipeline
+│       ├── pipeline/          VulkanPipeline, VulkanComputePipeline, VulkanShadowPipeline,
+│       │                      VulkanEnvCapturePipeline, VulkanSkyboxPipeline
 │       ├── platform/          VulkanSurface
 │       ├── renderpass/        VulkanRenderPass, VulkanFramebuffer, VulkanDepthBuffer,
 │       │                      VulkanShadowMap, VulkanSceneColorTarget
 │       ├── resource/          ShaderLoader, ObjLoader
 │       ├── swapchain/         VulkanSwapchain
-│       └── texture/           VulkanTexture, Material
-├── shaders/                   GLSL source (triangle.vert/frag, culling.comp, shadow.vert)
+│       └── texture/           VulkanTexture, Material, VulkanCubemap
+├── shaders/                   GLSL source (triangle.vert/frag, culling.comp,
+│                              cullingCoarse.comp, shadow.vert, fullscreenTriangle.vert,
+│                              envCapture.frag, skybox.frag)
 ├── src/                       Implementation (.cpp), mirrors include/
 └── third_party/               GLFW, GLM, ImGui, stb, tinyobjloader
 ```

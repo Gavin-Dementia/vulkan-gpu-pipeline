@@ -32,15 +32,19 @@ Application
                                  uniform buffer, compute descriptor/pipeline
         └── FrameRenderer
             └── FrameGraph (DAG)
-                ├── GPUCullingPass   [Compute] — frustum test + LOD fan-out
+                ├── GPUCullingPass   [Compute] — coarse per-cluster
+                │                     frustum test, then fine per-object
+                │                     frustum test + screen-space-size LOD
+                │                     fan-out (see §31, §32)
                 ├── ShadowPass       [Shadow, own render pass] — depth-only,
                 │                     draws all instances from the light's
                 │                     view (see §22)
                 ├── GeometryPass     [Graphics, depends on CullingPass +
-                │                     ShadowPass] — 1 indexed-indirect draw
-                │                     per LOD, samples the shadow map;
-                │                     renders to the offscreen scene target,
-                │                     not the swapchain directly (see §24)
+                │                     ShadowPass] — skybox draw (see §33)
+                │                     + 1 indexed-indirect draw per LOD,
+                │                     samples the shadow map; renders to
+                │                     the offscreen scene target, not the
+                │                     swapchain directly (see §24)
                 └── ImGuiPass        [UI, own render pass = the swapchain's]
                                       — dockable Viewport (samples the scene
                                       target) + debug windows (see §24)
@@ -2072,10 +2076,14 @@ single-mip only, which M3's specular prefilter will need to extend.
   all 343 grid instances (the projectile gets its own distinct push-
   constant values, but still one flat set) — true per-instance material
   variation is future work.
-- **No IBL/environment lighting** — the ambient term is a flat
-  `0.03 * albedo` constant, not derived from any environment map. Faces
-  fully turned away from the single directional light are nearly black
-  except for this flat term.
+- **IBL is Milestone 1 of 3** (§33) — a procedurally baked environment
+  cubemap and a live skybox exist, proving the cubemap/bake/sample
+  pipeline works, but the ambient term itself is still the flat
+  `0.03 * albedo` constant from before this milestone, not yet derived
+  from the cubemap. Faces fully turned away from the single directional
+  light are still nearly black except for this flat term. Milestones 2
+  (diffuse irradiance convolution) and 3 (specular prefilter + BRDF LUT)
+  will actually replace it.
 - **Shadow mapping is implemented** (§22) for the single directional
   light — depth-only `ShadowPass`, 3×3 PCF, tunable bias, light-frustum
   culling as of §28 (GPU-culled indirect draw, same shared
@@ -2095,11 +2103,15 @@ single-mip only, which M3's specular prefilter will need to extend.
   `vkCmdDrawIndexedIndirect` call — fine at 3 LOD levels, would need
   revisiting (e.g. skip empty buckets, or a 4th "culled entirely" bucket
   merge) if the LOD count grows.
-- **Single compute dispatch covers all 343 instances** with no
-  multi-pass culling hierarchy (e.g. coarse cell-based culling before
-  per-object testing). Acceptable at this instance count; would need
-  revisiting at much higher instance counts where the linear scan itself
-  becomes the bottleneck.
+- **Hierarchical (coarse + fine) culling is implemented** (§31) — a
+  64-cluster coarse pass gates the existing 343-object fine pass. At this
+  instance count (6 fine workgroups) it has no measurable performance
+  payoff; the value was closing the named architectural gap and
+  demonstrating the two-stage GPU-driven pattern correctly, not a perf
+  win yet. Remaining gap: cluster membership is static/index-based, not
+  re-clustered by proximity, so a heavily-scattered projectile blast
+  degrades the coarse pass's rejection efficacy (correctness is
+  unaffected — see §31's containment proof).
 - **The dockable Viewport target is fixed-resolution** (§24) — resizing
   the ImGui panel scales the existing 1280×720 image rather than
   re-rendering at a new resolution; would need swapchain-style resize
