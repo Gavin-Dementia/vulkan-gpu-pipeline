@@ -795,6 +795,7 @@ invariant — screen size shrinks with distance, so LOD1's threshold, the
 closer/bigger boundary, must stay the larger pixel value). Two sliders
 in the "GPU Culling Stats" ImGui window (next to the LOD0/1/2 visible
 counts they control) drive it live, no shader recompile.
+
 - Each `IndirectDrawBuffer.instanceCount` is reset to 0 by the CPU each
   frame before dispatch, exactly as in the single-LOD design — the
   reset now happens 3 times (once per LOD) instead of once
@@ -804,6 +805,34 @@ counts they control) drive it live, no shader recompile.
   culling, which LOD bucket they landed in, or how many during the
   frame that produced them — it only reads the resulting counts *after*
   the frame, for the debug overlay (§11)
+
+**Mesh-detail-derived LOD2 default (Phase 18)** — closes the roadmap's
+last LOD gap: `lod1ScreenSize_`/`lod2ScreenSize_` were two *independent*
+hand-picked constants (120px/60px), with nothing tying either to how
+detailed the LOD1/LOD2 meshes actually are relative to each other. See
+`TECHNICAL_NOTES.md` §40 for the full rationale.
+- `VulkanContext::initSceneData()` captures each LOD's triangle count
+  (`mesh.indices.size() / 3`) right after that LOD's own `ObjLoader::
+  load()` call, into `lod0TriangleCount_`/`lod1TriangleCount_`/
+  `lod2TriangleCount_`.
+- `lod2DetailRatio()` = `lod2TriangleCount_ / lod1TriangleCount_` — how
+  much simpler LOD2 is than LOD1. `lod2ScreenSize_`'s *startup default*
+  becomes `lod1ScreenSize_ * lod2DetailRatio()` instead of an
+  independent literal — a bigger detail drop between LOD1 and LOD2
+  pushes the LOD1→LOD2 switch to a smaller screen size (further away/
+  smaller on screen), delaying the more jarring pop until it's less
+  perceptible. `lod1ScreenSize_` itself is unchanged — still the one
+  manually-anchored top-level threshold, since there's no "LOD -1" mesh
+  to derive it from.
+- The "GPU Culling Stats" ImGui window shows the three triangle counts
+  and the ratio, plus a "Reset LOD2 to mesh-derived default" button
+  (`resetLod2ScreenSizeToMeshDefault()`) so a manually-dragged
+  `LOD2 Screen Size` slider value can always be recovered. The sliders
+  themselves are unchanged — this only changes what value they start at
+  and offer as a reset target, not the runtime tuning mechanism.
+- No `culling.comp`/`ComputeDescriptor`/`FrustumPlanes` changes — purely
+  a CPU-side default-derivation and ImGui-display change; the shader
+  still just reads whatever's in `lodParams.x`/`.y`.
 
 ---
 

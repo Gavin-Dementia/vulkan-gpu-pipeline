@@ -2686,6 +2686,104 @@ something this feature had to build — this section is really evidence
 that Phase 11's architecture choice paid off later, for a use case it
 wasn't originally designed for.
 
+### 40. Mesh-detail-derived LOD2 threshold
+
+Closes the gap §26/§32 both explicitly named but left open: §26's own
+writeup called out "not derived from mesh detail or screen-space size"
+as a "not yet done" item; §32 closed the screen-space half, leaving
+`lod1ScreenSize_`/`lod2ScreenSize_` as two *independent* hand-picked
+constants (120px/60px) with nothing tying either one to the actual
+LOD1/LOD2 meshes' geometric complexity.
+
+**Why "per-mesh detail" can't mean "per object type" here.** The scene
+has exactly one object type — 343 copies of the same Suzanne mesh, at 3
+LOD levels. There's no second, differently-detailed object to compare
+against, so a design that assigned different LOD thresholds *per object
+type* would have nothing to demonstrate: every instance in the grid
+would get the identical value regardless. "Per-mesh detail" therefore
+has to mean grounding the threshold in the geometric relationship
+*between LOD0/LOD1/LOD2 themselves* — the same single mesh's own detail
+levels — not in a per-instance or per-type lookup that this scene has no
+use for. Building the latter (a real second mesh type, just to have
+something to differentiate) was considered and deliberately scoped out —
+it would have meant new grid-generation logic, new vertex/index buffers,
+and new instance-classification data with no payoff beyond making this
+one feature demonstrable, the kind of "designing for a hypothetical
+future requirement" this codebase avoids elsewhere.
+
+**Why triangle count, not a geometric error metric.** The theoretically
+"more correct" signal would be something like Hausdorff distance or a
+per-vertex quadric error between LOD0 and each simplified LOD — how much
+does the *shape itself* deviate, not just how many triangles it's built
+from. This codebase has no such analysis anywhere (`ObjLoader` computes
+a bounding radius and nothing else geometric), and adding one would be a
+disproportionate amount of new machinery for a single derived default.
+Triangle count (`mesh.indices.size() / 3`, already available for free
+from data `ObjLoader::load()` already returns) is a legitimate, if
+cruder, proxy for "how much detail was thrown away" — fewer triangles
+reliably means less silhouette/shading detail for any real decimation
+process — and costs nothing to compute. Consistent with this codebase's
+recurring "simplest correct implementation" bar (the small-angle
+screen-size approximation in §32 is the same kind of call).
+
+**The formula, and why only `lod2ScreenSize_` is derived.**
+`lod2DetailRatio() = lod2TriangleCount_ / lod1TriangleCount_` — for the
+current assets, 47/289 ≈ 0.163 (measured via a temporary debug print
+during verification; the actual `ObjLoader`-loaded/deduplicated counts,
+not a raw `.obj` face-line count). `lod2ScreenSize_`'s *startup default*
+becomes `lod1ScreenSize_ * lod2DetailRatio()` ≈ 120 × 0.163 ≈ 19.5px,
+down from the old flat 60px. Direction check: a bigger detail drop
+between LOD1 and LOD2 (smaller ratio) should *delay* the switch to
+LOD2 until the object is smaller on screen, where the pop is less
+perceptible — smaller ratio, smaller threshold, later switch. That's
+exactly what the formula produces. `lod1ScreenSize_` (the LOD0→LOD1
+threshold) has no equivalent derivation and stays the one manually-
+anchored constant it always was: there's no "LOD -1" mesh more detailed
+than LOD0 to compute a ratio against, so *some* top-level judgment call
+is irreducible no matter what formula governs everything below it.
+
+**Why this only changes the default, not the tuning mechanism.** The
+"GPU Culling Stats" window's `LOD1 Screen Size`/`LOD2 Screen Size`
+sliders are untouched — §26's "easier to find the right feel by eye
+than to compute" reasoning for exposing these as live-tunable values in
+the first place still holds, and this change doesn't relitigate it. It
+only fixes what `lod2ScreenSize_` starts at before anyone touches the
+slider, plus adds a "Reset LOD2 to mesh-derived default"
+(`VulkanContext::resetLod2ScreenSizeToMeshDefault()`) button so that
+starting point stays recoverable after manual tuning drifts away from
+it — the same "grounded default, still overridable" shape this codebase
+hasn't used elsewhere but that fits naturally alongside the existing
+slider-based tuning pattern.
+
+**Zero GPU-side changes.** `culling.comp`, `ComputeDescriptor`, and
+`FrustumPlanes` are all untouched — the shader was already reading
+`frustum.lodParams.x`/`.y` as opaque threshold values with no assumption
+baked in about how the CPU computed them. This entire feature lives in
+`VulkanContext::initSceneData()` (capturing the triangle counts) and the
+ImGui panel (displaying them) — the lowest-risk possible way to close
+this gap, with no shader recompile, descriptor, or buffer-layout risk at
+all.
+
+**Verification.** A temporary `std::cout` right after the derivation
+(removed before committing) confirmed the actual loaded counts and the
+resulting value end-to-end: `tris L0=968 L1=289 L2=47 ratio=0.16263
+lod1ScreenSize_=120 lod2ScreenSize_=19.5156` — matching the hand-computed
+expectation exactly, and materially different from (smaller than) the
+old hardcoded 60px default, confirming the derivation is actually doing
+something rather than coincidentally reproducing the old constant.
+
+**Interview-relevant:** *"Why is the LOD1/LOD2 ratio computed from
+triangle count instead of, say, vertex count?"* — `ObjLoader` dedups
+vertices by position+normal+uv (see its own module notes in
+architecture.md), so vertex count already reflects *unique* attribute
+combinations, not raw face density, and can undercount the actual
+geometric complexity a decimation process removed (two meshes with
+similar vertex counts can still differ hugely in triangle count via
+fan/strip topology). Triangle count is the more direct proxy for "how
+much surface detail" a mesh actually encodes, and it's what every
+LOD/decimation tool actually targets when simplifying a mesh in the
+first place.
+
 ---
 
 ## Bugs encountered (and what they taught)
@@ -2745,15 +2843,16 @@ wasn't originally designed for.
   projectile's own position (§29) — a deliberate, accepted omission, not
   an oversight.
 - **LOD is implemented** (§15) as 3 buckets, runtime-tunable since §26
-  (data, not a shader constant) and screen-space-projected-size-based
-  since §32 (default `lod1ScreenSize_ = 120px`, `lod2ScreenSize_ = 60px`,
-  not a flat world-space distance) but still not derived from per-mesh
-  detail level - one threshold pair shared across all LOD transitions
-  regardless of how detailed each specific mesh actually is. A bucket
-  with 0 instances this frame still costs a full
-  `vkCmdDrawIndexedIndirect` call — fine at 3 LOD levels, would need
-  revisiting (e.g. skip empty buckets, or a 4th "culled entirely" bucket
-  merge) if the LOD count grows.
+  (data, not a shader constant), screen-space-projected-size-based since
+  §32 (not a flat world-space distance), and `lod2ScreenSize_`'s default
+  is mesh-detail-derived since §40 (`lod1ScreenSize_ = 120px` stays a
+  manual anchor; `lod2ScreenSize_`'s startup value is now
+  `lod1ScreenSize_ * lod2DetailRatio()` ≈ 19.5px for the current assets,
+  not an independent hand-picked constant). Both remain live-tunable
+  sliders regardless of their derived defaults. A bucket with 0 instances
+  this frame still costs a full `vkCmdDrawIndexedIndirect` call — fine at
+  3 LOD levels, would need revisiting (e.g. skip empty buckets, or a 4th
+  "culled entirely" bucket merge) if the LOD count grows.
 - **Hierarchical (coarse + fine) culling is implemented** (§31) — a
   64-cluster coarse pass gates the existing 343-object fine pass. At this
   instance count (6 fine workgroups) it has no measurable performance

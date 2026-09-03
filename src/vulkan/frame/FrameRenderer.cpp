@@ -526,6 +526,18 @@ void FrameRenderer::init(VulkanContext& ctx)
             if (ImGui::SliderFloat("LOD2 Screen Size", &lod2Size, 1.0f, 400.0f, "%.1f px"))
                 context->setLod2ScreenSize(lod2Size);
 
+            // Mesh-detail-derived LOD2 default (see docs/TECHNICAL_NOTES.md
+            // §40) - shows the actual triangle counts behind lod2DetailRatio()
+            // so the ratio driving the default above isn't just an opaque
+            // number, plus a way back to it after dragging the slider.
+            ImGui::Text("Mesh detail: LOD0 %u tris, LOD1 %u tris, LOD2 %u tris",
+                context->lod0TriangleCount(),
+                context->lod1TriangleCount(),
+                context->lod2TriangleCount());
+            ImGui::Text("LOD2/LOD1 detail ratio: %.1f%%", context->lod2DetailRatio() * 100.0f);
+            if (ImGui::Button("Reset LOD2 to mesh-derived default"))
+                context->resetLod2ScreenSizeToMeshDefault();
+
             // Mutual-collision bounciness (TECHNICAL_NOTES.md §30) -
             // runtime-tunable for the same "find the feel by eye" reason
             // as the LOD thresholds above. 0 = instances stop dead on

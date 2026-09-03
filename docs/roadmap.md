@@ -769,6 +769,37 @@ can trigger a `vkDeviceWaitIdle` stall on consecutive frames.
 
 ---
 
+## Phase 18 — Mesh-Detail-Derived LOD2 Threshold
+
+**Status: Complete**
+
+Closes the LOD gap this document had carried since Phase 12/14:
+`lod1ScreenSize_`/`lod2ScreenSize_` were two *independent* hand-picked
+constants (120px/60px), with nothing tying either to how detailed the
+LOD1/LOD2 meshes actually are relative to each other. There's only one
+object type in the scene (343 copies of the same Suzanne at 3 LOD
+levels), so "per-mesh detail" here means grounding the threshold in the
+actual triangle-count drop-off between the LOD meshes themselves, not
+differentiating between object types. See `TECHNICAL_NOTES.md` §40 for
+the full design.
+
+- `VulkanContext::initSceneData()` captures each LOD's triangle count
+  right after that LOD's own `ObjLoader::load()` call.
+- `lod2ScreenSize_`'s startup default is now `lod1ScreenSize_ *
+  lod2DetailRatio()` (the LOD2/LOD1 triangle-count ratio) instead of an
+  independent literal - measured at ~19.5px for the current assets
+  (968/289/47 triangles for LOD0/1/2), down from the old flat 60px.
+  `lod1ScreenSize_` stays the one manually-anchored top-level threshold
+  - there's no "LOD -1" mesh to derive it from.
+- The "GPU Culling Stats" ImGui window shows the triangle counts/ratio
+  and a "Reset LOD2 to mesh-derived default" button
+  (`resetLod2ScreenSizeToMeshDefault()`); the sliders themselves are
+  unchanged, still live-tunable.
+- No `culling.comp`/`ComputeDescriptor`/`FrustumPlanes` changes - purely
+  a CPU-side default-derivation and ImGui-display change.
+
+---
+
 ## Open / not yet started
 
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
@@ -782,11 +813,6 @@ can trigger a `vkDeviceWaitIdle` stall on consecutive frames.
   checks position once per frame; not observable at the current
   speed/instance-radius ratio, but would need revisiting for a much
   faster projectile or much smaller instances (§20)
-- **LOD thresholds not derived from per-mesh detail level** (Phase 12
-  made them runtime-tunable data, Phase 14 made them screen-space-size-
-  based instead of world-space-distance-based, but they're still one
-  manually-set pair of numbers shared by every LOD transition rather than
-  accounting for how detailed each specific mesh is)
 
 ---
 

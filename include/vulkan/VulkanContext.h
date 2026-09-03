@@ -263,6 +263,35 @@ public:
     }
     void setLod2ScreenSize(float s) { lod2ScreenSize_ = (s > lod1ScreenSize_) ? lod1ScreenSize_ : s; }
 
+    // Mesh-detail-derived LOD2 threshold default (see docs/TECHNICAL_NOTES.md
+    // §40). Raw triangle counts, captured once in initSceneData() right
+    // after each LOD's ObjLoader::load() - exposed for the "GPU Culling
+    // Stats" ImGui window's transparency display, not used anywhere else.
+    uint32_t lod0TriangleCount() const { return lod0TriangleCount_; }
+    uint32_t lod1TriangleCount() const { return lod1TriangleCount_; }
+    uint32_t lod2TriangleCount() const { return lod2TriangleCount_; }
+
+    // How much simpler LOD2 is than LOD1, by triangle count - the signal
+    // initSceneData() uses to derive lod2ScreenSize_'s startup default
+    // (lod1ScreenSize_ * this ratio) instead of an independent hand-picked
+    // constant. lod1ScreenSize_ has no equivalent derivation - there's no
+    // "LOD -1" mesh to compare LOD0 against, so it stays the one manually-
+    // anchored top-level threshold.
+    float lod2DetailRatio() const
+    {
+        return lod1TriangleCount_ > 0
+            ? static_cast<float>(lod2TriangleCount_) / static_cast<float>(lod1TriangleCount_)
+            : 1.0f;
+    }
+
+    // Re-derives lod2ScreenSize_ from lod1ScreenSize_ * lod2DetailRatio() -
+    // the same formula initSceneData() uses for the startup default, wired
+    // to a "Reset to mesh-derived default" button in the "GPU Culling
+    // Stats" ImGui window so a manually-dragged slider value can always be
+    // recovered. Routes through setLod2ScreenSize() so the lod1 >= lod2
+    // invariant above is still enforced.
+    void resetLod2ScreenSizeToMeshDefault() { setLod2ScreenSize(lod1ScreenSize_ * lod2DetailRatio()); }
+
     // Grid collision + scatter (Phase 7 milestone 2). Re-uploads
     // objectBuffer_ every frame from CPU-simulated positions - no compute
     // shader or descriptor changes needed, since culling.comp already
@@ -428,9 +457,19 @@ private:
     float                 shadowBias_     = 0.002f;
 
     // Screen-space LOD thresholds, in projected pixels (see accessor
-    // comments above) - defaults chosen to roughly match the old flat
-    // 12.0/20.0 world-space distance pair at typical grid-viewing ranges.
+    // comments above). lod1ScreenSize_'s default was chosen to roughly
+    // match the old flat 12.0 world-space distance constant at typical
+    // grid-viewing ranges; lod2ScreenSize_'s literal here is just a
+    // placeholder - initSceneData() overwrites it with a mesh-detail-
+    // derived value (lod1ScreenSize_ * lod2DetailRatio()) once the LOD
+    // meshes' triangle counts are known (see docs/TECHNICAL_NOTES.md §40).
     float                 lod1ScreenSize_ = 120.0f;
     float                 lod2ScreenSize_ = 60.0f;
+
+    // Mesh-detail-derived LOD2 threshold (§40) - raw triangle counts per
+    // LOD, captured once in initSceneData(). See lod2DetailRatio() above.
+    uint32_t              lod0TriangleCount_ = 0;
+    uint32_t              lod1TriangleCount_ = 0;
+    uint32_t              lod2TriangleCount_ = 0;
 };
 

@@ -762,7 +762,23 @@ void VulkanContext::initSceneData()
             // see the accessor comment in VulkanContext.h.
             collisionRadius_ = boundingSphereRadius_;
         }
+
+        // Mesh-detail-derived LOD2 threshold (see docs/TECHNICAL_NOTES.md
+        // §40) - captured here, right after each LOD's own load, since
+        // mesh.indices goes out of scope at the end of this loop iteration.
+        uint32_t triangleCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+        if (i == 0)      lod0TriangleCount_ = triangleCount;
+        else if (i == 1) lod1TriangleCount_ = triangleCount;
+        else             lod2TriangleCount_ = triangleCount;
     }
+
+    // Mesh-detail-derived LOD2 threshold default (§40): lod1ScreenSize_
+    // stays the one manually-anchored top-level threshold (no "LOD -1"
+    // mesh exists to derive it from), but lod2ScreenSize_'s startup value
+    // is now grounded in how much simpler LOD2 actually is than LOD1,
+    // instead of an independent hand-picked constant. Overwrites the
+    // placeholder literal from the member declaration.
+    lod2ScreenSize_ = lod1ScreenSize_ * lod2DetailRatio();
 
     // 7x7x7 grid, spacing 3.0, centered on origin
     std::vector<InstanceData> instances(OBJECT_COUNT);
