@@ -11,7 +11,8 @@ void VulkanPipeline::create(
     VkDevice device,
     VkExtent2D extent,
     VkRenderPass renderPass,
-    VkDescriptorSetLayout descriptorLayout)
+    VkDescriptorSetLayout materialLayout,
+    VkDescriptorSetLayout iblLayout)
 {
     // =========================================================
     // 1. Shader modules
@@ -145,10 +146,12 @@ void VulkanPipeline::create(
     pushRange.offset     = 0;
     pushRange.size       = sizeof(MaterialPushConstants);
 
+    std::array<VkDescriptorSetLayout, 2> setLayouts = { materialLayout, iblLayout };
+
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount         = 1;
-    layoutInfo.pSetLayouts            = &descriptorLayout;
+    layoutInfo.setLayoutCount         = static_cast<uint32_t>(setLayouts.size());
+    layoutInfo.pSetLayouts            = setLayouts.data();
     layoutInfo.pushConstantRangeCount = 1;
     layoutInfo.pPushConstantRanges    = &pushRange;
 

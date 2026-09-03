@@ -1,13 +1,13 @@
-#include "vulkan/descriptor/SkyboxDescriptor.h"
+#include "vulkan/descriptor/CubeSamplerDescriptor.h"
 #include <stdexcept>
 #include <array>
 
-void SkyboxDescriptor::create(
+void CubeSamplerDescriptor::create(
     VkDevice device,
     VkImageView cubeView,
     VkSampler cubeSampler)
 {
-    // binding 0: environment cubemap (COMBINED_IMAGE_SAMPLER, fragment)
+    // binding 0: the cubemap (COMBINED_IMAGE_SAMPLER, fragment)
     VkDescriptorSetLayoutBinding binding{};
     binding.binding         = 0;
     binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -20,7 +20,7 @@ void SkyboxDescriptor::create(
     layoutInfo.pBindings    = &binding;
 
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &layout_) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create skybox descriptor layout");
+        throw std::runtime_error("Failed to create cube sampler descriptor layout");
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -33,7 +33,7 @@ void SkyboxDescriptor::create(
     poolInfo.maxSets       = 1;
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool_) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create skybox descriptor pool");
+        throw std::runtime_error("Failed to create cube sampler descriptor pool");
 
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -42,7 +42,7 @@ void SkyboxDescriptor::create(
     allocInfo.pSetLayouts        = &layout_;
 
     if (vkAllocateDescriptorSets(device, &allocInfo, &set_) != VK_SUCCESS)
-        throw std::runtime_error("Failed to allocate skybox descriptor set");
+        throw std::runtime_error("Failed to allocate cube sampler descriptor set");
 
     VkDescriptorImageInfo imageInfo{};
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -60,7 +60,7 @@ void SkyboxDescriptor::create(
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
 
-void SkyboxDescriptor::destroy(VkDevice device)
+void CubeSamplerDescriptor::destroy(VkDevice device)
 {
     vkDestroyDescriptorPool(device, pool_, nullptr);
     vkDestroyDescriptorSetLayout(device, layout_, nullptr);

@@ -1,6 +1,7 @@
 #include "vulkan/VulkanContext.h"
 #include "vulkan/resource/ObjLoader.h"
 #include "vulkan/pipeline/VulkanEnvCapturePipeline.h"
+#include "vulkan/pipeline/VulkanIrradiancePipeline.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -13,7 +14,6 @@ void VulkanContext::init(GLFWwindow* window)
     window_ = window;
 
     initCore();
-    initEnvironment();
     initSceneData();
     initCullingResources();
 
@@ -145,14 +145,25 @@ void VulkanContext::initCore()
         sceneColorTarget_.extent()
     );
 
+    // IBL (see docs/TECHNICAL_NOTES.md §33/§34): must run here, not as a
+    // separate step after initCore() returns - it needs sceneRenderPass_/
+    // sceneColorTarget_ (just created above) for skyboxPipeline_, and
+    // pipeline_.create() right below now needs irradianceDescriptor_'s
+    // layout as its second descriptor set, so the whole bake has to
+    // complete before that call.
+    initEnvironment();
+
     // Geometry pipeline now targets the offscreen scene render pass, not
     // the swapchain's - the swapchain's renderPass_/framebuffer_ below are
     // used only to host the UI-stage pass (see FrameGraph::PassStage::UI).
+    // Set 0 = descriptor_ (per-object material data), set 1 =
+    // irradianceDescriptor_ (ambient-lighting data, shared globally).
     pipeline_.create(
         device_.get(),
         sceneColorTarget_.extent(),
         sceneRenderPass_.get(),
-        descriptor_.layout()
+        descriptor_.layout(),
+        irradianceDescriptor_.layout()
     );
 
     framebuffer_.create(
@@ -184,26 +195,45 @@ void VulkanContext::initCore()
 }
 
 // =========================================================
-// IBL Milestone 1: environment cubemap + procedural sky bake + skybox
-// pipeline (see docs/TECHNICAL_NOTES.md). Bakes once at startup, not
-// per-frame - the sky is a pure function of lightDirection_ at this
+// IBL Milestones 1-2 (see docs/TECHNICAL_NOTES.md §33/§34): environment
+// cubemap + procedural sky bake + skybox pipeline (M1), then a diffuse
+// irradiance cubemap convolved from the just-baked environment (M2).
+// Both bakes run once at startup, not per-frame - the sky (and its
+// convolved irradiance) are a pure function of lightDirection_ at this
 // point in time, so a later live change to the light direction (the
-// "Lighting" ImGui window) will not move the sun in the skybox, an
-// accepted Milestone-1 limitation.
+// "Lighting" ImGui window) will not move the sun in the skybox or update
+// the ambient term, an accepted limitation carried over from M1.
 // =========================================================
 void VulkanContext::initEnvironment()
 {
-    constexpr uint32_t kFaceSize = 512;
+    constexpr uint32_t kEnvFaceSize = 512;
+    constexpr uint32_t kIrradianceFaceSize = 32;   // diffuse irradiance is
+        // extremely low-frequency after cosine-weighted convolution - 32
+        // per face is the standard, well-tested value, not a compromise.
     constexpr VkFormat kEnvFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     environmentCubemap_.create(
-        device_.getPhysical(), device_.get(), kFaceSize, kEnvFormat,
+        device_.getPhysical(), device_.get(), kEnvFaceSize, kEnvFormat,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
     );
 
+    // Created early (host-side only - the actual image content isn't
+    // ready until the bake below completes) so the irradiance-convolution
+    // draws further down, in the same command buffer, can bind it as
+    // their input. Also the same instance the live skybox draw uses -
+    // see CubeSamplerDescriptor's class comment.
+    skyboxDescriptor_.create(
+        device_.get(), environmentCubemap_.cubeView(), environmentCubemap_.sampler()
+    );
+
     // Locally-scoped bake resources - created, used, destroyed within
-    // this function; only environmentCubemap_ (and the persistent
-    // skyboxDescriptor_/skyboxPipeline_ created at the end) survive it.
+    // this function; only environmentCubemap_/irradianceCubemap_ (and the
+    // persistent skyboxDescriptor_/irradianceDescriptor_/skyboxPipeline_
+    // created at the end) survive it. One render pass, reused for both
+    // bakes - a VkRenderPass encodes attachment format/structure only,
+    // not extent, so the same color-only/no-depth shape backs both the
+    // 512^2 environment bake and the 32^2 irradiance bake below (via two
+    // different framebuffers).
     VulkanRenderPass captureRenderPass;
     captureRenderPass.createColorOnly(device_.get(), kEnvFormat);
 
@@ -211,7 +241,7 @@ void VulkanContext::initEnvironment()
     for (int i = 0; i < 6; i++)
         faceViews.push_back(environmentCubemap_.faceView(i));
 
-    VkExtent2D faceExtent{ kFaceSize, kFaceSize };
+    VkExtent2D faceExtent{ kEnvFaceSize, kEnvFaceSize };
 
     VulkanFramebuffer captureFramebuffer;
     captureFramebuffer.createColorOnly(device_.get(), captureRenderPass.get(), faceViews, faceExtent);
@@ -291,7 +321,12 @@ void VulkanContext::initEnvironment()
     // correct (Vulkan tracks layout per mip/layer, not per view), this
     // barrier just makes the write->read visibility explicit, matching
     // FrameRenderer.cpp's shadowBarrier/sceneBarrier precedent
-    // (oldLayout==newLayout, ordering only).
+    // (oldLayout==newLayout, ordering only) - AND is load-bearing here:
+    // the irradiance-convolution draws right below, in this same command
+    // buffer, sample environmentCubemap_, so this barrier is what makes
+    // that safe (a mid-command-buffer pipeline barrier orders everything
+    // before it against everything after it in submission order - no
+    // second submit/wait needed).
     VkImageMemoryBarrier barrier{};
     barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -314,6 +349,76 @@ void VulkanContext::initEnvironment()
         0, 0, nullptr, 0, nullptr, 1, &barrier
     );
 
+    // --- IBL Milestone 2: diffuse irradiance convolution, same command
+    // buffer, right after the environment bake it reads from. ---
+    irradianceCubemap_.create(
+        device_.getPhysical(), device_.get(), kIrradianceFaceSize, kEnvFormat,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    );
+
+    std::vector<VkImageView> irrFaceViews;
+    for (int i = 0; i < 6; i++)
+        irrFaceViews.push_back(irradianceCubemap_.faceView(i));
+
+    VkExtent2D irrExtent{ kIrradianceFaceSize, kIrradianceFaceSize };
+
+    VulkanFramebuffer irradianceFramebuffer;
+    irradianceFramebuffer.createColorOnly(device_.get(), captureRenderPass.get(), irrFaceViews, irrExtent);
+
+    // Reuses skyboxDescriptor_'s layout (both are just "one cube sampler
+    // at binding 0") and the same kCaptureForward/kCaptureUp/captureProj
+    // capture-direction table the environment bake already established -
+    // baking a cubemap face is baking a cubemap face, regardless of what
+    // the fragment shader does with the sampled direction.
+    VulkanIrradiancePipeline irradiancePipeline;
+    irradiancePipeline.create(device_.get(), irrExtent, captureRenderPass.get(), skyboxDescriptor_.layout());
+
+    for (int face = 0; face < 6; face++)
+    {
+        glm::mat4 captureView = glm::lookAt(glm::vec3(0.0f), kCaptureForward[face], kCaptureUp[face]);
+
+        SkyboxPushConstants pc{};
+        pc.invViewProj = glm::inverse(captureProj * captureView);
+        pc.cameraPos   = glm::vec4(0.0f);
+
+        VkClearValue clearValue{};
+        clearValue.color = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+        VkRenderPassBeginInfo rp{};
+        rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass = captureRenderPass.get();
+        rp.framebuffer = irradianceFramebuffer.get()[face];
+        rp.renderArea.offset = {0, 0};
+        rp.renderArea.extent = irrExtent;
+        rp.clearValueCount = 1;
+        rp.pClearValues = &clearValue;
+
+        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, irradiancePipeline.get());
+        VkDescriptorSet envDs = skyboxDescriptor_.set();
+        vkCmdBindDescriptorSets(
+            cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, irradiancePipeline.layout(),
+            0, 1, &envDs, 0, nullptr
+        );
+        vkCmdPushConstants(
+            cmd, irradiancePipeline.layout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(SkyboxPushConstants), &pc
+        );
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+
+        vkCmdEndRenderPass(cmd);
+    }
+
+    VkImageMemoryBarrier irrBarrier = barrier;
+    irrBarrier.image = irradianceCubemap_.image();
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &irrBarrier
+    );
+
     vkEndCommandBuffer(cmd);
 
     VkSubmitInfo submitInfo{};
@@ -326,20 +431,24 @@ void VulkanContext::initEnvironment()
 
     vkFreeCommandBuffers(device_.get(), commandPool_.get(), 1, &cmd);
 
+    irradiancePipeline.destroy(device_.get());
+    irradianceFramebuffer.destroy(device_.get());
     capturePipeline.destroy(device_.get());
     captureFramebuffer.destroy(device_.get());
     captureRenderPass.destroy(device_.get());
 
-    // Persistent skybox descriptor/pipeline - sampled every frame by
-    // GeometryPass's skybox draw (FrameRenderer.cpp).
-    skyboxDescriptor_.create(
-        device_.get(), environmentCubemap_.cubeView(), environmentCubemap_.sampler()
+    irradianceDescriptor_.create(
+        device_.get(), irradianceCubemap_.cubeView(), irradianceCubemap_.sampler()
     );
+
+    // Persistent skybox pipeline - sampled every frame by GeometryPass's
+    // skybox draw (FrameRenderer.cpp). skyboxDescriptor_ itself was
+    // already created above, before the bake.
     skyboxPipeline_.create(
         device_.get(), sceneColorTarget_.extent(), sceneRenderPass_.get(), skyboxDescriptor_.layout()
     );
 
-    std::cout << "[VulkanContext] IBL Milestone 1: environment cubemap baked, skybox pipeline ready\n";
+    std::cout << "[VulkanContext] IBL: environment cubemap + diffuse irradiance baked, skybox pipeline ready\n";
 }
 
 // =========================================================
@@ -827,6 +936,8 @@ void VulkanContext::cleanup()
     clusterVisibleLightBuffer_.destroy(device_.get());
 
     skyboxPipeline_.destroy(device_.get());
+    irradianceDescriptor_.destroy(device_.get());
+    irradianceCubemap_.destroy(device_.get());
     skyboxDescriptor_.destroy(device_.get());
     environmentCubemap_.destroy(device_.get());
 

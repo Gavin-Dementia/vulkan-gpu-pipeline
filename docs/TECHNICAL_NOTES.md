@@ -2028,12 +2028,148 @@ to a new problem (ray-direction reconstruction) rather than a new
 principle invented for this feature.
 
 **Not done in this milestone (open for M2/M3):** the ambient term in
-`triangle.frag` is unchanged; the environment is baked once at startup
-from whatever `lightDirection_` is at that moment, so a live change to
-the light direction via the "Lighting" ImGui window does not move the
-sun in the skybox (re-baking on demand, e.g. a "Rebake Environment"
-button, is a cheap follow-up but out of scope here); `VulkanCubemap` is
-single-mip only, which M3's specular prefilter will need to extend.
+`triangle.frag` is unchanged (closed for the diffuse half by M2, §34,
+right below); the environment is baked once at startup from whatever
+`lightDirection_` is at that moment, so a live change to the light
+direction via the "Lighting" ImGui window does not move the sun in the
+skybox (re-baking on demand, e.g. a "Rebake Environment" button, is a
+cheap follow-up but out of scope here — still true as of M2, which
+inherits the same limitation for the irradiance term); `VulkanCubemap`
+is single-mip only, which M3's specular prefilter will need to extend.
+
+### 34. Image-Based Lighting, Milestone 2: diffuse irradiance convolution
+
+Closes the diffuse half of the roadmap's still-open IBL gap. §33 built
+the cubemap infrastructure and a procedural-sky skybox but explicitly
+left `triangle.frag`'s ambient term untouched. This milestone bakes a
+second, small cubemap — `irradianceCubemap_`, the cosine-weighted
+hemisphere-convolved diffuse irradiance of `environmentCubemap_` — and
+uses it to replace the diffuse half of that ambient term. **Specular
+IBL (prefiltered environment + BRDF LUT split-sum) is explicitly not
+part of this milestone** — that's M3, still open.
+
+**The convolution formula — a trusted reference derivation, not
+hand-derived.** Same discipline §33 already established for the 6-face
+capture table: `irradianceConvolve.frag` is the standard cosine-weighted
+Riemann-sum diffuse-irradiance integral (LearnOpenGL's IBL diffuse
+irradiance article, itself the widely-cited reference derivation used
+across real-time IBL implementations), not something re-derived from
+scratch here. For a direction `N`, it builds an arbitrary tangent basis
+around `N`, double-loops `phi ∈ [0,2π)` / `theta ∈ [0,π/2)` at
+`sampleDelta=0.025`, and accumulates
+`texture(environmentMap, sampleVec).rgb * cos(theta) * sin(theta)`
+before normalizing by `π / nrSamples`. The `cos(theta)` factor is the
+Lambertian cosine weighting (grazing-angle incident light contributes
+less to diffuse reflection); the extra `sin(theta)` factor is the
+solid-angle Jacobian for spherical coordinates — without it, samples
+near the pole (`theta≈0`) would be over-weighted relative to samples
+near the horizon, since a fixed `(dphi, dtheta)` step covers a smaller
+solid angle near the pole than near the equator.
+
+**Why `initEnvironment()`'s call site had to move into `initCore()` —
+not a cosmetic refactor.** §33's `initEnvironment()` ran entirely after
+`initCore()` returned, because nothing inside `initCore()` depended on
+anything it produced. That's no longer true: `pipeline_.create()`
+(inside `initCore()`) now needs `irradianceDescriptor_.layout()` as a
+second descriptor-set-layout argument (see below), and
+`irradianceDescriptor_` can't exist before the entire bake — environment
+capture → barrier → irradiance convolution → barrier — completes. Since
+`initEnvironment()`'s actual prerequisites (`sceneRenderPass_`/
+`sceneColorTarget_`, needed only for the persistent `skyboxPipeline_`
+built at the very end of the function) are already satisfied right after
+`sceneFramebuffer_.create()` — earlier in `initCore()` than
+`pipeline_.create()` — the fix is to call `initEnvironment()` from
+*inside* `initCore()`, at that point, rather than as a separate
+post-`initCore()` step. A one-line-looking call-site move, but one with
+a real dependency reason behind it, not a tidiness pass.
+
+**One command buffer, two bakes.** The single `VkImageMemoryBarrier` that
+used to sit at the very end of `initEnvironment()` (M1) moved to right
+after the 6 environment-capture draws instead. A `vkCmdPipelineBarrier`
+recorded mid-command-buffer creates an execution+memory dependency
+ordering everything before it against everything after it *within that
+command buffer's own submission order* — exactly what lets the 6
+irradiance-convolution draws, later in the *same* command buffer, safely
+sample `environmentCubemap_` with no second `vkQueueSubmit`/
+`vkQueueWaitIdle` round-trip. A second, identically-shaped barrier for
+`irradianceCubemap_`'s 6 layers still goes right before
+`vkEndCommandBuffer`, matching M1's "explicit write→read ordering"
+precedent (not strictly load-bearing here, since `irradianceDescriptor_`
+is only built host-side after `vkQueueWaitIdle` returns — kept anyway for
+consistency). Both bakes also share one `VulkanRenderPass` object
+(`createColorOnly(R16G16B16A16_SFLOAT)`) — a `VkRenderPass` encodes
+attachment format/structure only, not extent, so the same object
+legitimately backs both the 512² environment bake's framebuffer and the
+32² irradiance bake's framebuffer.
+
+**`CubeSamplerDescriptor` — renamed from `SkyboxDescriptor`.** Its shape
+(one `COMBINED_IMAGE_SAMPLER` binding, `create(device, cubeView,
+cubeSampler)`) was already completely generic in M1; this milestone
+reuses the exact same instance (`skyboxDescriptor_`) as the irradiance
+bake's input binding to `environmentCubemap_` (same layout, same bound
+resource, no reason to allocate a second set for the same thing) and
+adds one new instance (`irradianceDescriptor_`, bound to
+`irradianceCubemap_`) as the main graphics pipeline's new set 1. The
+"Skybox"-specific name stopped fitting once it wasn't skybox-exclusive —
+fixed now rather than letting the mismatch compound with a third use
+site later.
+
+**Two-set pipeline layout — this codebase's first.** `VulkanPipeline`
+was hardcoded to exactly one descriptor set since Phase 3. It now takes
+two: set 0 (`descriptor_`/`projectileDescriptor_`'s shared layout shape —
+per-object material data) and set 1 (`irradianceDescriptor_` — ambient
+lighting data, identical for every material since it's scene-wide, not
+per-object). `VulkanDescriptor` itself needed zero changes — growing it
+to hold IBL data would have meant `descriptor_.create()` (which runs
+early in `initCore()`, before `sceneRenderPass_`/environment baking are
+ready) depending on something not yet available, the same ordering
+problem `initEnvironment()`'s call-site move above had to solve, avoided
+entirely by keeping IBL data in its own set instead. Bound once per frame
+in `FrameRenderer.cpp`'s `GeometryPass` (`firstSet=1`, before the
+existing `firstSet=0` bind) and left bound for the rest of the pass —
+per Vulkan's descriptor-set binding-persistence rule, binding only set 0
+later (for the grid→projectile switch) doesn't unbind an
+already-bound, layout-compatible set 1.
+
+**Push constant reuse, not a third struct.** `irradianceConvolve.frag`
+needs exactly `invViewProj` + `cameraPos` (origin) — identical to what
+the live skybox already uses, and identical to how the env-capture bake
+already sets its own `cameraPos = vec4(0,0,0,0)`. `SkyCapturePushConstants`
+only diverges from `SkyboxPushConstants` because the procedural sky needs
+*extra* data (`sunDirAndCos`); this shader needs nothing extra, so by that
+same "diverge only when data needs differ" pattern, `VulkanIrradiancePipeline`
+reuses `SkyboxPushConstants` directly rather than introducing a
+byte-identical third struct.
+
+**Interview-relevant:** *"Why is this a one-time startup bake and not
+computed per-frame or on demand?"* — diffuse irradiance from a static
+environment is itself static; recomputing it every frame would mean
+paying the full convolution cost (see below) 60+ times a second for a
+result that never changes unless the environment itself changes. A
+future "live re-bake on light-direction change" feature (still out of
+scope — same limitation §33 already named for the skybox) would trigger
+this same one-shot bake path on demand, not turn it into a per-frame cost.
+
+**Honest cost note, with a real number.** At `sampleDelta=0.025`: the
+`phi` loop runs `⌈2π/0.025⌉ = 252` iterations, the `theta` loop
+`⌈(π/2)/0.025⌉ = 63` iterations — **15,876 environment-map samples per
+output texel**. `irradianceCubemap_` is 6 faces × 32×32 = 6,144 texels,
+so the whole bake is **≈97.5 million texture samples**, a real,
+nontrivial cost compared to M1's near-instant procedural bake (which did
+*zero* texture reads — a pure analytic function). Still a one-time
+startup cost, not a per-frame one, and expected to complete in low tens
+of milliseconds on any GPU capable of running this renderer at all — but
+this wasn't empirically profiled as part of this milestone, and would be
+worth measuring directly if `initEnvironment()`'s total startup time ever
+becomes user-visible.
+
+**Not done in this milestone:** specular IBL (M3 — prefiltered
+environment mip chain + BRDF LUT split-sum) is still unimplemented, so
+surfaces get correct diffuse ambient now but still no specular ambient;
+`VulkanCubemap` remains single-mip, which M3's roughness-indexed
+prefiltered mips will need to extend; the no-live-rebake-on-light-change
+limitation (§33) now applies to the irradiance term too, not just the
+skybox.
 
 ---
 
@@ -2076,14 +2212,15 @@ single-mip only, which M3's specular prefilter will need to extend.
   all 343 grid instances (the projectile gets its own distinct push-
   constant values, but still one flat set) — true per-instance material
   variation is future work.
-- **IBL is Milestone 1 of 3** (§33) — a procedurally baked environment
-  cubemap and a live skybox exist, proving the cubemap/bake/sample
-  pipeline works, but the ambient term itself is still the flat
-  `0.03 * albedo` constant from before this milestone, not yet derived
-  from the cubemap. Faces fully turned away from the single directional
-  light are still nearly black except for this flat term. Milestones 2
-  (diffuse irradiance convolution) and 3 (specular prefilter + BRDF LUT)
-  will actually replace it.
+- **IBL is Milestones 1-2 of 3** (§33/§34) — a procedurally baked
+  environment cubemap, a live skybox, and a diffuse irradiance cubemap
+  all exist; `triangle.frag`'s ambient term now uses real image-based
+  diffuse lighting instead of the old flat `0.03 * albedo` constant.
+  Still missing: specular IBL (Milestone 3 — prefiltered environment mip
+  chain + BRDF LUT split-sum), so surfaces get correct diffuse ambient
+  but still no specular ambient (a rough/metallic surface facing away
+  from the direct light and toward a bright part of the sky won't show a
+  corresponding specular highlight yet).
 - **Shadow mapping is implemented** (§22) for the single directional
   light — depth-only `ShadowPass`, 3×3 PCF, tunable bias, light-frustum
   culling as of §28 (GPU-culled indirect draw, same shared

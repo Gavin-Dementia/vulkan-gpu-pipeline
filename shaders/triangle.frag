@@ -30,6 +30,12 @@ layout(binding = 4) uniform sampler2D normalMap;
 layout(binding = 5) uniform sampler2D metallicRoughnessMap;
 layout(binding = 6) uniform sampler2D aoMap;
 
+// IBL Milestone 2 (see docs/TECHNICAL_NOTES.md §34): ambient-lighting
+// data, shared globally rather than per-material, so it lives in its own
+// descriptor set (set 1) instead of growing the material set above (set
+// 0, implicit). Diffuse-only for now - specular IBL is Milestone 3.
+layout(set = 1, binding = 0) uniform samplerCube irradianceMap;
+
 layout(push_constant) uniform MaterialPushConstants {
     vec4 albedo;             // rgb used, a unused
     vec4 metallicRoughness;  // x = metallic, y = roughness
@@ -190,10 +196,20 @@ void main()
     vec3 radiance = scene.lightColor.rgb * scene.lightColor.a;
     vec3 Lo = (kD * finalAlbedo / PI + specular) * radiance * NdotL * shadow;
 
-    // Flat ambient substitute for missing IBL/environment lighting -
+    // IBL Milestone 2 (see docs/TECHNICAL_NOTES.md §34): diffuse-only
+    // image-based ambient, replacing the old flat 0.03*albedo*ao term.
+    // Ambient-specific Fresnel uses NdotV, not dot(H,V) - H is undefined
+    // here, there's no single incident light direction for ambient the
+    // way there is for the direct term above. Specular IBL (prefiltered
+    // environment + BRDF LUT split-sum) is explicitly Milestone 3, not
+    // computed here - only the diffuse half of the split-sum exists.
     // AO occludes this term only, same "don't touch the shadowed direct
     // term" precedent calcShadow() already set for the shadow map.
-    vec3 ambient = 0.03 * finalAlbedo * ao;
+    vec3 kS_ambient = fresnelSchlick(NdotV, F0);
+    vec3 kD_ambient = (vec3(1.0) - kS_ambient) * (1.0 - metallic);
+    vec3 irradiance = texture(irradianceMap, N).rgb;
+    vec3 diffuseIBL = kD_ambient * irradiance * finalAlbedo;
+    vec3 ambient = diffuseIBL * ao;
     vec3 color = ambient + Lo;
 
     // Reinhard tonemap only - no pow(color, 1/2.2) gamma step. The swapchain

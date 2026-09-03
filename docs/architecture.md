@@ -235,14 +235,13 @@ Tunable at runtime via an ImGui "Lighting" window (direction/color/
 intensity/shadow-bias sliders) — `FrameRenderer`'s `ImGuiPass` lambda
 mutates `VulkanContext`'s light state directly.
 
-### Image-Based Lighting (Milestone 1: cubemap infra + procedural sky)
+### Image-Based Lighting (Milestones 1-2: cubemap infra + procedural sky + diffuse irradiance)
 
-Closes the roadmap's "IBL / environment lighting" gap — staged across
-multiple milestones (see `TECHNICAL_NOTES.md` §33). **This milestone
-does not change the shading equation** — `triangle.frag`'s flat
-`0.03 * finalAlbedo * ao` ambient term is untouched; later milestones
-(diffuse irradiance convolution, specular prefilter + BRDF LUT) will
-read the cubemap this milestone builds and replace it.
+Closes the diffuse half of the roadmap's "IBL / environment lighting"
+gap — staged across multiple milestones (see `TECHNICAL_NOTES.md`
+§33/§34). **Specular IBL is still not implemented** — that's Milestone 3
+(prefiltered environment mip chain + BRDF LUT split-sum), which will
+read the same `environmentCubemap_` these milestones built.
 
 - `VulkanCubemap` (`include/vulkan/texture/VulkanCubemap.h`) — this
   project's first cube image: one `VK_IMAGE_VIEW_TYPE_CUBE` view for
@@ -278,6 +277,40 @@ read the cubemap this milestone builds and replace it.
   no new `FrameGraph` pass. `depthTestEnable`/`depthWriteEnable` both
   `false`, so the grid's own depth test afterward overdraws it wherever
   geometry exists, with no z-value trickery needed.
+
+**Milestone 2 (diffuse irradiance convolution):**
+
+- `irradianceCubemap_` (32×32/face — diffuse irradiance is extremely
+  low-frequency after cosine-weighted convolution, no need for
+  `environmentCubemap_`'s 512×512) baked by
+  `VulkanIrradiancePipeline` + `shaders/irradianceConvolve.frag` (the
+  standard cosine-weighted hemisphere Riemann-sum integral), reusing the
+  `inverse(viewProj)` direction-reconstruction technique and the same
+  6-face capture table Milestone 1 already established.
+- Both bakes now share **one command buffer, one submit**: 6
+  environment-capture draws → a memory barrier → 6 irradiance-convolution
+  draws (sampling the just-baked `environmentCubemap_` through
+  `skyboxDescriptor_`) → a second barrier → submit. `initEnvironment()`'s
+  call site moved from after `initCore()` to inside it (right after
+  `sceneFramebuffer_.create()`, before `pipeline_.create()`) since
+  `pipeline_.create()` now needs `irradianceDescriptor_`'s layout.
+- `SkyboxDescriptor` renamed to `CubeSamplerDescriptor` (its shape was
+  always generic — one combined-image-sampler binding — and this
+  milestone gave it a second real use site: the irradiance bake's input,
+  reusing the same `skyboxDescriptor_` instance, plus a new
+  `irradianceDescriptor_` instance).
+- `VulkanPipeline` grew a **second descriptor set** — this codebase's
+  first multi-set pipeline layout. Set 0 = `descriptor_`/
+  `projectileDescriptor_`'s existing material data; set 1 =
+  `irradianceDescriptor_`, ambient-lighting data shared by every
+  material (scene-wide, not per-object), bound once per frame in
+  `GeometryPass` and left bound across the grid→projectile set-0 switch
+  (Vulkan's descriptor-set binding-persistence rule). `VulkanDescriptor`
+  itself needed zero changes.
+- `triangle.frag`'s ambient term is now real diffuse IBL:
+  `kD_ambient * irradiance * finalAlbedo * ao`, with an `NdotV`-based
+  Fresnel split (not `dot(H,V)` — there's no single incident direction
+  for ambient). The specular half of the split-sum is not computed.
 
 ### Shadow mapping
 
@@ -689,7 +722,10 @@ Application
     ├── environmentCubemap_ / skyboxDescriptor_ / skyboxPipeline_ (IBL
     │     Milestone 1 - baked-once procedural sky cubemap + the live
     │     skybox draw that samples it, see "Image-Based Lighting" module
-    │     notes; the ambient term itself is still unchanged)
+    │     notes)
+    ├── irradianceCubemap_ / irradianceDescriptor_ (IBL Milestone 2 -
+    │     baked-once diffuse irradiance cubemap + the descriptor set
+    │     bound as pipeline_'s set 1; specular IBL still not implemented)
     ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos,
     │     lightViewProj, shadow bias — bound at binding 2 on both descriptor_ and
     │     projectileDescriptor_, now also read by the vertex stage)
@@ -810,11 +846,15 @@ Graphics: GeometryPass
    draw skybox (fullscreen triangle, samples environmentCubemap_, depth
    test/write off - drawn first so the grid naturally overdraws it,
    see "Image-Based Lighting" module notes) →
-   push grid material constants → for each LOD: bind vertex/index/
-   visible-instance buffers, vkCmdDrawIndexedIndirect (GPU-supplied
-   instance count, fragment shader samples the shadow map for occlusion) →
-   if projectile active: push its own material constants,
-   bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed
+   bind pipeline_ → bind set 1 (irradianceDescriptor_, once - stays bound
+   for the rest of the pass) → push grid material constants → for each
+   LOD: bind set 0 (descriptor_), bind vertex/index/visible-instance
+   buffers, vkCmdDrawIndexedIndirect (GPU-supplied instance count,
+   fragment shader samples the shadow map for occlusion and
+   irradianceMap for diffuse ambient) →
+   if projectile active: bind set 0 (projectileDescriptor_), push its own
+   material constants, bind LOD2 mesh + its instance buffer,
+   vkCmdDrawIndexed
         │
 End Offscreen Scene Render Pass
         │

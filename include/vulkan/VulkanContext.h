@@ -31,7 +31,7 @@
 #include "vulkan/buffer/IndirectDrawBuffer.h"
 #include "vulkan/texture/Material.h"
 #include "vulkan/texture/VulkanCubemap.h"
-#include "vulkan/descriptor/SkyboxDescriptor.h"
+#include "vulkan/descriptor/CubeSamplerDescriptor.h"
 #include "vulkan/lighting/SceneData.h"
 
 
@@ -118,14 +118,23 @@ public:
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
     Material&              material()          { return material_; }
 
-    // IBL Milestone 1 (see docs/TECHNICAL_NOTES.md) - a procedurally
+    // IBL Milestone 1 (see docs/TECHNICAL_NOTES.md §33) - a procedurally
     // baked environment cubemap, sampled by the live skybox draw
-    // (GeometryPass in FrameRenderer.cpp). Milestone 2/3 will read this
-    // same cubemap for diffuse irradiance convolution and specular
-    // prefiltering; the ambient term in triangle.frag is not yet touched.
-    VulkanCubemap&         environmentCubemap() { return environmentCubemap_; }
-    VulkanSkyboxPipeline&  skyboxPipeline()     { return skyboxPipeline_; }
-    SkyboxDescriptor&      skyboxDescriptor()   { return skyboxDescriptor_; }
+    // (GeometryPass in FrameRenderer.cpp). Milestone 3 will read this
+    // same cubemap for specular prefiltering.
+    VulkanCubemap&           environmentCubemap() { return environmentCubemap_; }
+    VulkanSkyboxPipeline&    skyboxPipeline()     { return skyboxPipeline_; }
+    CubeSamplerDescriptor&   skyboxDescriptor()   { return skyboxDescriptor_; }
+
+    // IBL Milestone 2 (see docs/TECHNICAL_NOTES.md §34) - cosine-weighted
+    // diffuse irradiance, convolved from environmentCubemap_ once at
+    // startup. irradianceDescriptor_ is bound as descriptor set 1 on the
+    // main graphics pipeline (pipeline_) - shared by both the grid and
+    // the projectile, since ambient lighting is scene-wide, not
+    // per-material. triangle.frag samples it to replace the diffuse half
+    // of the old flat ambient term; specular IBL is still Milestone 3.
+    VulkanCubemap&           irradianceCubemap()   { return irradianceCubemap_; }
+    CubeSamplerDescriptor&   irradianceDescriptor() { return irradianceDescriptor_; }
 
     // Hierarchical culling's per-frame cluster bounding spheres (CPU-
     // aggregated from instanceCurrentPositions_ in updateInstanceSimulation(),
@@ -251,13 +260,17 @@ public:
 private:
 
     void initCore();
-    // IBL Milestone 1 - creates environmentCubemap_ and bakes a
-    // procedural sky into it (locally-scoped, one-shot render pass/
-    // framebuffer/pipeline, destroyed before this function returns), then
-    // creates the persistent skyboxDescriptor_/skyboxPipeline_. Called
-    // right after initCore() (needs device_/commandPool_/sceneRenderPass_/
-    // sceneColorTarget_, all created there) and before initSceneData()/
-    // initCullingResources() (which it doesn't need anything from).
+    // IBL Milestones 1-2 (see docs/TECHNICAL_NOTES.md §33/§34) - creates
+    // environmentCubemap_/irradianceCubemap_ and bakes both (one one-shot
+    // command buffer: 6 procedural-sky draws, a memory barrier, 6
+    // irradiance-convolution draws sampling the just-baked environment,
+    // a second barrier), using locally-scoped render pass/framebuffers/
+    // pipelines destroyed before this function returns. Also creates the
+    // persistent skyboxDescriptor_/irradianceDescriptor_/skyboxPipeline_.
+    // Called from inside initCore() itself (not from init()) - right
+    // after sceneFramebuffer_.create() (needs sceneRenderPass_/
+    // sceneColorTarget_) and right before pipeline_.create() (needs
+    // irradianceDescriptor_.layout() as its second descriptor set).
     void initEnvironment();
     void initSceneData();
     void initCullingResources();
@@ -307,10 +320,12 @@ private:
     VulkanBuffer          frustumBuffer_;
     Material              material_;
 
-    // IBL Milestone 1 - see accessor comments above.
-    VulkanCubemap         environmentCubemap_;
-    VulkanSkyboxPipeline  skyboxPipeline_;
-    SkyboxDescriptor      skyboxDescriptor_;
+    // IBL Milestones 1-2 - see accessor comments above.
+    VulkanCubemap          environmentCubemap_;
+    VulkanSkyboxPipeline   skyboxPipeline_;
+    CubeSamplerDescriptor  skyboxDescriptor_;
+    VulkanCubemap          irradianceCubemap_;
+    CubeSamplerDescriptor  irradianceDescriptor_;
 
     // Hierarchical culling (coarse pass) - see accessor comments above.
     VulkanBuffer          clusterBuffer_;
