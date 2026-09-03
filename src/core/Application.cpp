@@ -5,6 +5,7 @@
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <algorithm>
 #include <iostream>
 #include "imgui.h"
 
@@ -61,6 +62,17 @@ void Application::mainLoop()
         float currentTime = (float)glfwGetTime();
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
+
+        // Interactive deltaTime clamp (see docs/TECHNICAL_NOTES.md
+        // §37) - off by default, so this project's original
+        // uncapped-deltaTime behavior is unchanged unless explicitly
+        // toggled on via the "GPU Culling Stats" ImGui window. Applied
+        // here, once, upstream of every deltaTime consumer below
+        // (Camera::processInput, Projectile::update,
+        // updateInstanceSimulation, updateSpin) - the single
+        // authoritative clamp point, not re-clamped by each consumer.
+        if (context->clampDeltaTimeEnabled())
+            deltaTime = std::min(deltaTime, context->maxDeltaTime());
 
         context->camera().processInput(context->window(), deltaTime);
 

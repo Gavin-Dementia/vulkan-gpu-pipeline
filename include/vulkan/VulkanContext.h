@@ -274,6 +274,23 @@ public:
     float restitution() const { return restitution_; }
     void  setRestitution(float e) { restitution_ = glm::clamp(e, 0.0f, 1.0f); }
 
+    // Interactive deltaTime clamp (see docs/TECHNICAL_NOTES.md §37) -
+    // off by default, preserving this project's original uncapped-
+    // deltaTime behavior. When enabled, Application::mainLoop() caps
+    // deltaTime at maxDeltaTime_ before any consumer (Camera::processInput,
+    // Projectile::update, updateInstanceSimulation, updateSpin) ever sees
+    // it - the single authoritative "prevent spiral of death" clamp
+    // point, same "a public setter clamps its own invariant" convention
+    // as setRestitution()/setLod1ScreenSize() above. Runtime-tunable via
+    // the "GPU Culling Stats" ImGui window, doubling as an interactive
+    // demonstration of §37's diagnosis - toggle it live at high
+    // restitution to see the difference a resize-triggered deltaTime
+    // spike makes with and without the clamp.
+    bool  clampDeltaTimeEnabled() const { return clampDeltaTimeEnabled_; }
+    void  setClampDeltaTimeEnabled(bool enabled) { clampDeltaTimeEnabled_ = enabled; }
+    float maxDeltaTime() const { return maxDeltaTime_; }
+    void  setMaxDeltaTime(float d) { maxDeltaTime_ = glm::clamp(d, 1.0f / 240.0f, 1.0f); }
+
     // Manual pause/resume for the grid's shared spin - independent of
     // the scatter system above, only affects the rotation model matrix.
     float spinAngle() const { return spinAngle_; }
@@ -321,6 +338,9 @@ private:
     float boundingSphereRadius_ = 0.0f;   // computed from LOD0's mesh bounds, see initSceneData()
     float collisionRadius_      = 0.0f;   // independent of boundingSphereRadius_, see accessor comment above
     float restitution_          = 0.3f;   // mutual-collision bounciness, see accessor comment above
+
+    bool  clampDeltaTimeEnabled_ = false;      // off by default - see accessor comment above
+    float maxDeltaTime_          = 1.0f / 15.0f;   // standard real-time-loop "spiral of death" ceiling
 
     float spinAngle_    = 0.0f;   // accumulated grid rotation angle, replaces raw glfwGetTime()
     bool  spinPaused_   = false;

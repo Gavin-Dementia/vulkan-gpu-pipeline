@@ -536,6 +536,26 @@ void FrameRenderer::init(VulkanContext& ctx)
             if (ImGui::SliderFloat("Restitution", &restitution, 0.0f, 1.0f, "%.2f"))
                 context->setRestitution(restitution);
 
+            // Interactive deltaTime clamp (see docs/TECHNICAL_NOTES.md
+            // section 37) - off by default, preserving this project's
+            // original uncapped-deltaTime behavior. Doubles as a live
+            // demonstration of section 37's diagnosis: drag Restitution to
+            // 1.0, resize the Viewport panel to trigger a vkDeviceWaitIdle
+            // stall, then toggle this on/off to see the difference a
+            // clamped vs. unclamped deltaTime spike makes to the
+            // resulting collision response.
+            ImGui::Separator();
+            ImGui::Text("Simulation Timing");
+            bool clampDt = context->clampDeltaTimeEnabled();
+            if (ImGui::Checkbox("Clamp Delta Time", &clampDt))
+                context->setClampDeltaTimeEnabled(clampDt);
+            if (clampDt)
+            {
+                float maxDt = context->maxDeltaTime();
+                if (ImGui::SliderFloat("Max Delta Time (s)", &maxDt, 1.0f / 60.0f, 0.5f, "%.3f"))
+                    context->setMaxDeltaTime(maxDt);
+            }
+
             ImGui::Separator();
             ImGui::Text("GPU Timing (ms)");
             if (context->device().supportsTimestampQueries())

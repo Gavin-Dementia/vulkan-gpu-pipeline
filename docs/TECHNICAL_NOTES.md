@@ -864,7 +864,11 @@ projectile's speed (30 units/s) and normal frame times this isn't
 observable (sub-unit movement per frame vs. a ~1.3-unit hit radius), and
 nothing else in this codebase clamps `deltaTime` either (e.g.
 `Camera::processInput`) — consistent with the project's existing risk
-tolerance at this instance count, not a new gap this feature introduces.
+tolerance at this instance count, not a new gap this feature introduces
+*at the time this was written*. **§37 revisits this**: once §36 gave the
+frame loop its first real mid-loop stall source (`vkDeviceWaitIdle` on a
+viewport resize), the "large `deltaTime`" case stopped being purely
+theoretical.
 
 **Bundled addition — spin pause/resume (`T` key):** unrelated to the
 collision system, but small enough to fold into the same pass.
@@ -2431,6 +2435,95 @@ viewport (a taller-than-wide panel should show more vertically, not
 distort the existing view) — there was never a reason to touch
 `FOV_DEGREES` itself, only the ratio that was previously hardcoded
 alongside it.
+
+### 37. Live-resize's `vkDeviceWaitIdle` stall × §20's uncapped `deltaTime` — diagnosed, then fixed as an opt-in toggle
+
+Observed during interactive testing, not a code review find: dragging
+"Restitution" (§30) toward `1.0` made the grid's post-scatter bouncing
+look like a visibly discrete, time-stepped process. Root cause is a real
+interaction between two independently-reasonable, already-documented
+design choices — §20 already accepted uncapped `deltaTime` as a
+*theoretical* risk ("nothing else in this codebase clamps `deltaTime`
+either... not a new gap"); §36 gave it its first concrete trigger.
+
+**The mechanism.** `Application::mainLoop()` computes `deltaTime` from
+raw wall-clock time with no clamp anywhere (`Camera::processInput`,
+`Projectile::update`, `updateInstanceSimulation`, `updateSpin` all
+consume it uncapped). `VulkanContext::resizeSceneTarget()` (§36) calls
+`vkDeviceWaitIdle()` — a real synchronous stall — whenever a Viewport
+resize is pending, inside `drawFrame()`, which runs at the *end* of a
+`mainLoop()` iteration, *after* that iteration's `deltaTime` was already
+computed and consumed. So the stall doesn't affect that frame's physics;
+it inflates the *next* iteration's `deltaTime` instead (`lastTime` was
+captured before the stall), and that inflated, uncapped value flows
+straight into position integration (`position += velocity * deltaTime`)
+and damping (`pow(kDampingPerSecond, deltaTime)`) for all 343 instances
+in one step.
+
+**Why restitution changes the visibility, though the mechanism itself is
+restitution-blind.** Two compounding reasons. First, restitution controls
+how long a large velocity survives to be available for an inflated
+`deltaTime` to act on — at `restitution_≈0` the impulse kills velocity
+almost immediately (a narrow, low-probability window for a stall to
+land in); at `restitution_=1` large velocities persist for seconds (a
+wide window, and `velocity * largeDt` scales with that larger velocity
+too). Second, and why 0 vs 1 barely differed *before* §36 existed either
+(not a rendering bug — `objectBuffer_` re-uploads unconditionally every
+frame, nothing is stale): `updateInstanceSimulation()`'s two
+position-changing terms scale with `deltaTime` differently -
+```cpp
+instanceCurrentPositions_[i] += instanceVelocities_[i] * deltaTime;               // velocity-driven, scales with dt
+instanceCurrentPositions_[i] -= n * (overlap * kPositionalCorrectionFactor);      // fixed 10%/frame, ignores dt entirely
+```
+At normal small `deltaTime`, the restitution-blind fixed correction
+dominates visible separation and any bounce velocity gets damped away
+within about a second regardless, so restitution's effect - real, but
+tiny per frame - was masked. A large `deltaTime` flips which term
+dominates: the fixed correction still only contributes 10%, but
+`velocity * deltaTime` can now dwarf it, for whatever velocity the
+restitution-scaled impulse just produced. Restitution never causes the
+spike; it sets how much there is for the spike to multiply.
+
+**Fixed as an opt-in, runtime-tunable toggle, not an unconditional
+change.** One clamp, one authoritative location, upstream of every
+consumer:
+```cpp
+// Application::mainLoop(), right after deltaTime is computed
+if (context->clampDeltaTimeEnabled())
+    deltaTime = std::min(deltaTime, context->maxDeltaTime());
+```
+`VulkanContext::clampDeltaTimeEnabled_` (`bool`, default `false`) /
+`maxDeltaTime_` (`float`, default `1/15s`, the standard real-time-loop
+"spiral of death" ceiling) follow this codebase's usual "a public setter
+clamps its own invariant" convention (`setRestitution()`,
+`setLod1ScreenSize()`), tunable via a new "Simulation Timing" section in
+the "GPU Culling Stats" ImGui window next to "Collision". Defaulted to
+**off**, deliberately: turning it on unconditionally would be a silent
+behavior change for the very first frame after *any* stall (not just
+resize - alt-tab, a breakpoint, a driver hitch), and this project's
+"expose it, don't guess it" pattern (`shadowBias_`, LOD thresholds,
+`restitution_`) already favors a runtime toggle over baking in a single
+answer. It also turns the diagnosis above into something demonstrable
+rather than just documented: drag restitution to `1.0`, resize the
+panel, watch the chained-wave response; toggle the clamp on, watch it
+not happen - the same "prove the mechanism, verify by eye" bar this
+project has applied since Phase 5's oscillation test, now covering a
+timing bug instead of a rendering one.
+
+**Interview-relevant:** *"Why didn't §20 clamp `deltaTime` originally,
+and why a toggle now instead of just fixing it outright?"* — §20 had no
+reachable stall source to guard against (`vkDeviceWaitIdle` only existed
+at shutdown), so clamping then would have been speculative
+future-proofing this project's discipline avoids; §36 made the case
+reachable, which is why this is a *revisit* section rather than an edit
+to §20 - the original risk assessment was correct when written, and
+rewriting it to pretend otherwise would erase the "why." The toggle
+(rather than an unconditional clamp) is the same reasoning one level
+up: an always-on fix is the right call for a shipping product where
+nobody should see the bug, but this is also a portfolio piece meant to
+*demonstrate* having found and understood it - collapsing before/after
+into one state would remove the ability to show either on demand, for
+the cost of one `bool` and a few ImGui lines.
 
 ---
 
