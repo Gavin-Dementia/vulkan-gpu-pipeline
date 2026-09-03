@@ -70,6 +70,23 @@ layout(binding = 10) uniform LightFrustumData
     vec4 planes[6];
 } lightFrustum;
 
+// Coarse pass's per-cluster visibility flags (cullingCoarse.comp writes
+// these, run first in GPUCullingPass with a compute->compute barrier
+// before this shader's dispatch - see FrameRenderer.cpp). Gating the
+// per-object tests below behind these flags never changes the final
+// visible set: each cluster's bounding sphere strictly contains every
+// member's sphere, so a cluster failing a plane test implies every member
+// would too (docs/TECHNICAL_NOTES.md has the full proof). This shader
+// only needs the flags, not the cluster bounding spheres themselves.
+layout(std430, binding = 12) readonly buffer ClusterVisibleCamera
+{
+    uint clusterVisibleCamera[];
+};
+layout(std430, binding = 13) readonly buffer ClusterVisibleLight
+{
+    uint clusterVisibleLight[];
+};
+
 bool sphereInsideFrustum(vec3 center, float radius, vec4 planes[6])
 {
     for (int i = 0; i < 6; i++)
@@ -86,19 +103,46 @@ void main()
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= objects.length()) return;
 
+    // Recover this object's cluster index from its linear grid index -
+    // must exactly match VulkanContext::clusterIndexForInstance() and the
+    // nested x/y/z generation loop in initSceneData() (idx = x*49+y*7+z).
+    // GRID_SIZE/CLUSTER_DIM/CLUSTERS_PER_AXIS are kept manually in sync
+    // with VulkanContext's constants of the same name - no shared
+    // C++/GLSL header exists in this codebase, same discipline already
+    // used for every other shader constant (LOD distances, push-constant
+    // struct sizes, etc).
+    const uint GRID_SIZE = 7u;
+    const uint CLUSTER_DIM = 2u;
+    const uint CLUSTERS_PER_AXIS = 4u;   // ceil(GRID_SIZE / CLUSTER_DIM)
+
+    uint gx = idx / (GRID_SIZE * GRID_SIZE);
+    uint gy = (idx / GRID_SIZE) % GRID_SIZE;
+    uint gz = idx % GRID_SIZE;
+    uint clusterIdx = (gx / CLUSTER_DIM) * (CLUSTERS_PER_AXIS * CLUSTERS_PER_AXIS)
+                    + (gy / CLUSTER_DIM) * CLUSTERS_PER_AXIS
+                    + (gz / CLUSTER_DIM);
+
+    bool clusterCamOk   = clusterVisibleCamera[clusterIdx] != 0u;
+    bool clusterLightOk = clusterVisibleLight[clusterIdx]  != 0u;
+
     vec3 center = objects[idx].boundingSphere.xyz;
     float radius = objects[idx].boundingSphere.w;
 
     // Light-frustum test, independent of camera visibility below - the
     // shadow map must include everything that can cast a visible shadow,
-    // regardless of whether the caster itself is on-screen.
-    if (sphereInsideFrustum(center, radius, lightFrustum.planes))
+    // regardless of whether the caster itself is on-screen. Skipped
+    // entirely if the whole cluster already failed the coarse light test.
+    if (clusterLightOk && sphereInsideFrustum(center, radius, lightFrustum.planes))
     {
         uint shadowSlot = atomicAdd(shadowCmd.instanceCount, 1u);
         shadowVisible[shadowSlot].position = vec4(center, 1.0);
     }
 
-    // Camera frustum culling
+    // Camera frustum culling - independent of the light-frustum block
+    // above (an object can be light-visible but camera-invisible or vice
+    // versa), so this early return only affects the camera/LOD path below.
+    if (!clusterCamOk)
+        return;
     if (!sphereInsideFrustum(center, radius, frustum.planes))
         return;
 

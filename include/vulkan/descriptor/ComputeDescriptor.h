@@ -16,10 +16,16 @@ public:
         VkBuffer shadowVisibleInstanceBuffer,
         VkBuffer shadowIndirectDrawBuffer,
         VkBuffer lightFrustumBuffer,
+        // Hierarchical culling (coarse pass) - see architecture.md.
+        VkBuffer clusterBuffer,
+        VkBuffer clusterVisibleCameraBuffer,
+        VkBuffer clusterVisibleLightBuffer,
         VkDeviceSize objectSize,
         VkDeviceSize visibleInstanceSize,
         VkDeviceSize indirectDrawSize,
-        VkDeviceSize frustumSize
+        VkDeviceSize frustumSize,
+        VkDeviceSize clusterBufferSize,
+        VkDeviceSize clusterVisibleSize
     );
   
     void destroy(VkDevice device);

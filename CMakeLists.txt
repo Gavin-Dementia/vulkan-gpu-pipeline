@@ -58,6 +58,7 @@ set(SHADER_SRC
     ${CMAKE_SOURCE_DIR}/shaders/triangle.vert
     ${CMAKE_SOURCE_DIR}/shaders/triangle.frag
     ${CMAKE_SOURCE_DIR}/shaders/culling.comp
+    ${CMAKE_SOURCE_DIR}/shaders/cullingCoarse.comp
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
 )
 

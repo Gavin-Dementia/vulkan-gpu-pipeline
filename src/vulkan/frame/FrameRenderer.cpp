@@ -88,12 +88,44 @@ void FrameRenderer::init(VulkanContext& ctx)
                 sizeof(FrustumPlanes)
             );
 
-            // 3. dispatch
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().get());
-
+            // 3. dispatch - two stages: a coarse pass over the 64
+            // clusters, then the existing fine per-object pass, which
+            // reads the coarse pass's per-cluster visibility flags to
+            // skip the per-object plane test for clusters already known
+            // to be fully outside a frustum. Both share computeDescriptor_'s
+            // single descriptor set (see ComputeDescriptor.cpp) - only the
+            // bound pipeline changes between the two dispatches.
             VkDescriptorSet ds = context->computeDescriptor().set();
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().layout(), 0, 1, &ds, 0, nullptr);
 
+            // 3a. Coarse: one workgroup, one thread per cluster
+            // (CLUSTER_COUNT == 64 == local_size_x, so a single (1,1,1)
+            // dispatch covers every cluster exactly).
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipelineCoarse().get());
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipelineCoarse().layout(), 0, 1, &ds, 0, nullptr);
+            vkCmdDispatch(cmd, 1, 1, 1);
+
+            // Compute->compute barrier: the fine pass below reads the
+            // cluster visibility flags this dispatch just wrote. Without
+            // this, the fine pass could read stale/undefined flags - a
+            // race, not a crash, so silent nondeterministic over/under-
+            // culling rather than a validation error. Same blanket,
+            // hand-written shape as every other barrier in this function;
+            // this is just the first one between two compute dispatches
+            // instead of compute->graphics.
+            VkMemoryBarrier clusterBarrier{};
+            clusterBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            clusterBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            clusterBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(
+                cmd,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &clusterBarrier, 0, nullptr, 0, nullptr
+            );
+
+            // 3b. Fine: unchanged per-object pass, now cluster-gated.
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().get());
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->computePipeline().layout(), 0, 1, &ds, 0, nullptr);
             vkCmdDispatch(cmd, (VulkanContext::OBJECT_COUNT + 63) / 64, 1, 1);
         },
         PassStage::Compute
@@ -375,6 +407,16 @@ void FrameRenderer::init(VulkanContext& ctx)
                 context->camera().position().z
             );
 
+            // Hierarchical (coarse + fine) culling: how many of the 64
+            // clusters the coarse pass rejected before the fine per-object
+            // pass ran - drag the camera until a whole edge cluster leaves
+            // the frustum and this count should drop by 1.
+            ImGui::Separator();
+            ImGui::Text("Clusters visible (camera): %u / %u",
+                context->getLastClusterVisibleCamera(), VulkanContext::CLUSTER_COUNT);
+            ImGui::Text("Clusters visible (light):   %u / %u",
+                context->getLastClusterVisibleLight(), VulkanContext::CLUSTER_COUNT);
+
             // LOD distance thresholds - runtime-tunable instead of
             // culling.comp's former hardcoded LOD1_DIST/LOD2_DIST
             // constants (see docs/TECHNICAL_NOTES.md). Setters keep
@@ -486,6 +528,24 @@ void FrameRenderer::drawFrame()
         context->setLastVisibleCount(i,
             context->lod(i).indirectDrawBuffer.getVisibleCount(context->device().get())
         );
+    }
+
+    // Hierarchical culling stats: same safe post-fence-wait readback as
+    // the LOD counts above - this frame slot's prior GPU work is
+    // guaranteed done by the fence wait already completed above.
+    {
+        std::array<uint32_t, VulkanContext::CLUSTER_COUNT> camFlags{};
+        std::array<uint32_t, VulkanContext::CLUSTER_COUNT> lightFlags{};
+        context->clusterVisibleCameraBuffer().download(
+            context->device().get(), camFlags.data(), sizeof(camFlags));
+        context->clusterVisibleLightBuffer().download(
+            context->device().get(), lightFlags.data(), sizeof(lightFlags));
+
+        uint32_t camCount = 0, lightCount = 0;
+        for (uint32_t f : camFlags)   camCount   += f;
+        for (uint32_t f : lightFlags) lightCount += f;
+
+        context->setLastClusterVisibleCounts(camCount, lightCount);
     }
 
     // GPU timing: this frame slot's fence wait above already guarantees

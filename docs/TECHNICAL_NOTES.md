@@ -1676,6 +1676,139 @@ needs both, which is exactly why the impulse+correction pairing is the
 standard shape for this kind of constraint in real-time physics
 generally, not a one-off decision specific to this project.
 
+### 31. Hierarchical (coarse + fine) GPU culling
+
+Closes the item `docs/roadmap.md` had carried since Phase 5/6 under "Open
+/ not yet started": *"Multi-pass / hierarchical culling — current design
+is a flat 343-thread scan; fine at this scale, would need a coarser first
+pass at much higher instance counts."* `culling.comp` (the fine pass) now
+runs behind a new coarse pass, `cullingCoarse.comp`, that tests
+cluster-level bounding volumes first and lets the fine pass skip its
+per-object plane tests for any cluster already proven fully outside a
+frustum.
+
+**Clustering.** The 343-instance grid (`GRID_SIZE=7`) is grouped into
+`CLUSTER_DIM=2`-cell clusters, `CLUSTERS_PER_AXIS =
+ceil(GRID_SIZE/CLUSTER_DIM) = 4`, `CLUSTER_COUNT = 64`. Membership is
+static and index-derived, not spatial/proximity-based: instance `idx`
+(generated as `idx = x*49 + y*7 + z` in `initSceneData()`'s nested loop)
+belongs to cluster `(x/2)*16 + (y/2)*4 + (z/2)`. This formula has to be
+kept in sync in exactly two places —
+`VulkanContext::clusterIndexForInstance()` (CPU) and `culling.comp`'s
+GLSL recovery of `(x,y,z)` from `idx` — the same "no shared C++/GLSL
+header exists, constants are manually mirrored" discipline every other
+shader constant in this codebase already relies on (LOD distances,
+`ShadowPushConstants`' layout, etc).
+
+**Why CPU-computed cluster bounds, re-uploaded every frame, instead of a
+GPU reduction pass.** `objectBuffer_` already established the pattern
+this reuses: `updateInstanceSimulation()` recomputes CPU-side state every
+frame (positions, velocities) and re-uploads the SSBO, because the
+scatter/collision simulation itself is CPU-side (§20/§21/§30). Cluster
+bounding spheres are a cheap O(2×343) aggregation (accumulate a mean per
+cluster, then a max reach per cluster) added to the same function, right
+next to the existing `objectBuffer_.upload(...)` — negligible next to the
+O(n²) ≈ 58,653-pair mutual-collision scan that function already runs
+every frame. A GPU reduction pass would have meant a third dispatch and a
+second compute→compute barrier for a workload this small; not worth it
+at this scale, and the CPU already touches every instance's position this
+frame regardless.
+
+**Correctness — the coarse gate is provably lossless, not just
+empirically fine.** Each cluster's bounding sphere is built so it
+*strictly contains* every member's sphere: `radius = max over
+members(dist(clusterCenter, memberCenter) + memberRadius)`. A frustum
+plane test is 1-Lipschitz (`f(x) = dot(n,x)+d`, `n` unit length), so
+containment gives `|memberCenter - clusterCenter| ≤ clusterRadius -
+memberRadius`. If the cluster fails a plane
+(`f(clusterCenter) < -clusterRadius`), then for any member:
+```
+f(memberCenter) ≤ f(clusterCenter) + |memberCenter - clusterCenter|
+                 < -clusterRadius + (clusterRadius - memberRadius)
+                 = -memberRadius
+```
+— i.e. the member fails that same plane too. So gating the fine
+per-object test behind the coarse cluster result can only skip objects
+that would have been culled anyway; it can never produce a different
+final visible set than the original flat scan. This is the actual
+interview-relevant claim for this feature (*"does the coarse pass ever
+change the result?"* — no, by construction), not just "it looked right
+when I tested it."
+
+**Two independent frustums, gated independently.** Like the existing
+fine pass, the coarse pass tests every cluster against *both* the
+camera's frustum and the light's orthographic frustum (§28), writing two
+separate flag buffers (`ClusterVisibleCamera`/`ClusterVisibleLight`,
+bindings 12/13). The fine pass's two gates are applied independently —
+`if (!clusterCamOk) return;` only short-circuits the camera/LOD path,
+while the light-frustum block is `if (clusterLightOk && sphereInside...)`
+— because an object can be light-visible/camera-invisible or vice versa;
+combining them into one early return would silently drop valid shadow
+casters that are off-camera, the same class of bug §28 already had to
+reason carefully about when it first added the independent light-frustum
+test.
+
+**The new compute→compute barrier.** `GPUCullingPass` now records two
+dispatches — coarse (`(1,1,1)`, `CLUSTER_COUNT==local_size_x==64`, one
+workgroup covers every cluster exactly) then fine
+(`(OBJECT_COUNT+63)/64` as before) — with a hand-written
+`VkMemoryBarrier` (`SHADER_WRITE→SHADER_READ`,
+`COMPUTE_SHADER→COMPUTE_SHADER`) between them, since the fine pass reads
+the flag buffers the coarse pass just wrote. This is the first
+compute→compute barrier in the codebase (every prior barrier in
+`drawFrame()` is compute→graphics or graphics→graphics), but the same
+blanket, hand-written-at-the-point-of-need shape as all the others —
+`FrameGraph` has no automatic per-pass barrier insertion anywhere.
+Without this barrier: a race, not a validation error — the fine pass
+could read stale or undefined flag values, producing silent
+nondeterministic over- or under-culling that would be very easy to miss
+on a fast GPU where the race usually resolves "correctly" by luck.
+
+**Descriptor set: one, shared by both pipelines, not two.** Coarse and
+fine both read the same camera/light frustum UBOs (bindings 7/10) and
+touch the same cluster-flag buffers (12/13, one writes what the other
+reads) — unlike `descriptor_`/`projectileDescriptor_`, which are two
+*separate* sets because the grid and the projectile need two genuinely
+different UBO values bound at the same time in one frame, there's no
+such conflict here. `ComputeDescriptor` grew 11→14 bindings;
+`VulkanComputePipeline::create()` grew a `shaderPath` parameter
+(defaulted to the original fine shader, so the one pre-existing call site
+kept compiling unchanged) so a second `VulkanComputePipeline` instance
+(`computePipelineCoarse_`) could point at `cullingCoarse.comp.spv` while
+reusing the identical descriptor set layout.
+
+**Honest performance note.** At 343 instances / 6 fine workgroups, this
+does not move the needle — the coarse pass itself costs one more tiny
+dispatch plus a barrier, and the fine pass's per-object plane test it
+sometimes skips was already cheap. The value here is closing the
+roadmap's explicitly named architectural gap and demonstrating the
+two-stage GPU-driven culling pattern correctly at a scale small enough to
+verify by eye, consistent with how this project already treats several
+other features (placeholder PBR textures, flat LOD distances) as "prove
+the mechanism works, be honest that it's not tuned/scaled for production
+numbers."
+
+**Accepted limitation.** Cluster membership is static/index-based, not
+re-clustered by proximity. A projectile blast that scatters instances far
+from their original grid neighbors (§20) can make a cluster's bounding
+sphere balloon toward covering most of the scene, since a cluster's
+members are no longer physically close together — correctness still
+holds (the containment proof above doesn't depend on spatial locality),
+but the coarse pass's *rejection efficacy* degrades the more scattered
+the grid gets. Not fixed here — an accepted tradeoff, same "documented
+gap, not a silent one" bar as the flat world-space LOD thresholds (Phase
+12) or LOD1/LOD2's missing UV data (Phase 8).
+
+**Verification.** With the camera at a fixed position, "Total visible"
+counts and the rendered image are unchanged from before this change
+(confirms the gate is lossless in practice, matching the proof above).
+Moving the camera until an entire edge cluster leaves the frustum drops
+the new "Clusters visible (camera)" ImGui stat by 1 and "Total visible"
+by that cluster's member count in the same frame — the same "make the
+culling behavior visible and interactively verifiable" bar established
+in Phase 5's oscillation test and reused in Phase 6/9/12, just applied
+one level up at cluster granularity.
+
 ---
 
 ## Bugs encountered (and what they taught)

@@ -1,0 +1,68 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+// Coarse pass of the two-stage hierarchical culling pipeline: one thread
+// per cluster (64 clusters, see VulkanContext::CLUSTER_DIM/CLUSTER_COUNT),
+// tests each cluster's enclosing bounding sphere against both frustums and
+// writes a per-cluster visibility flag. culling.comp (the fine pass) reads
+// these flags to skip the per-object plane test entirely for clusters that
+// are already known to be fully outside a frustum - see
+// docs/TECHNICAL_NOTES.md for why this can never change the final visible
+// set (the cluster sphere strictly contains every member sphere).
+
+struct ClusterData
+{
+    vec4 boundingSphere;  // xyz=center, w=radius
+};
+
+layout(std430, binding = 11) readonly buffer ClusterBuffer
+{
+    ClusterData clusters[];
+};
+
+layout(std430, binding = 12) writeonly buffer ClusterVisibleCamera
+{
+    uint clusterVisibleCamera[];
+};
+
+layout(std430, binding = 13) writeonly buffer ClusterVisibleLight
+{
+    uint clusterVisibleLight[];
+};
+
+// Same FrustumData/LightFrustumData UBOs culling.comp already binds at 7/10.
+layout(binding = 7) uniform FrustumData
+{
+    vec4 planes[6];
+    vec4 cameraPos;
+    vec4 lodDistances;
+} frustum;
+
+layout(binding = 10) uniform LightFrustumData
+{
+    vec4 planes[6];
+} lightFrustum;
+
+bool sphereInsideFrustum(vec3 center, float radius, vec4 planes[6])
+{
+    for (int i = 0; i < 6; i++)
+    {
+        float dist = dot(planes[i].xyz, center) + planes[i].w;
+        if (dist < -radius)
+            return false;
+    }
+    return true;
+}
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= clusters.length()) return;
+
+    vec3 center = clusters[idx].boundingSphere.xyz;
+    float radius = clusters[idx].boundingSphere.w;
+
+    clusterVisibleCamera[idx] = sphereInsideFrustum(center, radius, frustum.planes) ? 1u : 0u;
+    clusterVisibleLight[idx]  = sphereInsideFrustum(center, radius, lightFrustum.planes) ? 1u : 0u;
+}

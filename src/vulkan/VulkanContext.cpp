@@ -344,6 +344,32 @@ void VulkanContext::initCullingResources()
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
+    // Hierarchical culling (coarse pass) - 64 cluster bounding spheres,
+    // re-uploaded every frame from the CPU (see updateInstanceSimulation()),
+    // plus the coarse shader's two output flag buffers. HOST_VISIBLE like
+    // every other compute SSBO in this codebase, not DEVICE_LOCAL - the
+    // two flag buffers are also read back on the CPU every frame for the
+    // "GPU Culling Stats" ImGui counts, same safe post-fence-wait readback
+    // FrameRenderer.cpp already uses for the LOD visible counts.
+    VkDeviceSize clusterBufferSize  = sizeof(glm::vec4) * CLUSTER_COUNT;
+    VkDeviceSize clusterVisibleSize = sizeof(uint32_t) * CLUSTER_COUNT;
+
+    clusterBuffer_.create(
+        device_.getPhysical(), device_.get(), clusterBufferSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+    clusterVisibleCameraBuffer_.create(
+        device_.getPhysical(), device_.get(), clusterVisibleSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+    clusterVisibleLightBuffer_.create(
+        device_.getPhysical(), device_.get(), clusterVisibleSize,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+
     std::array<VkBuffer, 3> visibleBufs = {
         lods_[0].visibleInstanceBuffer.get(),
         lods_[1].visibleInstanceBuffer.get(),
@@ -364,11 +390,20 @@ void VulkanContext::initCullingResources()
         shadowVisibleInstanceBuffer_.get(),
         shadowIndirectDrawBuffer_.get(),
         lightFrustumBuffer_.get(),
+        clusterBuffer_.get(),
+        clusterVisibleCameraBuffer_.get(),
+        clusterVisibleLightBuffer_.get(),
         objSize, visibleInstanceSize,
-        indirectDrawSize, frustumSize
+        indirectDrawSize, frustumSize,
+        clusterBufferSize, clusterVisibleSize
     );
 
-    computePipeline_.create(device_.get(), computeDescriptor_.layout());
+    computePipeline_.create(
+        device_.get(), computeDescriptor_.layout(),
+        "shaders/compiled/culling.comp.spv");
+    computePipelineCoarse_.create(
+        device_.get(), computeDescriptor_.layout(),
+        "shaders/compiled/cullingCoarse.comp.spv");
 
     // cachedInstances_ is kept alive as the permanent rest formation
     // (used by resetInstanceFormation()) instead of being freed here.
@@ -493,6 +528,56 @@ void VulkanContext::updateInstanceSimulation(float deltaTime)
         objects[i] = glm::vec4(instanceCurrentPositions_[i], boundingSphereRadius_);
 
     objectBuffer_.upload(device_.get(), objects.data(), sizeof(glm::vec4) * OBJECT_COUNT);
+
+    // Hierarchical culling (coarse pass): recompute each cluster's
+    // enclosing bounding sphere from the live positions above, same
+    // "recompute CPU-side, reupload the SSBO every frame" discipline as
+    // objectBuffer_ just above - O(2*OBJECT_COUNT), negligible next to the
+    // O(n^2) mutual-collision pass this function already runs. Center is
+    // the member mean; radius is the max member distance-from-center plus
+    // that member's own bounding radius, so the cluster sphere strictly
+    // contains every member sphere (see docs/TECHNICAL_NOTES.md for why
+    // that containment property is what makes the coarse gate lossless).
+    {
+        std::vector<glm::vec3> clusterCenterSum(CLUSTER_COUNT, glm::vec3(0.0f));
+        std::vector<uint32_t>  clusterMemberCount(CLUSTER_COUNT, 0);
+
+        for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+        {
+            uint32_t c = clusterIndexForInstance(i);
+            clusterCenterSum[c] += instanceCurrentPositions_[i];
+            clusterMemberCount[c]++;
+        }
+
+        std::vector<glm::vec4> clusters(CLUSTER_COUNT, glm::vec4(0.0f));
+        for (uint32_t c = 0; c < CLUSTER_COUNT; c++)
+        {
+            if (clusterMemberCount[c] > 0)
+                clusters[c] = glm::vec4(clusterCenterSum[c] / float(clusterMemberCount[c]), 0.0f);
+        }
+
+        for (uint32_t i = 0; i < OBJECT_COUNT; i++)
+        {
+            uint32_t c = clusterIndexForInstance(i);
+            glm::vec3 center = glm::vec3(clusters[c]);
+            float reach = glm::length(instanceCurrentPositions_[i] - center) + boundingSphereRadius_;
+            clusters[c].w = std::max(clusters[c].w, reach);
+        }
+
+        clusterBuffer_.upload(device_.get(), clusters.data(), sizeof(glm::vec4) * CLUSTER_COUNT);
+    }
+}
+
+uint32_t VulkanContext::clusterIndexForInstance(uint32_t idx)
+{
+    // Must match culling.comp's GLSL recovery exactly, and
+    // initSceneData()'s x/y/z generation loop order (idx = x*49+y*7+z).
+    uint32_t x = idx / (GRID_SIZE * GRID_SIZE);
+    uint32_t y = (idx / GRID_SIZE) % GRID_SIZE;
+    uint32_t z = idx % GRID_SIZE;
+    return (x / CLUSTER_DIM) * (CLUSTERS_PER_AXIS * CLUSTERS_PER_AXIS)
+         + (y / CLUSTER_DIM) * CLUSTERS_PER_AXIS
+         + (z / CLUSTER_DIM);
 }
 
 void VulkanContext::resetInstanceFormation()
@@ -569,12 +654,16 @@ void VulkanContext::cleanup()
 {
     imguiLayer_.destroy(device_.get());
     computePipeline_.destroy(device_.get());
+    computePipelineCoarse_.destroy(device_.get());
     computeDescriptor_.destroy(device_.get());
     frustumBuffer_.destroy(device_.get());
     objectBuffer_.destroy(device_.get());
     lightFrustumBuffer_.destroy(device_.get());
     shadowIndirectDrawBuffer_.destroy(device_.get());
     shadowVisibleInstanceBuffer_.destroy(device_.get());
+    clusterBuffer_.destroy(device_.get());
+    clusterVisibleCameraBuffer_.destroy(device_.get());
+    clusterVisibleLightBuffer_.destroy(device_.get());
 
     for (int i = 0; i < 3; i++)
     {

@@ -4,10 +4,11 @@
 
 void VulkanComputePipeline::create(
     VkDevice device,
-    VkDescriptorSetLayout descriptorLayout)
+    VkDescriptorSetLayout descriptorLayout,
+    const std::string& shaderPath)
 {
     VkShaderModule computeModule =
-        ShaderLoader::load(device, "shaders/compiled/culling.comp.spv");
+        ShaderLoader::load(device, shaderPath);
 
     VkPipelineShaderStageCreateInfo stage{};
     stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

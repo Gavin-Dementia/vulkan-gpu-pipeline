@@ -36,8 +36,18 @@ class VulkanContext
 {
 public:
     static constexpr uint32_t GRID_SIZE = 7;
-    static constexpr uint32_t OBJECT_COUNT = 
+    static constexpr uint32_t OBJECT_COUNT =
                                 GRID_SIZE * GRID_SIZE * GRID_SIZE;  // 343
+
+    // Hierarchical / two-stage GPU culling (coarse cluster pass + the
+    // existing fine per-object pass) - see architecture.md. Groups the
+    // grid into CLUSTER_DIM^3-cell clusters; CLUSTER_DIM=2 on a 7-wide
+    // grid gives 4 clusters/axis (uneven membership at the edges, fine -
+    // the coarse pass never needs uniform cluster size).
+    static constexpr uint32_t CLUSTER_DIM = 2;
+    static constexpr uint32_t CLUSTERS_PER_AXIS = (GRID_SIZE + CLUSTER_DIM - 1) / CLUSTER_DIM;
+    static constexpr uint32_t CLUSTER_COUNT =
+                                CLUSTERS_PER_AXIS * CLUSTERS_PER_AXIS * CLUSTERS_PER_AXIS;  // 64
     struct LODMesh
     {
         VertexBuffer   vertexBuffer;
@@ -49,6 +59,17 @@ public:
     std::array<uint32_t, 3> lastVisibleCount_ = {0, 0, 0};
     void setLastVisibleCount(int lod, uint32_t c)   { lastVisibleCount_[lod] = c; }
     uint32_t getLastVisibleCount(int lod) const     { return lastVisibleCount_[lod]; }
+
+    // Coarse-pass cluster counts (out of CLUSTER_COUNT) - read back the
+    // same safe post-fence-wait way as lastVisibleCount_ above, for the
+    // "GPU Culling Stats" ImGui window.
+    void setLastClusterVisibleCounts(uint32_t camera, uint32_t light)
+    {
+        lastClusterVisibleCamera_ = camera;
+        lastClusterVisibleLight_  = light;
+    }
+    uint32_t getLastClusterVisibleCamera() const { return lastClusterVisibleCamera_; }
+    uint32_t getLastClusterVisibleLight()  const { return lastClusterVisibleLight_; }
 
     // GPU timing (ms), read back from the previous use of the current
     // frame slot's timestamp query pool - see FrameRenderer::drawFrame().
@@ -84,10 +105,23 @@ public:
     VulkanDescriptor&      descriptor()        { return descriptor_; }
     VulkanDepthBuffer&     depthBuffer()       { return depthBuffer_; }
     VulkanComputePipeline& computePipeline()   { return computePipeline_; }
+    // Coarse cluster-culling pass - see "Hierarchical / multi-pass GPU
+    // culling" in architecture.md. Shares computeDescriptor_'s set/layout
+    // with computePipeline_ (the fine pass) - both dispatches happen back
+    // to back inside GPUCullingPass in FrameRenderer.cpp.
+    VulkanComputePipeline& computePipelineCoarse() { return computePipelineCoarse_; }
     ComputeDescriptor&     computeDescriptor() { return computeDescriptor_; }
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
     Material&              material()          { return material_; }
+
+    // Hierarchical culling's per-frame cluster bounding spheres (CPU-
+    // aggregated from instanceCurrentPositions_ in updateInstanceSimulation(),
+    // same "recompute + reupload every frame" discipline objectBuffer_
+    // already uses) and the coarse pass's two output flag buffers.
+    VulkanBuffer&          clusterBuffer()             { return clusterBuffer_; }
+    VulkanBuffer&          clusterVisibleCameraBuffer() { return clusterVisibleCameraBuffer_; }
+    VulkanBuffer&          clusterVisibleLightBuffer()  { return clusterVisibleLightBuffer_; }
 
     // Light-frustum culling for the shadow pass - same shared
     // objectBuffer_/culling.comp dispatch as the camera path, just a
@@ -201,6 +235,11 @@ private:
     void initSceneData();
     void initCullingResources();
 
+    // Cluster index for a linear grid instance index - must match
+    // culling.comp's GLSL recovery exactly (see that shader's comment)
+    // and initSceneData()'s x/y/z generation loop order.
+    static uint32_t clusterIndexForInstance(uint32_t idx);
+
     // Grid's rest formation (7x7x7 grid positions computed in
     // initSceneData()) - kept alive for the app's lifetime (not cleared
     // after init) as the reference resetInstanceFormation() restores.
@@ -237,8 +276,16 @@ private:
     VulkanBuffer          objectBuffer_;
     ComputeDescriptor     computeDescriptor_;
     VulkanComputePipeline computePipeline_;
+    VulkanComputePipeline computePipelineCoarse_;
     VulkanBuffer          frustumBuffer_;
     Material              material_;
+
+    // Hierarchical culling (coarse pass) - see accessor comments above.
+    VulkanBuffer          clusterBuffer_;
+    VulkanBuffer          clusterVisibleCameraBuffer_;
+    VulkanBuffer          clusterVisibleLightBuffer_;
+    uint32_t              lastClusterVisibleCamera_ = 0;
+    uint32_t              lastClusterVisibleLight_  = 0;
 
     // Shadow pass's light-frustum-culled instance set - see accessor
     // comments above.

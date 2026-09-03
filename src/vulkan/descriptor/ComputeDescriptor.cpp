@@ -11,10 +11,15 @@ void ComputeDescriptor::create(
     VkBuffer shadowVisibleInstanceBuffer,
     VkBuffer shadowIndirectDrawBuffer,
     VkBuffer lightFrustumBuffer,
+    VkBuffer clusterBuffer,
+    VkBuffer clusterVisibleCameraBuffer,
+    VkBuffer clusterVisibleLightBuffer,
     VkDeviceSize objectSize,
     VkDeviceSize visibleInstanceSize,  // single LOD size
     VkDeviceSize indirectDrawSize,
-    VkDeviceSize frustumSize
+    VkDeviceSize frustumSize,
+    VkDeviceSize clusterBufferSize,
+    VkDeviceSize clusterVisibleSize
 )
 {
     // binding 0:  objectBuffer        (STORAGE, read)
@@ -28,7 +33,10 @@ void ComputeDescriptor::create(
     // binding 8:  shadowVisible       (STORAGE, write) - light-frustum-culled instances
     // binding 9:  shadowIndirect      (STORAGE, read/write)
     // binding 10: lightFrustumUBO     (UNIFORM, read)  - light frustum
-    std::array<VkDescriptorSetLayoutBinding, 11> bindings{};
+    // binding 11: clusterBuffer       (STORAGE, read)  - coarse pass input, 64 cluster bounding spheres
+    // binding 12: clusterVisibleCamera(STORAGE, r/w)   - coarse writes, fine reads
+    // binding 13: clusterVisibleLight (STORAGE, r/w)   - coarse writes, fine reads
+    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
     for(int i= 0; i < 7; i++)
     {
         bindings[i].binding         = i;
@@ -55,6 +63,14 @@ void ComputeDescriptor::create(
     bindings[10].descriptorCount = 1;
     bindings[10].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    for (int i = 11; i <= 13; i++)
+    {
+        bindings[i].binding         = i;
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -67,7 +83,7 @@ void ComputeDescriptor::create(
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
 
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 9;
+    poolSizes[0].descriptorCount = 12;
 
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = 2;
@@ -133,8 +149,23 @@ void ComputeDescriptor::create(
     lightFrustInfo.offset = 0;
     lightFrustInfo.range  = frustumSize;
 
+    VkDescriptorBufferInfo clusterInfo{};
+    clusterInfo.buffer = clusterBuffer;
+    clusterInfo.offset = 0;
+    clusterInfo.range  = clusterBufferSize;
+
+    VkDescriptorBufferInfo clusterVisCamInfo{};
+    clusterVisCamInfo.buffer = clusterVisibleCameraBuffer;
+    clusterVisCamInfo.offset = 0;
+    clusterVisCamInfo.range  = clusterVisibleSize;
+
+    VkDescriptorBufferInfo clusterVisLightInfo{};
+    clusterVisLightInfo.buffer = clusterVisibleLightBuffer;
+    clusterVisLightInfo.offset = 0;
+    clusterVisLightInfo.range  = clusterVisibleSize;
+
     // ---- Writes ----
-    std::array<VkWriteDescriptorSet, 11> writes{};
+    std::array<VkWriteDescriptorSet, 14> writes{};
 
     // binding 0: objectBuffer
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -197,6 +228,30 @@ void ComputeDescriptor::create(
     writes[10].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[10].descriptorCount = 1;
     writes[10].pBufferInfo     = &lightFrustInfo;
+
+    // binding 11: clusterBuffer
+    writes[11].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[11].dstSet          = set_;
+    writes[11].dstBinding      = 11;
+    writes[11].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[11].descriptorCount = 1;
+    writes[11].pBufferInfo     = &clusterInfo;
+
+    // binding 12: clusterVisibleCamera
+    writes[12].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[12].dstSet          = set_;
+    writes[12].dstBinding      = 12;
+    writes[12].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[12].descriptorCount = 1;
+    writes[12].pBufferInfo     = &clusterVisCamInfo;
+
+    // binding 13: clusterVisibleLight
+    writes[13].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[13].dstSet          = set_;
+    writes[13].dstBinding      = 13;
+    writes[13].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[13].descriptorCount = 1;
+    writes[13].pBufferInfo     = &clusterVisLightInfo;
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }

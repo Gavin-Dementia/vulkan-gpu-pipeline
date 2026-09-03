@@ -36,8 +36,11 @@ Application                     — input polling, deltaTime, world-sim tick
                                  (8 bindings), compute pipeline
         └── FrameRenderer
             └── FrameGraph (DAG, Kahn's algorithm)
-                ├── GPUCullingPass   [Compute stage] — frustum test +
-                │                     distance-based LOD fan-out
+                ├── GPUCullingPass   [Compute stage] — coarse per-cluster
+                │                     frustum test, then fine per-object
+                │                     frustum test + distance-based LOD
+                │                     fan-out (see "Hierarchical /
+                │                     two-stage GPU culling" below)
                 ├── ShadowPass       [Shadow stage, own render pass +
                 │                     fixed-resolution framebuffer] —
                 │                     depth-only draw of all instances
@@ -484,25 +487,81 @@ place).
   entries, per-instance bounding sphere `(center.xyz, radius)`. Not
   duplicated per LOD — LOD level is a *selection* made per-frame, not a
   different object.
-- `culling.comp` — 64 threads/workgroup:
-  1. sphere-vs-6-plane test against the light's frustum, unconditional
-     on camera visibility (a shadow caster can be off-screen) — passing
-     threads claim a slot in the shared `ShadowVisible`/`ShadowIndirect`
-     output pair (see "Light-frustum culling for the shadow pass" above)
-  2. sphere-vs-6-plane frustum test against the camera (unchanged from
-     the original single-LOD design)
-  3. for threads that pass the camera test, a distance check against the
+- `culling.comp` (the **fine** pass — see "Hierarchical / two-stage GPU
+  culling" below for the coarse pass that now runs before it) — 64
+  threads/workgroup:
+  1. recovers this object's cluster index from its linear grid index
+     (must match `VulkanContext::clusterIndexForInstance()` and
+     `initSceneData()`'s generation order — see below), then reads that
+     cluster's two coarse-pass visibility flags
+  2. sphere-vs-6-plane test against the light's frustum, unconditional
+     on camera visibility (a shadow caster can be off-screen) but now
+     skipped entirely if the whole cluster already failed the coarse
+     light test — passing threads claim a slot in the shared
+     `ShadowVisible`/`ShadowIndirect` output pair (see "Light-frustum
+     culling for the shadow pass" above)
+  3. sphere-vs-6-plane frustum test against the camera, likewise skipped
+     (early `return`) if the whole cluster already failed the coarse
+     camera test — otherwise unchanged from the original single-LOD
+     design
+  4. for threads that pass the camera test, a distance check against the
      camera (`frustum.lodDistances.x`/`.y`, runtime-tunable — see
      "Tunable LOD thresholds" below) buckets the instance into exactly
      one of 3 output sets
-  4. the winning bucket's thread claims a slot via `atomicAdd` on that
+  5. the winning bucket's thread claims a slot via `atomicAdd` on that
      bucket's own `DrawCommand.instanceCount` and writes into that
      bucket's own `VisibleLODN` buffer
 - 3 parallel camera-side output pairs — `(VisibleLOD0, IndirectLOD0)`,
   `(VisibleLOD1, IndirectLOD1)`, `(VisibleLOD2, IndirectLOD2)` at
   bindings 1–6 — plus `ObjectBuffer` (0), `FrustumData` (7, camera
-  frustum), `ShadowVisible`/`ShadowIndirect` (8–9), and
-  `LightFrustumData` (10) — 11 bindings total in `ComputeDescriptor`
+  frustum), `ShadowVisible`/`ShadowIndirect` (8–9), `LightFrustumData`
+  (10), and the hierarchical-culling bindings (11–13, see below) — 14
+  bindings total in `ComputeDescriptor`
+
+### Hierarchical / two-stage GPU culling
+
+Closes a previously-open roadmap item ("Multi-pass / hierarchical
+culling") — see `TECHNICAL_NOTES.md` §31 for the full rationale
+including a correctness proof that this can never change the final
+visible set, honest at-this-scale performance framing, and the accepted
+static-clustering limitation.
+
+- The 343-instance grid is grouped into 64 clusters
+  (`VulkanContext::CLUSTER_DIM=2`, `CLUSTERS_PER_AXIS=4`,
+  `CLUSTER_COUNT=64`), by linear grid index, not spatial proximity.
+- `cullingCoarse.comp` — a new compute shader, `local_size_x=64`,
+  dispatched `(1,1,1)` (one workgroup covers all 64 clusters). One thread
+  per cluster: tests that cluster's CPU-computed bounding sphere against
+  both the camera and light frustums (the same `FrustumData`/
+  `LightFrustumData` UBOs `culling.comp` already binds at 7/10), writing
+  a direct indexed `0u`/`1u` into two new output buffers,
+  `ClusterVisibleCamera`/`ClusterVisibleLight` (bindings 12/13) — no
+  atomics needed, one thread owns one non-contended slot.
+- `VulkanContext::clusterBuffer_` — 64 cluster bounding spheres,
+  recomputed and re-uploaded every frame in `updateInstanceSimulation()`
+  right next to the existing `objectBuffer_` upload (center = member
+  mean, radius = max member `dist(center,member)+boundingSphereRadius_`
+  — an enclosing sphere that strictly contains every member sphere, the
+  property the correctness proof in TECHNICAL_NOTES depends on). Same
+  "recompute CPU-side, reupload the SSBO every frame" discipline
+  `objectBuffer_` already established (see "Grid collision + scatter"
+  below).
+- `GPUCullingPass` (`FrameRenderer.cpp`) now records **two** dispatches
+  instead of one: `computePipelineCoarse_` (`(1,1,1)`) then a
+  `VkMemoryBarrier` (`SHADER_WRITE→SHADER_READ`,
+  `COMPUTE_SHADER→COMPUTE_SHADER` — the codebase's first compute→compute
+  barrier, same hand-written/blanket shape as every other barrier in
+  `drawFrame()`) then `computePipeline_` (the existing fine dispatch,
+  unchanged dispatch size). Both pipelines share one `ComputeDescriptor`
+  set/layout — `VulkanComputePipeline::create()` gained a `shaderPath`
+  parameter so a second pipeline instance could point at
+  `cullingCoarse.comp.spv`.
+- `VulkanContext::clusterVisibleCameraBuffer_`/`clusterVisibleLightBuffer_`
+  — HOST_VISIBLE like every other compute SSBO here, downloaded each
+  frame in `FrameRenderer::drawFrame()` at the same safe post-fence-wait
+  point the LOD visible counts already use, summed, and shown as
+  "Clusters visible (camera/light): N / 64" in the "GPU Culling Stats"
+  ImGui window.
 
 ### Tunable LOD thresholds (Phase 12)
 
@@ -550,14 +609,19 @@ Application
     │     ImGui's "Viewport" window (see "Dockable viewport" module notes)
     ├── VulkanDescriptor (graphics, 7 bindings: UBO / albedo / SceneData /
     │     shadow map / normal / metallic-roughness / AO combined-image-samplers)
-    ├── ComputeDescriptor (compute, 11 bindings: object / 3×visible / 3×indirect /
-    │     camera frustum / shadow-visible / shadow-indirect / light frustum)
+    ├── ComputeDescriptor (compute, 14 bindings: object / 3×visible / 3×indirect /
+    │     camera frustum / shadow-visible / shadow-indirect / light frustum /
+    │     cluster bounds / cluster-visible-camera / cluster-visible-light)
     ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
     ├── ObjectBuffer (shared, 343 entries, re-uploaded every frame) / FrustumBuffer
     ├── shadowVisibleInstanceBuffer_ / shadowIndirectDrawBuffer_ / lightFrustumBuffer_
     │     (shadow pass's light-frustum-culled instance set, same shape as a
     │      single LOD's {VisibleInstanceBuffer, IndirectDrawBuffer} - see
     │      "Light-frustum culling for the shadow pass" module notes)
+    ├── computePipelineCoarse_ / clusterBuffer_ / clusterVisibleCameraBuffer_ /
+    │     clusterVisibleLightBuffer_ (hierarchical culling's coarse pass -
+    │     64 clusters, re-uploaded every frame like ObjectBuffer - see
+    │     "Hierarchical / two-stage GPU culling" module notes)
     ├── cachedInstances_ / instanceCurrentPositions_ / instanceVelocities_
     │     (rest formation / live scatter state, all 343 entries — see
     │      "Grid collision + scatter" module notes)
@@ -572,9 +636,13 @@ Application
     └── Camera
         └── FrameRenderer
             └── FrameGraph
-                ├── GPUCullingPass (Compute) — camera frustum test + LOD
+                ├── GPUCullingPass (Compute) — coarse per-cluster frustum
+                │                    test (both camera and light), then
+                │                    fine camera frustum test + LOD
                 │                    fan-out, plus an independent light-
-                │                    frustum test compacting shadow casters
+                │                    frustum test compacting shadow casters,
+                │                    both fine tests gated on the coarse
+                │                    pass's per-cluster flags
                 ├── ShadowPass (Shadow) — depth-only, draws the light-
                 │                          frustum-culled instance set via
                 │                          vkCmdDrawIndexedIndirect
@@ -623,9 +691,10 @@ VulkanContext::updateSpin(dt)       — accumulated angle, skipped if paused
         │
 ════════ FrameRenderer::drawFrame() ════════
         │
-Wait Fence → Read back previous frame's 3 LOD instance counts (debug
-overlay) + this frame slot's 4 GPU timestamps → Culling/Shadow/Graphics/
-Total ms (if the GPU supports timestamp queries — see TECHNICAL_NOTES §23)
+Wait Fence → Read back previous frame's 3 LOD instance counts + coarse-
+pass cluster-visible counts (debug overlay) + this frame slot's 4 GPU
+timestamps → Culling/Shadow/Graphics/Total ms (if the GPU supports
+timestamp queries — see TECHNICAL_NOTES §23)
         │
 Acquire Swapchain Image
         │
@@ -634,13 +703,20 @@ Reset ShadowIndirect.instanceCount = 0     (CPU write, indexed by LOD0)
         │
 Reset this frame's VkQueryPool → write timestamp 0 (TOP_OF_PIPE)
         │
-Compute: GPUCullingPass
+Compute: GPUCullingPass (see TECHNICAL_NOTES §31)
    (upload camera frustum + light frustum (zeroToOne=true, see
-    TECHNICAL_NOTES §28) → sphere test vs. both frustums using this
-    frame's objectBuffer_, 343 threads: light-frustum survivors compact
-    into ShadowVisible/ShadowIndirect unconditionally; camera-frustum
-    survivors additionally get distance-based LOD bucketing, atomic
-    compaction per bucket)
+    TECHNICAL_NOTES §28) →
+    [3a] Coarse dispatch (1,1,1), 64 threads = 64 clusters: sphere test
+    each cluster's bounding sphere (clusterBuffer_, re-uploaded every
+    frame from instanceCurrentPositions_) vs. both frustums, write
+    ClusterVisibleCamera/ClusterVisibleLight flags →
+    compute→compute VkMemoryBarrier (SHADER_WRITE→SHADER_READ) →
+    [3b] Fine dispatch (OBJECT_COUNT+63)/64, 343 threads: each thread
+    reads its cluster's flags first and skips the corresponding plane
+    test entirely if that cluster was coarse-rejected, otherwise same as
+    before - light-frustum survivors compact into ShadowVisible/
+    ShadowIndirect unconditionally; camera-frustum survivors additionally
+    get distance-based LOD bucketing, atomic compaction per bucket)
         │
 Write timestamp 1 (BOTTOM_OF_PIPE) — closes the Culling interval
         │

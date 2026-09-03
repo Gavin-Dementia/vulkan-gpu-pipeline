@@ -487,6 +487,57 @@ recompile to change.
 
 ---
 
+## Phase 13 — Hierarchical (Coarse + Fine) GPU Culling
+
+**Status: Complete**
+
+Closes the "Multi-pass / hierarchical culling" item this roadmap had
+carried since Phase 5/6 under "Open / not yet started." `culling.comp`
+(the flat 343-thread scan) now runs as the **fine** pass behind a new
+**coarse** pass, `cullingCoarse.comp`, that rejects whole clusters of
+instances against both frustums before the fine pass does any per-object
+work.
+
+- The grid is grouped into 64 clusters (`CLUSTER_DIM=2`,
+  `CLUSTERS_PER_AXIS=4`), by linear grid index rather than spatial
+  proximity. Per-cluster bounding spheres are recomputed and re-uploaded
+  every frame in `updateInstanceSimulation()`, the same "CPU-side
+  recompute, reupload the SSBO every frame" discipline `objectBuffer_`
+  already established (Phase 7 milestone 2).
+- `cullingCoarse.comp` (new, `local_size_x=64`, dispatched `(1,1,1)`):
+  one thread per cluster, tests both the camera and light frustums
+  (reusing the existing `FrustumData`/`LightFrustumData` UBOs), writes
+  two flag buffers with a direct indexed write (no atomics needed).
+- `culling.comp` gates its existing per-object camera/light plane tests
+  behind those flags, independently (an object can be light-visible/
+  camera-invisible or vice versa). See `TECHNICAL_NOTES.md` §31 for a
+  proof this can never change the final visible set - the coarse pass
+  only ever skips work that would have been culled anyway.
+- `GPUCullingPass` now records 2 dispatches with a new compute→compute
+  `VkMemoryBarrier` between them (this codebase's first barrier of that
+  shape - every prior one was compute→graphics or graphics→graphics).
+- `ComputeDescriptor` grew 11→14 bindings; both compute pipelines share
+  one descriptor set. `VulkanComputePipeline::create()` gained a
+  `shaderPath` parameter so a second pipeline instance could target the
+  new shader.
+- New "Clusters visible (camera/light): N / 64" counts in the "GPU
+  Culling Stats" ImGui window, read back the same safe post-fence-wait
+  way as the existing LOD counts.
+
+**Honest scale note:** at 343 instances / 6 fine workgroups this has no
+measurable performance payoff - the value is closing the named
+architectural gap and correctly demonstrating the two-stage GPU-driven
+culling pattern this project's long-term direction calls for, not a perf
+win at this instance count.
+
+**Accepted limitation:** cluster membership is static/index-based, not
+re-clustered by proximity - a heavily-scattered projectile blast (Phase
+7 milestone 2) can make a cluster's bounding sphere balloon toward the
+whole scene, degrading the coarse pass's rejection efficacy (correctness
+is unaffected). See `TECHNICAL_NOTES.md` §31.
+
+---
+
 ## Open / not yet started
 
 - **Live-resized viewport target** (Phase 11) — the offscreen scene
@@ -507,9 +558,6 @@ recompile to change.
 - **IBL / environment lighting** — current ambient term is a flat
   `0.03 * albedo` constant (shadow mapping for the direct term is now
   implemented — see Phase 9)
-- **Multi-pass / hierarchical culling** — current design is a flat
-  343-thread scan; fine at this scale, would need a coarser first pass
-  at much higher instance counts
 - **LOD thresholds are still a flat world-space distance** (Phase 12
   made them runtime-tunable, not shader constants, but they're still a
   manually-set pair of numbers, not derived from mesh screen-space size
@@ -521,9 +569,9 @@ recompile to change.
 
 - Modern Vulkan architecture (in progress, core patterns established)
 - GPU-driven rendering research direction (demonstrated with working
-  culling + LOD pipeline; candidate next steps: hierarchical/multi-pass
-  culling, neural-rendering hybrid approaches under consideration for
-  graduate study direction)
+  culling + LOD pipeline, now including hierarchical/multi-pass culling
+  - Phase 13; neural-rendering hybrid approaches still under
+  consideration for graduate study direction)
 - PBR material model, approached incrementally: interactive objects
   (Phase 7) first, then lighting math (Phase 8 milestone 1), then
   texture-based materials (Phase 8 milestone 2, both complete) — a real
