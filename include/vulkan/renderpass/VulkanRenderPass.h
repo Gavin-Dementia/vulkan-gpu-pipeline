@@ -26,6 +26,16 @@ public:
         VkFormat colorFormat,
         VkFormat depthFormat);
 
+    // Color-only variant, no depth attachment at all - for passes that are
+    // a pure per-pixel function with no geometry/depth complexity, e.g.
+    // baking a cubemap face (see VulkanCubemap / "Hierarchical / IBL"
+    // module notes in architecture.md). finalLayout leaves the color
+    // image ready to be sampled afterward, same reasoning as
+    // createOffscreenColor()'s color attachment.
+    void createColorOnly(
+        VkDevice device,
+        VkFormat colorFormat);
+
     void destroy(VkDevice device);
 
     VkRenderPass get() const { return renderPass; }

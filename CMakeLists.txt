@@ -60,6 +60,9 @@ set(SHADER_SRC
     ${CMAKE_SOURCE_DIR}/shaders/culling.comp
     ${CMAKE_SOURCE_DIR}/shaders/cullingCoarse.comp
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
+    ${CMAKE_SOURCE_DIR}/shaders/fullscreenTriangle.vert
+    ${CMAKE_SOURCE_DIR}/shaders/envCapture.frag
+    ${CMAKE_SOURCE_DIR}/shaders/skybox.frag
 )
 
 set(SHADER_OUT_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/compiled)
@@ -127,7 +130,8 @@ set(VULKAN_CORE_SRC
 
 set(VULKAN_DESCRIPTOR_SRC
     src/vulkan/descriptor/VulkanDescriptor.cpp
-    src/vulkan/descriptor/ComputeDescriptor.cpp 
+    src/vulkan/descriptor/ComputeDescriptor.cpp
+    src/vulkan/descriptor/SkyboxDescriptor.cpp
 )
 
 set(VULKAN_FRAME_SRC
@@ -140,6 +144,8 @@ set(VULKAN_PIPELINE_SRC
     src/vulkan/pipeline/VulkanPipeline.cpp
     src/vulkan/pipeline/VulkanComputePipeline.cpp
     src/vulkan/pipeline/VulkanShadowPipeline.cpp
+    src/vulkan/pipeline/VulkanEnvCapturePipeline.cpp
+    src/vulkan/pipeline/VulkanSkyboxPipeline.cpp
 )
 
 set(VULKAN_RESOURCE_SRC
@@ -162,6 +168,7 @@ set(VULKAN_SWAPCHAIN_SRC
 set(VULKAN_TEXTURE_SRC
     src/vulkan/texture/VulkanTexture.cpp
     src/vulkan/texture/Material.cpp
+    src/vulkan/texture/VulkanCubemap.cpp
 )
 
 # =========================================================

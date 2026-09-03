@@ -53,6 +53,30 @@ void VulkanFramebuffer::createDepthOnly(
         throw std::runtime_error("Failed to create depth-only framebuffer");
 }
 
+void VulkanFramebuffer::createColorOnly(
+    VkDevice device,
+    VkRenderPass renderPass,
+    const std::vector<VkImageView>& imageViews,
+    VkExtent2D extent)
+{
+    framebuffers.resize(imageViews.size());
+
+    for (size_t i = 0; i < imageViews.size(); i++)
+    {
+        VkFramebufferCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        info.renderPass = renderPass;
+        info.attachmentCount = 1;
+        info.pAttachments = &imageViews[i];
+        info.width = extent.width;
+        info.height = extent.height;
+        info.layers = 1;
+
+        if (vkCreateFramebuffer(device, &info, nullptr, &framebuffers[i]) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create color-only framebuffer");
+    }
+}
+
 void VulkanFramebuffer::destroy(VkDevice device)
 {
     for (auto fb : framebuffers)

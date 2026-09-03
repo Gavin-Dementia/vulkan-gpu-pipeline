@@ -235,6 +235,50 @@ Tunable at runtime via an ImGui "Lighting" window (direction/color/
 intensity/shadow-bias sliders) — `FrameRenderer`'s `ImGuiPass` lambda
 mutates `VulkanContext`'s light state directly.
 
+### Image-Based Lighting (Milestone 1: cubemap infra + procedural sky)
+
+Closes the roadmap's "IBL / environment lighting" gap — staged across
+multiple milestones (see `TECHNICAL_NOTES.md` §33). **This milestone
+does not change the shading equation** — `triangle.frag`'s flat
+`0.03 * finalAlbedo * ao` ambient term is untouched; later milestones
+(diffuse irradiance convolution, specular prefilter + BRDF LUT) will
+read the cubemap this milestone builds and replace it.
+
+- `VulkanCubemap` (`include/vulkan/texture/VulkanCubemap.h`) — this
+  project's first cube image: one `VK_IMAGE_VIEW_TYPE_CUBE` view for
+  sampling (`samplerCube`) plus 6 `VK_IMAGE_VIEW_TYPE_2D` single-layer
+  views for use as render-pass color attachments (Vulkan render passes
+  attach 2D views per subresource, not cube views). Single mip level;
+  a later milestone baking a prefiltered specular chain will extend this.
+- `VulkanContext::initEnvironment()` — called right after `initCore()`,
+  before `initSceneData()`/`initCullingResources()`. Creates the
+  persistent `environmentCubemap_` (512×512/face,
+  `VK_FORMAT_R16G16B16A16_SFLOAT` — HDR-capable, the sun highlight is
+  deliberately >1.0), then does a 6-draw one-shot bake into it using
+  locally-scoped (not `VulkanContext`-owned) render pass/framebuffer/
+  pipeline resources, reusing the exact one-shot command buffer pattern
+  `VulkanTexture`'s setup-time layout transitions already established.
+- `VulkanRenderPass::createColorOnly()` / `VulkanFramebuffer::
+  createColorOnly()` — new no-depth variants alongside the existing
+  `create()`/`createDepthOnly()`/`createOffscreenColor()` methods, for
+  the bake's pure per-pixel-function render pass.
+- `shaders/fullscreenTriangle.vert` — a `gl_VertexIndex`-driven
+  fullscreen triangle, no vertex buffer, no uniform input. Shared
+  (compiled once) by both the bake pipeline
+  (`VulkanEnvCapturePipeline` + `shaders/envCapture.frag`, the
+  procedural sky function) and the live skybox pipeline
+  (`VulkanSkyboxPipeline` + `shaders/skybox.frag`, samples the baked
+  cubemap) — a deliberate reuse, since nothing in it is pipeline-specific.
+- Direction reconstruction (both the bake capture and the live skybox)
+  uses `inverse(viewProj) * ndc`, not hand-derived per-face basis
+  vectors — self-consistent by construction, see `TECHNICAL_NOTES.md`
+  §33 for why this replaced an earlier basis-vector design.
+- The live skybox draw is recorded inside `GeometryPass`'s existing
+  lambda (`FrameRenderer.cpp`), first, before the grid's pipeline bind —
+  no new `FrameGraph` pass. `depthTestEnable`/`depthWriteEnable` both
+  `false`, so the grid's own depth test afterward overdraws it wherever
+  geometry exists, with no z-value trickery needed.
+
 ### Shadow mapping
 
 Classic shadow mapping for the single directional light — see
@@ -642,6 +686,10 @@ Application
     │      "Grid collision + scatter" module notes)
     ├── Material (material_ - bundles 4 VulkanTexture: albedo/normal/
     │     metallic-roughness/AO, see "Lighting" module notes)
+    ├── environmentCubemap_ / skyboxDescriptor_ / skyboxPipeline_ (IBL
+    │     Milestone 1 - baked-once procedural sky cubemap + the live
+    │     skybox draw that samples it, see "Image-Based Lighting" module
+    │     notes; the ambient term itself is still unchanged)
     ├── sceneDataBuffer_ (shared UBO: light direction/color/intensity, camera pos,
     │     lightViewProj, shadow bias — bound at binding 2 on both descriptor_ and
     │     projectileDescriptor_, now also read by the vertex stage)
@@ -663,6 +711,8 @@ Application
                 │                          vkCmdDrawIndexedIndirect
                 ├── GeometryPass (Graphics, reads CullingPass + ShadowPass,
                 │   │                       renders into sceneFramebuffer_) —
+                │   │                       1× vkCmdDraw (skybox, drawn
+                │   │                       first, depth test/write off) +
                 │   │                       per-draw push constant
                 │   │                       (MaterialPushConstants: albedo/metallic/roughness)
                 │   │                       + 3× vkCmdDrawIndexedIndirect
@@ -757,6 +807,9 @@ Begin Offscreen Scene Render Pass (sceneRenderPass_/sceneFramebuffer_,
         │
 Graphics: GeometryPass
    upload SceneData (light + camera + lightViewProj + shadow bias) →
+   draw skybox (fullscreen triangle, samples environmentCubemap_, depth
+   test/write off - drawn first so the grid naturally overdraws it,
+   see "Image-Based Lighting" module notes) →
    push grid material constants → for each LOD: bind vertex/index/
    visible-instance buffers, vkCmdDrawIndexedIndirect (GPU-supplied
    instance count, fragment shader samples the shadow map for occlusion) →

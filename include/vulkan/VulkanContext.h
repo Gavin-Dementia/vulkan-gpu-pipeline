@@ -25,10 +25,13 @@
 #include "vulkan/pipeline/VulkanPipeline.h"
 #include "vulkan/pipeline/VulkanComputePipeline.h"
 #include "vulkan/pipeline/VulkanShadowPipeline.h"
+#include "vulkan/pipeline/VulkanSkyboxPipeline.h"
 #include "vulkan/buffer/IndexBuffer.h"
 #include "vulkan/instance/InstanceData.h"
 #include "vulkan/buffer/IndirectDrawBuffer.h"
 #include "vulkan/texture/Material.h"
+#include "vulkan/texture/VulkanCubemap.h"
+#include "vulkan/descriptor/SkyboxDescriptor.h"
 #include "vulkan/lighting/SceneData.h"
 
 
@@ -114,6 +117,15 @@ public:
     VulkanBuffer&          frustumBuffer()     { return frustumBuffer_; }
     VulkanBuffer&          objectBuffer()      { return objectBuffer_; }
     Material&              material()          { return material_; }
+
+    // IBL Milestone 1 (see docs/TECHNICAL_NOTES.md) - a procedurally
+    // baked environment cubemap, sampled by the live skybox draw
+    // (GeometryPass in FrameRenderer.cpp). Milestone 2/3 will read this
+    // same cubemap for diffuse irradiance convolution and specular
+    // prefiltering; the ambient term in triangle.frag is not yet touched.
+    VulkanCubemap&         environmentCubemap() { return environmentCubemap_; }
+    VulkanSkyboxPipeline&  skyboxPipeline()     { return skyboxPipeline_; }
+    SkyboxDescriptor&      skyboxDescriptor()   { return skyboxDescriptor_; }
 
     // Hierarchical culling's per-frame cluster bounding spheres (CPU-
     // aggregated from instanceCurrentPositions_ in updateInstanceSimulation(),
@@ -239,6 +251,14 @@ public:
 private:
 
     void initCore();
+    // IBL Milestone 1 - creates environmentCubemap_ and bakes a
+    // procedural sky into it (locally-scoped, one-shot render pass/
+    // framebuffer/pipeline, destroyed before this function returns), then
+    // creates the persistent skyboxDescriptor_/skyboxPipeline_. Called
+    // right after initCore() (needs device_/commandPool_/sceneRenderPass_/
+    // sceneColorTarget_, all created there) and before initSceneData()/
+    // initCullingResources() (which it doesn't need anything from).
+    void initEnvironment();
     void initSceneData();
     void initCullingResources();
 
@@ -286,6 +306,11 @@ private:
     VulkanComputePipeline computePipelineCoarse_;
     VulkanBuffer          frustumBuffer_;
     Material              material_;
+
+    // IBL Milestone 1 - see accessor comments above.
+    VulkanCubemap         environmentCubemap_;
+    VulkanSkyboxPipeline  skyboxPipeline_;
+    SkyboxDescriptor      skyboxDescriptor_;
 
     // Hierarchical culling (coarse pass) - see accessor comments above.
     VulkanBuffer          clusterBuffer_;

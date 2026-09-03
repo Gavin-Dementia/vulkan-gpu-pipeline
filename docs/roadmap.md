@@ -581,6 +581,47 @@ manually-tuned pair of numbers, just now a resolution/FOV-independent one.
 
 ---
 
+## Phase 15 — Image-Based Lighting, Milestone 1: Cubemap Infra + Procedural Sky
+
+**Status: Milestone 1 of 3 complete**
+
+Full IBL (diffuse irradiance convolution + specular prefilter/BRDF LUT)
+was requested but explicitly staged across multiple milestones rather
+than built in one pass. This phase is Milestone 1 only: the cubemap
+infrastructure, a procedurally baked sky (no external HDR asset - a
+deliberate choice, see `TECHNICAL_NOTES.md` §33), and a visible skybox
+proving the pipeline is wired correctly. **The "IBL / environment
+lighting" item under "Open / not yet started" below is only partially
+closed by this phase** - the flat `0.03 * albedo` ambient term itself is
+untouched; that's Milestone 2 (diffuse irradiance) and Milestone 3
+(specular prefilter + BRDF LUT), still open.
+
+- `VulkanCubemap` (new) - this project's first cube image: 1 sampling
+  view (`VK_IMAGE_VIEW_TYPE_CUBE`) + 6 per-face render-target views
+  (`VK_IMAGE_VIEW_TYPE_2D`), single mip level.
+- `VulkanContext::initEnvironment()` bakes a procedural gradient sky
+  (bright sun disk aligned with the existing `lightDirection_`) into the
+  cubemap once at startup via 6 draws into a locally-scoped render pass/
+  framebuffer/pipeline, reusing `VulkanTexture`'s existing one-shot
+  command buffer pattern.
+- New `VulkanRenderPass::createColorOnly()` / `VulkanFramebuffer::
+  createColorOnly()` (no-depth variants), a shared
+  `shaders/fullscreenTriangle.vert`, `VulkanEnvCapturePipeline` (bake) and
+  `VulkanSkyboxPipeline` (live draw, inside `GeometryPass`, depth test/
+  write disabled, no new `FrameGraph` pass).
+- Direction reconstruction (both bake and live skybox) uses
+  `inverse(viewProj)`, not hand-derived per-face basis vectors - see
+  `TECHNICAL_NOTES.md` §33 for why.
+
+Not yet done: Milestone 2 (diffuse irradiance convolution, replacing the
+diffuse half of the ambient term) and Milestone 3 (specular prefilter +
+BRDF LUT split-sum, adding the specular half) - both will read this same
+`environmentCubemap_`. Also not done: re-baking on a live light-direction
+change (the sky is baked once from whatever `lightDirection_` is at
+startup) and mip-chain support in `VulkanCubemap` (needed by Milestone 3).
+
+---
+
 ## Open / not yet started
 
 - **Live-resized viewport target** (Phase 11) — the offscreen scene
@@ -598,9 +639,12 @@ manually-tuned pair of numbers, just now a resolution/FOV-independent one.
   checks position once per frame; not observable at the current
   speed/instance-radius ratio, but would need revisiting for a much
   faster projectile or much smaller instances (§20)
-- **IBL / environment lighting** — current ambient term is a flat
-  `0.03 * albedo` constant (shadow mapping for the direct term is now
-  implemented — see Phase 9)
+- **IBL / environment lighting, Milestones 2 & 3** — the ambient term is
+  still a flat `0.03 * albedo` constant (shadow mapping for the direct
+  term is implemented, see Phase 9). Phase 15 (Milestone 1) built the
+  cubemap infrastructure and a procedural-sky skybox; still needed:
+  diffuse irradiance convolution (Milestone 2) and specular prefilter +
+  BRDF LUT (Milestone 3) to actually replace this constant.
 - **LOD thresholds not derived from per-mesh detail level** (Phase 12
   made them runtime-tunable data, Phase 14 made them screen-space-size-
   based instead of world-space-distance-based, but they're still one

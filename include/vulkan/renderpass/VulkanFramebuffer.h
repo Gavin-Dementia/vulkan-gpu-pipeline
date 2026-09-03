@@ -19,6 +19,14 @@ public:
                           VkImageView depthView,
                           VkExtent2D extent);
 
+    // One framebuffer per view, single color attachment each, no depth -
+    // pairs with VulkanRenderPass::createColorOnly(). Used to turn a
+    // VulkanCubemap's 6 face views into 6 bake targets in one call.
+    void createColorOnly(VkDevice device,
+                          VkRenderPass renderPass,
+                          const std::vector<VkImageView>& imageViews,
+                          VkExtent2D extent);
+
     void destroy(VkDevice device);
 
     const std::vector<VkFramebuffer>& get() const { return framebuffers; }

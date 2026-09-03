@@ -1,5 +1,6 @@
 #include "vulkan/VulkanContext.h"
 #include "vulkan/resource/ObjLoader.h"
+#include "vulkan/pipeline/VulkanEnvCapturePipeline.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -12,6 +13,7 @@ void VulkanContext::init(GLFWwindow* window)
     window_ = window;
 
     initCore();
+    initEnvironment();
     initSceneData();
     initCullingResources();
 
@@ -179,6 +181,165 @@ void VulkanContext::initCore()
         shadowMap_.extent(),
         shadowRenderPass_.get()
     );
+}
+
+// =========================================================
+// IBL Milestone 1: environment cubemap + procedural sky bake + skybox
+// pipeline (see docs/TECHNICAL_NOTES.md). Bakes once at startup, not
+// per-frame - the sky is a pure function of lightDirection_ at this
+// point in time, so a later live change to the light direction (the
+// "Lighting" ImGui window) will not move the sun in the skybox, an
+// accepted Milestone-1 limitation.
+// =========================================================
+void VulkanContext::initEnvironment()
+{
+    constexpr uint32_t kFaceSize = 512;
+    constexpr VkFormat kEnvFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+    environmentCubemap_.create(
+        device_.getPhysical(), device_.get(), kFaceSize, kEnvFormat,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+    );
+
+    // Locally-scoped bake resources - created, used, destroyed within
+    // this function; only environmentCubemap_ (and the persistent
+    // skyboxDescriptor_/skyboxPipeline_ created at the end) survive it.
+    VulkanRenderPass captureRenderPass;
+    captureRenderPass.createColorOnly(device_.get(), kEnvFormat);
+
+    std::vector<VkImageView> faceViews;
+    for (int i = 0; i < 6; i++)
+        faceViews.push_back(environmentCubemap_.faceView(i));
+
+    VkExtent2D faceExtent{ kFaceSize, kFaceSize };
+
+    VulkanFramebuffer captureFramebuffer;
+    captureFramebuffer.createColorOnly(device_.get(), captureRenderPass.get(), faceViews, faceExtent);
+
+    VulkanEnvCapturePipeline capturePipeline;
+    capturePipeline.create(device_.get(), faceExtent, captureRenderPass.get());
+
+    // Standard cubemap capture table (LearnOpenGL's IBL tutorial / Sascha
+    // Willems' Vulkan generateCubemaps() convention, not hand-derived) -
+    // face order matches Vulkan's cube array-layer convention:
+    // +X,-X,+Y,-Y,+Z,-Z.
+    static const glm::vec3 kCaptureForward[6] = {
+        { 1, 0, 0}, {-1, 0, 0}, { 0, 1, 0}, { 0,-1, 0}, { 0, 0, 1}, { 0, 0,-1}
+    };
+    static const glm::vec3 kCaptureUp[6] = {
+        { 0,-1, 0}, { 0,-1, 0}, { 0, 0, 1}, { 0, 0,-1}, { 0,-1, 0}, { 0,-1, 0}
+    };
+
+    glm::mat4 captureProj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 10.0f);
+    captureProj[1][1] *= -1;   // same Y-flip Camera::getProjectionMatrix() applies
+
+    glm::vec3 sunDir = glm::normalize(-lightDirection_);
+    float sunCosHalfAngle = std::cos(glm::radians(2.0f));   // ~4-degree-wide sun disk
+
+    // One-shot command buffer - exact pattern VulkanTexture::
+    // transitionLayout()/copyBufferToImage() already use for setup-time
+    // GPU work (src/vulkan/texture/VulkanTexture.cpp).
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool_.get();
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd;
+    vkAllocateCommandBuffers(device_.get(), &allocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    for (int face = 0; face < 6; face++)
+    {
+        glm::mat4 captureView = glm::lookAt(glm::vec3(0.0f), kCaptureForward[face], kCaptureUp[face]);
+
+        SkyCapturePushConstants pc{};
+        pc.invViewProj  = glm::inverse(captureProj * captureView);
+        pc.cameraPos    = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        pc.sunDirAndCos = glm::vec4(sunDir, sunCosHalfAngle);
+
+        VkClearValue clearValue{};
+        clearValue.color = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+        VkRenderPassBeginInfo rp{};
+        rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass = captureRenderPass.get();
+        rp.framebuffer = captureFramebuffer.get()[face];
+        rp.renderArea.offset = {0, 0};
+        rp.renderArea.extent = faceExtent;
+        rp.clearValueCount = 1;
+        rp.pClearValues = &clearValue;
+
+        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, capturePipeline.get());
+        vkCmdPushConstants(
+            cmd, capturePipeline.layout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(SkyCapturePushConstants), &pc
+        );
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+
+        vkCmdEndRenderPass(cmd);
+    }
+
+    // Orders the memory access after the 6 render passes' finalLayout
+    // transitions - each face's transition is already per-subresource-
+    // correct (Vulkan tracks layout per mip/layer, not per view), this
+    // barrier just makes the write->read visibility explicit, matching
+    // FrameRenderer.cpp's shadowBarrier/sceneBarrier precedent
+    // (oldLayout==newLayout, ordering only).
+    VkImageMemoryBarrier barrier{};
+    barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image               = environmentCubemap_.image();
+    barrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel   = 0;
+    barrier.subresourceRange.levelCount     = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount     = 6;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &barrier
+    );
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cmd;
+
+    vkQueueSubmit(device_.getGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(device_.getGraphicsQueue());
+
+    vkFreeCommandBuffers(device_.get(), commandPool_.get(), 1, &cmd);
+
+    capturePipeline.destroy(device_.get());
+    captureFramebuffer.destroy(device_.get());
+    captureRenderPass.destroy(device_.get());
+
+    // Persistent skybox descriptor/pipeline - sampled every frame by
+    // GeometryPass's skybox draw (FrameRenderer.cpp).
+    skyboxDescriptor_.create(
+        device_.get(), environmentCubemap_.cubeView(), environmentCubemap_.sampler()
+    );
+    skyboxPipeline_.create(
+        device_.get(), sceneColorTarget_.extent(), sceneRenderPass_.get(), skyboxDescriptor_.layout()
+    );
+
+    std::cout << "[VulkanContext] IBL Milestone 1: environment cubemap baked, skybox pipeline ready\n";
 }
 
 // =========================================================
@@ -664,6 +825,10 @@ void VulkanContext::cleanup()
     clusterBuffer_.destroy(device_.get());
     clusterVisibleCameraBuffer_.destroy(device_.get());
     clusterVisibleLightBuffer_.destroy(device_.get());
+
+    skyboxPipeline_.destroy(device_.get());
+    skyboxDescriptor_.destroy(device_.get());
+    environmentCubemap_.destroy(device_.get());
 
     for (int i = 0; i < 3; i++)
     {

@@ -2,6 +2,7 @@
 #include "vulkan/VulkanContext.h"
 #include "vulkan/culling/Frustum.h"
 #include "vulkan/frame/FrameGraph.h"
+#include "vulkan/pipeline/VulkanSkyboxPipeline.h"
 #include "imgui.h"
 #include "imgui_internal.h"   // DockBuilder* - one-time default dock layout, see ImGuiPass below
 #include "imgui_impl_vulkan.h"
@@ -254,6 +255,29 @@ void FrameRenderer::init(VulkanContext& ctx)
             scene.lightViewProj  = context->lightViewProj();
             scene.shadowParams   = glm::vec4(context->shadowBias(), 0.0f, 0.0f, 0.0f);
             context->sceneDataBuffer().upload(context->device().get(), &scene, sizeof(SceneData));
+
+            // Skybox - drawn first so the grid's normal LESS depth test
+            // naturally overdraws it wherever real geometry exists; depth
+            // write disabled so it never pollutes the depth buffer the
+            // grid's test depends on. No new FrameGraph pass - same "just
+            // another draw call in this lambda" precedent the projectile
+            // draw below already uses. See docs/TECHNICAL_NOTES.md (IBL
+            // Milestone 1).
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->skyboxPipeline().get());
+            VkDescriptorSet skyDs = context->skyboxDescriptor().set();
+            vkCmdBindDescriptorSets(
+                cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                context->skyboxPipeline().layout(), 0, 1, &skyDs, 0, nullptr
+            );
+
+            SkyboxPushConstants skyPc{};
+            skyPc.invViewProj = glm::inverse(ubo.proj * ubo.view);
+            skyPc.cameraPos   = glm::vec4(context->camera().position(), 1.0f);
+            vkCmdPushConstants(
+                cmd, context->skyboxPipeline().layout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+                0, sizeof(SkyboxPushConstants), &skyPc
+            );
+            vkCmdDraw(cmd, 3, 1, 0, 0);
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, context->pipeline().get());
 

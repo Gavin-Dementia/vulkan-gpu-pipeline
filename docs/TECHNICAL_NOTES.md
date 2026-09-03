@@ -1896,6 +1896,141 @@ full range of distances objects can be at; the comparison itself has to
 move from `camDist < threshold` to `screenSize > threshold`, not just
 have its right-hand side rescaled.
 
+### 33. Image-Based Lighting, Milestone 1: cubemap infrastructure + procedural sky
+
+`docs/roadmap.md`'s "Open / not yet started" list named this gap
+explicitly: *"IBL / environment lighting — current ambient term is a flat
+`0.03 * albedo` constant."* Full IBL (diffuse irradiance convolution +
+specular prefilter/BRDF LUT) was requested but explicitly staged, not
+built in one pass. **This section covers Milestone 1 only: cubemap
+infrastructure, a procedurally baked sky, and a visible skybox — the
+`0.03 * finalAlbedo * ao` ambient term in `triangle.frag` is not touched
+by this milestone at all.** Milestones 2/3 will read this same cubemap
+to actually replace it.
+
+**Why procedural, not a loaded HDR file.** Phase 8 sourced a real
+external asset (`suzanne_pbr.obj`) when a functional gap (no UV data)
+made a placeholder inadequate, with explicit attribution. Here the
+environment's *content* doesn't matter for proving the cubemap/
+convolution mechanism works — a procedural gradient sky is a legitimate,
+self-contained source (no licensing question, no network dependency, no
+`stbi_loadf`/HDR-file-format code path needed yet) that exercises exactly
+the same infrastructure a photographed HDRI would. `envCapture.frag`
+computes a `mix(horizon, zenith)` gradient plus a bright sun disk aligned
+with `-lightDirection_` — the same directional light the rest of the
+scene already uses, not an independent, driftable second light source.
+
+**Why `inverse(viewProj)` for direction reconstruction, not hand-derived
+basis vectors.** Both the bake capture and the live skybox reconstruct a
+per-pixel world-space ray direction the same way:
+`worldPos = invViewProj * vec4(ndc, 1, 1); worldPos /= worldPos.w; dir =
+normalize(worldPos.xyz - eyePos)`. This is the exact algebraic inverse of
+the transform that placed the fullscreen triangle in clip space, so it's
+self-consistent by construction — there's no separate set of
+right/up/forward basis vectors that could drift out of sync with the
+projection matrix's own convention (this project's `proj[1][1] *= -1`
+Vulkan Y-flip, applied identically here to the 6 capture-face
+projections via the same convention `Camera::getProjectionMatrix()`
+uses). A hand-derived per-face basis (`dir = forward + ndc.x*right +
+ndc.y*up`) was the original design; it was replaced specifically because
+a sign error in 6 manually-transcribed basis triples is a real,
+easy-to-make, hard-to-spot-by-reading-code risk (it would show up
+subtly, as a mirrored or rotated sky, not a crash) — `inverse(viewProj)`
+eliminates that entire risk category rather than requiring it to be
+gotten right by careful derivation.
+
+**The 6-face capture table.** Six real `glm::lookAt` view matrices, one
+per cube face, using the standard capture-direction table (identical to
+LearnOpenGL's IBL tutorial and Sascha Willems' Vulkan
+`generateCubemaps()` — a proven, widely-shipped reference, not derived
+from scratch):
+```cpp
+static const glm::vec3 kCaptureForward[6] = {
+    { 1, 0, 0}, {-1, 0, 0}, { 0, 1, 0}, { 0,-1, 0}, { 0, 0, 1}, { 0, 0,-1}
+};
+static const glm::vec3 kCaptureUp[6] = {
+    { 0,-1, 0}, { 0,-1, 0}, { 0, 0, 1}, { 0, 0,-1}, { 0,-1, 0}, { 0,-1, 0}
+};
+// face order matches Vulkan's cube array-layer convention: +X,-X,+Y,-Y,+Z,-Z
+```
+paired with a 90°-FOV projection carrying the same Y-flip
+`Camera::getProjectionMatrix()` applies
+(`captureProj[1][1] *= -1`), so a bounding-sphere-radius-style mistake
+(reusing the *wrong* convention for a *different* matrix — the exact bug
+class §22 already hit once for the light's orthographic matrix) doesn't
+repeat here.
+
+**Bake once, HDR raw; tonemap only in the live draw.**
+`environmentCubemap_` is `VK_FORMAT_R16G16B16A16_SFLOAT` (HDR-capable —
+the sun highlight is deliberately >1.0, values M2/M3's irradiance/
+prefiltered cubemaps will also need this range for). `envCapture.frag`
+writes raw, untonemapped color; `skybox.frag` applies the exact same
+Reinhard tonemap (`color/(color+1)`) `triangle.frag`'s last line already
+uses, so the skybox and the lit grid share one consistent dynamic-range
+mapping despite being computed in two different shaders.
+
+**Baking mechanics.** `VulkanContext::initEnvironment()` (called from
+`init()` right after `initCore()`, before `initSceneData()`/
+`initCullingResources()`) creates the persistent `environmentCubemap_`
+(a new `VulkanCubemap` class — this project's first cube image; one
+`VK_IMAGE_VIEW_TYPE_CUBE` view for sampling, 6 `VK_IMAGE_VIEW_TYPE_2D`
+single-layer views for render-pass attachments, since Vulkan attaches 2D
+views per subresource, not cube views), then does a **6-draw, one-shot
+bake** using locally-scoped (created, used, destroyed within this one
+function — not `VulkanContext` members, since they're never needed
+again) render pass/framebuffer/pipeline. Reuses the exact one-shot
+command buffer pattern `VulkanTexture::transitionLayout()`/
+`copyBufferToImage()` already established for setup-time GPU work:
+`ONE_TIME_SUBMIT_BIT`, one `vkQueueSubmit`+`vkQueueWaitIdle`, no fence.
+One `VkImageMemoryBarrier` covering all 6 array layers
+(`oldLayout==newLayout==SHADER_READ_ONLY_OPTIMAL`) orders the memory
+access explicitly before the cube view is first sampled — the per-face
+render passes' `finalLayout` already transitions each of the 6
+subresources correctly (Vulkan tracks image layout per-subresource, not
+per-view), but this barrier makes the write→read ordering explicit, the
+same `oldLayout==newLayout`, "ordering only" shape `FrameRenderer.cpp`'s
+`shadowBarrier`/`sceneBarrier` already use.
+
+**Shared `fullscreenTriangle.vert`.** Both the bake pipeline
+(`VulkanEnvCapturePipeline`) and the live skybox pipeline
+(`VulkanSkyboxPipeline`) point at the same compiled `.vert` — a
+deliberate reuse, since a `gl_VertexIndex`-driven fullscreen triangle has
+nothing pipeline-specific about it, unlike this codebase's usual
+one-`.vert`/`.frag`-pair-per-pipeline convention.
+
+**The skybox draw itself needs no new `FrameGraph` pass.** It's recorded
+inside `GeometryPass`'s existing lambda (`FrameRenderer.cpp`), first,
+before the grid's pipeline bind — the same "just another draw call in
+this lambda" precedent the projectile draw already established.
+`depthTestEnable`/`depthWriteEnable` both `VK_FALSE`: the skybox always
+draws (fullscreen triangle, nothing to discard) and never touches the
+depth buffer, so the grid's own `LESS` test afterward runs against the
+still-pristine 1.0-cleared depth buffer exactly as before this
+milestone — no z-value trickery (e.g. authoring the triangle at exactly
+the far plane and relying on a `LESS_OR_EQUAL` test) needed.
+
+**Interview-relevant:** *"Why reconstruct the ray direction via
+`inverse(viewProj)` instead of passing basis vectors as a push
+constant?"* — single source of truth and correctness-by-construction.
+Basis vectors would be a second, independently-computed representation
+of the same camera/face orientation the projection matrix already
+encodes; keeping both in sync is pure bookkeeping risk with no
+compensating benefit (the inverse-matrix approach costs one
+`glm::inverse()` per draw, negligible next to a full frame's work). This
+mirrors a discipline already established elsewhere in this codebase —
+`Camera::getViewMatrix()`/`getProjectionMatrix()` being the one shared
+source for both the culling pass and the geometry pass (§10) — applied
+to a new problem (ray-direction reconstruction) rather than a new
+principle invented for this feature.
+
+**Not done in this milestone (open for M2/M3):** the ambient term in
+`triangle.frag` is unchanged; the environment is baked once at startup
+from whatever `lightDirection_` is at that moment, so a live change to
+the light direction via the "Lighting" ImGui window does not move the
+sun in the skybox (re-baking on demand, e.g. a "Rebake Environment"
+button, is a cheap follow-up but out of scope here); `VulkanCubemap` is
+single-mip only, which M3's specular prefilter will need to extend.
+
 ---
 
 ## Bugs encountered (and what they taught)
