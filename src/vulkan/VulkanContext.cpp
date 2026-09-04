@@ -153,6 +153,19 @@ void VulkanContext::initCore()
         sceneColorTarget_.extent()
     );
 
+    // Phase 23 M1 (docs/roadmap.md) - the refraction copy target. Same
+    // class/extent as sceneColorTarget_ (widened usage flags let either
+    // side of the copy use the same class); no render pass/framebuffer of
+    // its own since it's only ever a vkCmdCopyImage destination and a
+    // sampled texture, never rendered into directly. refractionDescriptor_
+    // is created here too - it just needs the (currently garbage, never
+    // sampled until refractionEnabled_ is turned on and a real frame has
+    // copied into it) image view/sampler to exist, not valid content yet.
+    sceneColorCopy_.create(device_.getPhysical(), device_.get(), 1280, 720);
+    refractionDescriptor_.create(
+        device_.get(), sceneColorCopy_.view(), sceneColorCopy_.sampler()
+    );
+
     // IBL (see docs/TECHNICAL_NOTES.md §33/§34/§35): must run here, not
     // as a separate step after initCore() returns - it needs
     // sceneRenderPass_/sceneColorTarget_ (just created above) for
@@ -187,6 +200,25 @@ void VulkanContext::initCore()
         descriptor_.layout(),
         iblDescriptor_.layout(),
         /*transparent=*/true
+    );
+
+    // Refractive sibling of pipeline_ (Phase 23 M1) - opaque depth
+    // behavior (blend off, depth write on), not transparentPipeline_'s
+    // blend-on/depth-write-off state: refraction composites the sampled
+    // background directly in-shader rather than via the fixed-function
+    // blend stage, so ordinary nearest-first depth testing already gives
+    // correct occlusion between refractive instances - no back-to-front
+    // sort needed the way alpha blending requires. 3rd descriptor set
+    // (refractionDescriptor_) + its own fragment shader.
+    refractivePipeline_.create(
+        device_.get(),
+        sceneColorTarget_.extent(),
+        sceneRenderPass_.get(),
+        descriptor_.layout(),
+        iblDescriptor_.layout(),
+        /*transparent=*/false,
+        refractionDescriptor_.layout(),
+        "shaders/compiled/triangle_refractive.frag.spv"
     );
 
     framebuffer_.create(
@@ -252,11 +284,15 @@ void VulkanContext::resizeSceneTarget(uint32_t width, uint32_t height)
     sceneFramebuffer_.destroy(device_.get());
     pipeline_.destroy(device_.get());
     transparentPipeline_.destroy(device_.get());
+    refractivePipeline_.destroy(device_.get());
+    refractionDescriptor_.destroy(device_.get());
     skyboxPipeline_.destroy(device_.get());
     sceneColorDepth_.destroy(device_.get());
     sceneColorTarget_.destroy(device_.get());
+    sceneColorCopy_.destroy(device_.get());
 
     sceneColorTarget_.create(device_.getPhysical(), device_.get(), width, height);
+    sceneColorCopy_.create(device_.getPhysical(), device_.get(), width, height);
     sceneColorDepth_.create(
         device_.getPhysical(), device_.get(), sceneColorTarget_.extent()
     );
@@ -266,6 +302,13 @@ void VulkanContext::resizeSceneTarget(uint32_t width, uint32_t height)
         { sceneColorTarget_.view() },
         sceneColorDepth_.view(),
         sceneColorTarget_.extent()
+    );
+    // sceneColorTarget_ is freshly created (no content, undefined layout)
+    // until it completes a real render pass again - see
+    // sceneColorEverRendered()'s accessor comment.
+    sceneColorEverRendered_ = false;
+    refractionDescriptor_.create(
+        device_.get(), sceneColorCopy_.view(), sceneColorCopy_.sampler()
     );
     pipeline_.create(
         device_.get(),
@@ -281,6 +324,16 @@ void VulkanContext::resizeSceneTarget(uint32_t width, uint32_t height)
         descriptor_.layout(),
         iblDescriptor_.layout(),
         /*transparent=*/true
+    );
+    refractivePipeline_.create(
+        device_.get(),
+        sceneColorTarget_.extent(),
+        sceneRenderPass_.get(),
+        descriptor_.layout(),
+        iblDescriptor_.layout(),
+        /*transparent=*/false,
+        refractionDescriptor_.layout(),
+        "shaders/compiled/triangle_refractive.frag.spv"
     );
     skyboxPipeline_.create(
         device_.get(), sceneColorTarget_.extent(), sceneRenderPass_.get(), skyboxDescriptor_.layout()
@@ -1310,6 +1363,9 @@ void VulkanContext::cleanup()
 
     pipeline_.destroy(device_.get());
     transparentPipeline_.destroy(device_.get());
+    refractivePipeline_.destroy(device_.get());
+    refractionDescriptor_.destroy(device_.get());
+    sceneColorCopy_.destroy(device_.get());
     sceneFramebuffer_.destroy(device_.get());
     sceneRenderPass_.destroy(device_.get());
     sceneColorDepth_.destroy(device_.get());

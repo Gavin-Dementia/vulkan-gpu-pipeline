@@ -15,7 +15,8 @@ void VulkanSceneColorTarget::create(VkPhysicalDevice physical, VkDevice device, 
     imageInfo.arrayLayers   = 1;
     imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                             | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     if (vkCreateImage(device, &imageInfo, nullptr, &image_) != VK_SUCCESS)
@@ -49,10 +50,35 @@ void VulkanSceneColorTarget::create(VkPhysicalDevice physical, VkDevice device, 
 
     if (vkCreateImageView(device, &viewInfo, nullptr, &view_) != VK_SUCCESS)
         throw std::runtime_error("Failed to create scene color target image view");
+
+    // Not every instance samples itself (ImGui's Viewport window uses its
+    // own separate registration), but Phase 23 M1's copy target does -
+    // owning the sampler here matches every other image-owning class in
+    // this codebase (VulkanTexture/VulkanCubemap/VulkanBRDFLut/
+    // VulkanShadowMap all create their own). CLAMP_TO_EDGE so a refraction
+    // UV offset that pushes slightly outside [0,1] samples the edge pixel
+    // instead of wrapping/bordering.
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType         = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter     = VK_FILTER_LINEAR;
+    samplerInfo.minFilter     = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.borderColor   = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp     = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode    = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+    if (vkCreateSampler(device, &samplerInfo, nullptr, &sampler_) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create scene color target sampler");
 }
 
 void VulkanSceneColorTarget::destroy(VkDevice device)
 {
+    vkDestroySampler(device, sampler_, nullptr);
     vkDestroyImageView(device, view_, nullptr);
     vkDestroyImage(device, image_, nullptr);
     vkFreeMemory(device, memory_, nullptr);

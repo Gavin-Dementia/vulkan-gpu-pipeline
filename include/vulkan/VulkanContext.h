@@ -202,6 +202,41 @@ public:
     VulkanRenderPass&       sceneRenderPass()    { return sceneRenderPass_; }
     VulkanFramebuffer&      sceneFramebuffer()   { return sceneFramebuffer_; }
 
+    // Phase 23 M1 (docs/roadmap.md) - refraction infrastructure. See
+    // triangle_refractive.frag and FrameRenderer.cpp's pre-scene-pass copy
+    // step for the full design (previous-frame capture, not a same-frame
+    // render-pass split).
+    VulkanSceneColorTarget& sceneColorCopy()       { return sceneColorCopy_; }
+    VulkanPipeline&         refractivePipeline()   { return refractivePipeline_; }
+    CubeSamplerDescriptor&  refractionDescriptor() { return refractionDescriptor_; }
+
+    // Global refraction toggle (mirrors gridAlpha()'s whole-grid scope -
+    // see roadmap's M1 "open question", resolved global-first) - default
+    // off, existing behavior unchanged until explicitly enabled. Takes
+    // priority over gridAlpha()/transparentPipeline_ when both would
+    // otherwise apply (GeometryPass in FrameRenderer.cpp).
+    bool  refractionEnabled() const { return refractionEnabled_; }
+    void  setRefractionEnabled(bool e) { refractionEnabled_ = e; }
+    // Index of refraction, pushed through MaterialPushConstants::
+    // metallicRoughness.w (see SceneData.h). >= 1.0 always (refract()
+    // below 1.0 would mean the material bends light less than air, not a
+    // real dielectric); the setter enforces that floor the same way
+    // setRestitution()/setLod1ScreenSize() enforce their own invariants.
+    float refractionIOR() const { return refractionIOR_; }
+    void  setRefractionIOR(float ior) { refractionIOR_ = glm::max(ior, 1.0f); }
+
+    // True once sceneColorTarget_ has completed at least one real render
+    // pass since its last create()/resize - guards the pre-scene-pass copy
+    // in FrameRenderer.cpp from copying out of an image whose actual
+    // layout doesn't match the SHADER_READ_ONLY_OPTIMAL the copy's barrier
+    // assumes (true immediately after initCore()/resizeSceneTarget(),
+    // both of which leave the image freshly created and never rendered
+    // into yet). Set by FrameRenderer right after the scene render pass
+    // ends, every frame - cheap enough not to gate behind
+    // refractionEnabled_ itself.
+    bool  sceneColorEverRendered() const { return sceneColorEverRendered_; }
+    void  markSceneColorRendered()       { sceneColorEverRendered_ = true; }
+
     // Recreates sceneColorTarget_/sceneColorDepth_/sceneFramebuffer_ and
     // the two pipelines whose VkViewport/scissor is baked in at creation
     // time (pipeline_, skyboxPipeline_) at a new size - called by
@@ -494,6 +529,21 @@ private:
     VulkanDepthBuffer      sceneColorDepth_;   // independent of the swapchain's depthBuffer_
     VulkanRenderPass       sceneRenderPass_;
     VulkanFramebuffer      sceneFramebuffer_;
+
+    // Phase 23 M1 - see accessor comments above. refractionDescriptor_ is
+    // a CubeSamplerDescriptor despite sampling a flat 2D image, not a
+    // cubemap - that class's layout (1 combined-image-sampler binding,
+    // fragment stage) is already exactly what a single 2D sampler needs,
+    // and Vulkan's descriptor set plumbing doesn't care about the bound
+    // image's view type, only the GLSL shader's sampler type (sampler2D
+    // here) has to match - reused as-is rather than adding a near-
+    // duplicate class.
+    VulkanSceneColorTarget sceneColorCopy_;
+    VulkanPipeline          refractivePipeline_;
+    CubeSamplerDescriptor   refractionDescriptor_;
+    bool                    refractionEnabled_       = false;
+    float                   refractionIOR_           = 1.5f;
+    bool                    sceneColorEverRendered_  = false;
 
     glm::vec3             lightDirection_ = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f));
     glm::vec3             lightColor_     = glm::vec3(1.0f, 1.0f, 1.0f);

@@ -293,7 +293,15 @@ void FrameRenderer::init(VulkanContext& ctx)
             scene.lightColor     = glm::vec4(context->lightColor(), context->lightIntensity());
             scene.cameraPos      = glm::vec4(context->camera().position(), 1.0f);
             scene.lightViewProj  = context->lightViewProj();
-            scene.shadowParams   = glm::vec4(context->shadowBias(), 0.0f, 0.0f, 0.0f);
+            // y/z = sceneColorTarget_'s extent (Phase 23 M1) - see
+            // SceneData.h; triangle_refractive.frag divides gl_FragCoord.xy
+            // by this to recover its screen UV.
+            scene.shadowParams   = glm::vec4(
+                context->shadowBias(),
+                static_cast<float>(sceneExtent.width),
+                static_cast<float>(sceneExtent.height),
+                0.0f
+            );
             context->sceneDataBuffer().upload(context->device().get(), &scene, sizeof(SceneData));
 
             // Skybox - drawn first so the grid's normal LESS depth test
@@ -323,9 +331,15 @@ void FrameRenderer::init(VulkanContext& ctx)
             // (see docs/TECHNICAL_NOTES.md §43) - same shaders/layout, so
             // every descriptor bind/push-constant call below reads
             // activePipeline.getLayout() and stays correct either way.
-            bool transparent = context->isTransparent();
-            VulkanPipeline& activePipeline = transparent
-                ? context->transparentPipeline() : context->pipeline();
+            // Refraction (Phase 23 M1) takes priority over gridAlpha() when
+            // both are set - it's an opaque-depth pipeline (see
+            // refractivePipeline_'s creation comment), not the alpha-blend
+            // one, so `transparent` here only ever selects
+            // transparentPipeline_, never both at once.
+            bool refraction = context->refractionEnabled();
+            bool transparent = !refraction && context->isTransparent();
+            VulkanPipeline& activePipeline = refraction ? context->refractivePipeline()
+                : transparent ? context->transparentPipeline() : context->pipeline();
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline.get());
 
@@ -354,16 +368,29 @@ void FrameRenderer::init(VulkanContext& ctx)
                 0, nullptr
             );
 
+            // Set 2 (Phase 23 M1) - the previous frame's captured scene
+            // color, only meaningful (and only present in
+            // refractivePipeline_'s layout) when refraction is active.
+            if (refraction)
+            {
+                VkDescriptorSet refractDs = context->refractionDescriptor().set();
+                vkCmdBindDescriptorSets(
+                    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline.getLayout(),
+                    2, 1, &refractDs, 0, nullptr
+                );
+            }
+
             // Grid material - rough dielectric. Pushed before the loop since
             // the grid and projectile share this pipeline's push-constant
             // range in the same command buffer and must each set it fresh.
             // Alpha (w) is gridAlpha() - 1.0 (opaque) by default, so this
             // is byte-identical to the pre-§43 behavior unless transparency
             // is actually in use. metallicRoughness.z is the master texture
-            // toggle (§44), default off.
+            // toggle (§44); .w is IOR (Phase 23 M1, refractivePipeline_
+            // only - triangle.frag never reads it).
             MaterialPushConstants gridMat{
                 glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
-                glm::vec4(0.0f, 0.5f, context->texturesEnabled() ? 1.0f : 0.0f, 0.0f) };
+                glm::vec4(0.0f, 0.5f, context->texturesEnabled() ? 1.0f : 0.0f, context->refractionIOR()) };
             vkCmdPushConstants(
                 cmd, activePipeline.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
                 0, sizeof(MaterialPushConstants), &gridMat
@@ -432,7 +459,7 @@ void FrameRenderer::init(VulkanContext& ctx)
                 // isn't sorted - a known limitation, not addressed here.
                 MaterialPushConstants projMat{
                     glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
-                    glm::vec4(1.0f, 0.2f, context->texturesEnabled() ? 1.0f : 0.0f, 0.0f) };
+                    glm::vec4(1.0f, 0.2f, context->texturesEnabled() ? 1.0f : 0.0f, context->refractionIOR()) };
                 vkCmdPushConstants(
                     cmd, activePipeline.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
                     0, sizeof(MaterialPushConstants), &projMat
@@ -657,6 +684,17 @@ void FrameRenderer::init(VulkanContext& ctx)
             bool sortEnabled = context->transparencySortEnabled();
             if (ImGui::Checkbox("Enable Transparency Sort", &sortEnabled))
                 context->setTransparencySortEnabled(sortEnabled);
+
+            // Phase 23 M1 (docs/roadmap.md) - global refraction toggle,
+            // takes priority over Grid Alpha above when both are set (see
+            // GeometryPass's pipeline selection). IOR ~1.33 = water,
+            // ~1.5 = glass.
+            bool refractionEnabled = context->refractionEnabled();
+            if (ImGui::Checkbox("Enable Refraction (glass/jelly)", &refractionEnabled))
+                context->setRefractionEnabled(refractionEnabled);
+            float ior = context->refractionIOR();
+            if (ImGui::SliderFloat("IOR", &ior, 1.0f, 2.5f, "%.2f"))
+                context->setRefractionIOR(ior);
 
             ImGui::Separator();
             ImGui::Text("GPU Timing (ms)");
@@ -962,6 +1000,87 @@ void FrameRenderer::drawFrame()
         0, 0, nullptr, 0, nullptr, 1, &shadowBarrier
     );
 
+    // ===== Phase 23 M1 (docs/roadmap.md): capture the *previous* frame's
+    // fully-composited scene into sceneColorCopy_ before this frame clears
+    // and redraws sceneColorTarget_ - the source refractive materials
+    // sample this frame (see triangle_refractive.frag). Gated on
+    // refractionEnabled() (skip the cost entirely when unused, same
+    // pattern as the transparency sort dispatch) and
+    // sceneColorEverRendered() (skip the one frame right after init/resize
+    // where sceneColorTarget_'s actual layout doesn't match what this
+    // barrier assumes - see that accessor's comment).
+    if (context->refractionEnabled() && context->sceneColorEverRendered())
+    {
+        auto& srcTarget = context->sceneColorTarget();
+        auto& dstCopy   = context->sceneColorCopy();
+
+        std::array<VkImageMemoryBarrier, 2> preCopyBarriers{};
+        preCopyBarriers[0].sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        preCopyBarriers[0].oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        preCopyBarriers[0].newLayout         = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        preCopyBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preCopyBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preCopyBarriers[0].image             = srcTarget.image();
+        preCopyBarriers[0].subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        preCopyBarriers[0].srcAccessMask     = VK_ACCESS_SHADER_READ_BIT;
+        preCopyBarriers[0].dstAccessMask     = VK_ACCESS_TRANSFER_READ_BIT;
+
+        // oldLayout=UNDEFINED is always valid here (it means "discard
+        // whatever's there," not "must currently be UNDEFINED") - simpler
+        // than tracking dstCopy's true previous layout across frames,
+        // which alternates between never-used and this same barrier's own
+        // post-copy SHADER_READ_ONLY_OPTIMAL below.
+        preCopyBarriers[1].sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        preCopyBarriers[1].oldLayout         = VK_IMAGE_LAYOUT_UNDEFINED;
+        preCopyBarriers[1].newLayout         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        preCopyBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preCopyBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preCopyBarriers[1].image             = dstCopy.image();
+        preCopyBarriers[1].subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        preCopyBarriers[1].srcAccessMask     = 0;
+        preCopyBarriers[1].dstAccessMask     = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(
+            frame.commandBuffer,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr,
+            static_cast<uint32_t>(preCopyBarriers.size()), preCopyBarriers.data()
+        );
+
+        VkImageCopy copyRegion{};
+        copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copyRegion.extent = { srcTarget.extent().width, srcTarget.extent().height, 1 };
+
+        vkCmdCopyImage(
+            frame.commandBuffer,
+            srcTarget.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dstCopy.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &copyRegion
+        );
+
+        // Only dstCopy needs transitioning back - srcTarget's upcoming
+        // render pass has initialLayout=UNDEFINED (VulkanRenderPass::
+        // createOffscreenColor()), so it doesn't matter what layout the
+        // copy above left it in.
+        VkImageMemoryBarrier postCopyBarrier{};
+        postCopyBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        postCopyBarrier.oldLayout         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        postCopyBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        postCopyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        postCopyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        postCopyBarrier.image             = dstCopy.image();
+        postCopyBarrier.subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        postCopyBarrier.srcAccessMask     = VK_ACCESS_TRANSFER_WRITE_BIT;
+        postCopyBarrier.dstAccessMask     = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(
+            frame.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &postCopyBarrier
+        );
+    }
+
     // ===== Graphics: offscreen scene pass, its own render pass/framebuffer
     // (sceneRenderPass_/sceneFramebuffer_), fixed resolution - sampled by
     // ImGui's "Viewport" window below instead of being presented directly.
@@ -983,6 +1102,12 @@ void FrameRenderer::drawFrame()
     vkCmdBeginRenderPass(frame.commandBuffer, &sceneRp, VK_SUBPASS_CONTENTS_INLINE);
     graph->executeGraphics(frame.commandBuffer);
     vkCmdEndRenderPass(frame.commandBuffer);
+    // Unconditional (not gated on refractionEnabled()) - this just records
+    // that sceneColorTarget_ now holds a real rendered frame at its
+    // current size, which the *next* frame's refraction copy step above
+    // needs to know regardless of whether refraction happens to be on this
+    // particular frame.
+    context->markSceneColorRendered();
 
     // Barrier: the scene pass's color write must finish (and become
     // visible) before ImGui's fragment shader samples it in the Viewport

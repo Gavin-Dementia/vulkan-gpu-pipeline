@@ -13,7 +13,9 @@ void VulkanPipeline::create(
     VkRenderPass renderPass,
     VkDescriptorSetLayout materialLayout,
     VkDescriptorSetLayout iblLayout,
-    bool transparent)
+    bool transparent,
+    VkDescriptorSetLayout refractionLayout,
+    const char* fragShaderPath)
 {
     // =========================================================
     // 1. Shader modules
@@ -22,7 +24,7 @@ void VulkanPipeline::create(
         ShaderLoader::load(device, "shaders/compiled/triangle.vert.spv");
 
     VkShaderModule fragModule =
-        ShaderLoader::load(device, "shaders/compiled/triangle.frag.spv");
+        ShaderLoader::load(device, fragShaderPath);
 
     VkPipelineShaderStageCreateInfo stages[2]{};
 
@@ -156,7 +158,9 @@ void VulkanPipeline::create(
     pushRange.offset     = 0;
     pushRange.size       = sizeof(MaterialPushConstants);
 
-    std::array<VkDescriptorSetLayout, 2> setLayouts = { materialLayout, iblLayout };
+    std::vector<VkDescriptorSetLayout> setLayouts = { materialLayout, iblLayout };
+    if (refractionLayout != VK_NULL_HANDLE)
+        setLayouts.push_back(refractionLayout);
 
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;

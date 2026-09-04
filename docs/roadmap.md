@@ -961,58 +961,72 @@ Adds a runtime on/off switch for material texture sampling, default
 
 ---
 
-## Phase 23 — Transparency Shading Model (Planned)
+## Phase 23 — Transparency Shading Model
 
-**Status: Planned — design only, no implementation yet**
+**Status: Milestone 1 complete; M2/M3 planned, not yet implemented**
 
 Direct follow-up to Phase 21, which built the alpha-blend/GPU-sort
 infrastructure but explicitly scoped out the real transparent shading
-model, mixed-material scenes, and projectile sort ordering. Three
-milestones, M1 designed in detail below; M2/M3 sketched at plan level
-and to be refined once M1's pipeline-split lands.
+model, mixed-material scenes, and projectile sort ordering.
 
-**Milestone 1 — Refraction/IOR shading (glass/jelly/liquid)**
+**Milestone 1 — Refraction/IOR shading (glass/jelly/liquid) — Complete**
 
-Real screen-space refraction, replacing pure alpha blending for
-materials that need it. Key constraint found while planning: `GeometryPass`
-is currently a single render pass instance (skybox + grid + projectile
-all drawn together, opaque-vs-transparent chosen once per frame via
-`gridAlpha()`), and Vulkan can't sample and write the same attachment in
-one pass — so refraction needs a real pass-structure change, not just a
-new shader.
+Real screen-space refraction, global toggle (resolved the "global vs.
+per-instance" open question below in favor of global — ships
+independently of M2, which per-instance would have required as a
+prerequisite). See `docs/TECHNICAL_NOTES.md` §45 for the full design.
 
-Planned design:
-- New `sceneColorCopy_` target (same format/extent as `sceneColorTarget_`);
-  `sceneColorTarget_` gains `TRANSFER_SRC_BIT`, the copy gets
-  `TRANSFER_DST_BIT | SAMPLED_BIT`.
-- `GeometryPass` splits into two render pass instances sharing the same
-  attachments: Pass A (skybox + opaque draws, `LOAD_OP_CLEAR` as today) →
-  barrier + `vkCmdCopyImage` into `sceneColorCopy_` → Pass B (refractive/
-  transparent draws, `LOAD_OP_LOAD`, samples the copy). This is the
-  single largest structural piece — everything else below follows
-  established patterns.
-- New `refractivePipeline_` (blend off — refraction composites in-shader
-  rather than double-applying translucency via blend — depth-test on,
-  depth-write off, matching `transparentPipeline_` otherwise).
-- Shader: `refract(viewDir, normal, 1.0/IOR)`, screen-space UV offset via
-  a `(1 - NdotV)`-scaled approximation (same small-angle-approximation
-  spirit as §14's screen-size LOD math, not an exact re-projection),
-  samples `sceneColorCopy_`, tints by albedo, adds the existing
-  Cook-Torrance specular/Fresnel term on top. Optional wrap-lighting
-  approximation for a jelly-style fake subsurface term, explicitly not
-  real SSS.
-- IOR stored in `MaterialPushConstants.metallicRoughness.w` (currently
+Implemented, deliberately **not** as originally planned: the original
+design below called for splitting `GeometryPass` into two render pass
+instances (opaque draws → copy → transparent draws, same-frame). Instead,
+shipped a lower-risk alternative that reaches the same visual result:
+**capture the previous frame's fully-composited `sceneColorTarget_`** into
+a new `sceneColorCopy_` once per frame, *before* this frame's own scene
+render pass begins — refractive draws sample last frame's result (one
+frame of temporal lag, imperceptible at normal camera speed/60fps). This
+avoids any `FrameGraph`/`GeometryPass`-structure change at all, which the
+original plan had flagged as the single biggest-risk piece.
+
+- `VulkanSceneColorTarget` gained a `sampler()` (every image-owning class
+  in this codebase owns its sampler) and unconditional
+  `TRANSFER_SRC_BIT | TRANSFER_DST_BIT` usage, so the same class serves as
+  both the copy source (`sceneColorTarget_`) and destination
+  (`sceneColorCopy_`).
+- `VulkanPipeline::create()` gained two defaulted parameters
+  (`refractionLayout`, `fragShaderPath`) — `pipeline_`/
+  `transparentPipeline_`'s existing call sites needed zero changes.
+- New `shaders/triangle_refractive.frag` (a deliberate fork of
+  `triangle.frag`, not a branch inside it — see §45 for why a shared
+  shader with pipelines on different descriptor-set-count layouts isn't
+  possible) samples `sceneColorCopy_` via a new set-2 descriptor
+  (`refractionDescriptor_`, reusing `CubeSamplerDescriptor`'s 1-binding
+  shape for a flat 2D image — Vulkan's descriptor plumbing doesn't care
+  about view dimensionality, only the shader's declared sampler type).
+- `refractivePipeline_` uses **opaque** depth behavior (blend off, depth
+  write on), not `transparentPipeline_`'s — refraction composites in-shader
+  rather than via fixed-function blending, so ordinary depth test+write
+  already gives correct inter-instance occlusion with no sort needed.
+- IOR stored in `MaterialPushConstants.metallicRoughness.w` (previously
   unused) — same "reuse an idle struct slot" trick §43 used for
-  `position.w`, zero struct growth.
-- ImGui: "IOR" + "Refraction Strength" sliders alongside the existing
-  Transparency section, plus a fallback toggle to Phase 21's plain alpha
-  blend for direct before/after comparison.
+  `position.w`. `SceneData.shadowParams.y/z` (previously unused) carry
+  `sceneColorTarget_`'s pixel width/height, since the fragment shader has
+  no view/projection matrix to derive its own screen UV from.
+- Refraction offset is a hand-tuned-constant approximation (deviation of
+  the refracted ray from the straight-through view ray, projected onto a
+  local screen-tangent basis), not an exact reprojection — same
+  small-angle-approximation bar as §14's screen-space LOD math.
+- ImGui: "Enable Refraction (glass/jelly)" checkbox + "IOR" slider in the
+  existing Transparency section. No separate "Refraction Strength"
+  slider shipped — folded into one hand-tuned shader constant instead,
+  to keep the single spare push-constant float sufficient.
+- Verified interactively: default (off) is byte-identical to pre-M1
+  behavior by construction (the whole copy/pipeline path is unreached);
+  enabled, shows visible IOR-proportional background distortion through
+  the grid, no validation errors, no crash.
 
-Open question to resolve before implementation: global toggle (mirrors
-`gridAlpha()`'s whole-grid scope, ships independently of M2) vs.
-per-instance from the start. Leaning global-first, since M2 will need
-per-instance material bucketing anyway and shouldn't be a prerequisite
-for M1 landing.
+**Deferred from the original M1 scope, left for later:** a real
+reprojected (not hand-tuned) refraction offset; a "Refraction Strength"
+slider; wrap-lighting fake-subsurface approximation for jelly.
 
 **Milestone 2 — Mixed opaque + transparent instances**
 

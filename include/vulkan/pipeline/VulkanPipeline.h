@@ -18,13 +18,27 @@ public:
     // transparent instances don't occlude each other via the depth
     // buffer - correctness there relies entirely on draw order instead
     // (see sortInstances.comp).
+    // refractionLayout (Phase 23 M1, default VK_NULL_HANDLE) adds a 3rd
+    // descriptor set - the previous frame's captured scene color, sampled
+    // by a refractive material - only when non-null; pipeline_/
+    // transparentPipeline_ pass nothing and stay a 2-set layout, byte-
+    // identical to before M1. fragShaderPath likewise defaults to the
+    // existing shared triangle.frag; refractivePipeline_ is the only
+    // instance that overrides it, since a 3rd descriptor set the shader
+    // doesn't statically reference would make pipeline_/transparentPipeline_
+    // incompatible with their own (2-set) layout - same "shaderPath
+    // parameter so a second pipeline instance could target a new shader"
+    // precedent VulkanComputePipeline::create() already established
+    // (Phase 13, docs/roadmap.md).
     void create(
         VkDevice device,
         VkExtent2D extent,
         VkRenderPass renderPass,
         VkDescriptorSetLayout materialLayout,
         VkDescriptorSetLayout iblLayout,
-        bool transparent = false
+        bool transparent = false,
+        VkDescriptorSetLayout refractionLayout = VK_NULL_HANDLE,
+        const char* fragShaderPath = "shaders/compiled/triangle.frag.spv"
     );
 
     void destroy(VkDevice device);

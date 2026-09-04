@@ -3191,6 +3191,136 @@ better *permanent* default is a separate, legitimate product question
 this section doesn't resolve - it was an explicit instruction, not a
 default this document is claiming is obviously correct in general.
 
+### 45. Refraction/IOR shading (Phase 23 M1), previous-frame capture instead of a render-pass split
+
+The first real transparent *shading model* §43/§44 both flagged as
+future work: glass/jelly/liquid materials that visibly bend the scene
+behind them by index of refraction, not just alpha-composite with it.
+Global toggle, matching `gridAlpha()`'s whole-grid scope (see
+docs/roadmap.md's Phase 23 - resolved "global vs. per-instance" in favor
+of global before implementation, since per-instance would need M2's
+material-bucketing infrastructure as a prerequisite and this milestone
+was scoped to ship independently of M2).
+
+**The core constraint, and the design pivot away from the original
+plan.** Vulkan can't sample and write the same attachment within one
+render pass - a refractive fragment needs to read "the scene behind it,"
+but `sceneColorTarget_` is also what's currently being rendered into.
+The plan this section was written from originally called for splitting
+`GeometryPass` into two render pass instances (opaque draws, then a
+mid-frame image copy, then refractive draws sampling that copy) -
+architecturally correct, but the single biggest-risk item identified
+during planning, since it would have touched `FrameGraph`/`PassStage`
+plumbing that every other phase back to §11 has left alone. Implemented
+instead: capture the *previous* frame's fully-composited
+`sceneColorTarget_` into a new `sceneColorCopy_` once per frame, *before*
+this frame's own scene render pass begins (not mid-pass) - refractive
+draws sample last frame's result, one frame stale. At normal camera
+speeds and 60fps that lag is imperceptible; the tradeoff bought a
+substantially smaller, lower-risk change (zero `FrameGraph`/
+`GeometryPass`-structure changes at all - every existing pass boundary,
+barrier, and draw-order decision elsewhere in the frame is untouched).
+
+**Why `refractivePipeline_` uses opaque depth behavior, not
+`transparentPipeline_`'s.** Alpha blending (§43) composites via the
+fixed-function blend stage, which is why it needs `depthWriteEnable =
+false` plus a back-to-front sort - two overlapping blended layers must
+combine in the right order. Refraction composites *in the shader*
+(sample the background, mix with the surface response, write the result
+directly) - there's no fixed-function blending happening at all
+(`blendEnable = false`), so ordinary depth test *and* depth write
+(`transparent = false` in `VulkanPipeline::create()`'s existing
+parameter) already give correct occlusion between refractive instances,
+the same way opaque geometry always has. No sort needed for this path.
+
+**Why a separate shader file, not a branch in `triangle.frag`.**
+`refractivePipeline_` needs a 3rd descriptor set
+(`refractionDescriptor_`, the captured scene color) that
+`pipeline_`/`transparentPipeline_` never bind. A `VkPipelineLayout`'s set
+count must match what its shader modules statically reference - putting
+`layout(set = 2, ...)` in the one shared `triangle.frag` would make
+*every* pipeline using it (including the two that never bind a 3rd set)
+incompatible with its own 2-set layout. `triangle_refractive.frag` is a
+deliberate fork (duplicating the BRDF/shadow/IBL math verbatim, since
+this codebase has no shared-GLSL-include mechanism - every other shader
+variant here, `irradianceConvolve.frag`/`prefilterEnv.frag`/etc., is
+similarly self-contained) with only the final composite differing.
+`VulkanPipeline::create()` gained `refractionLayout`/`fragShaderPath`
+parameters, both defaulted so `pipeline_`/`transparentPipeline_`'s
+existing call sites needed zero changes - the same "add a parameter with
+a default, don't touch existing call sites" precedent
+`VulkanComputePipeline::create()`'s `shaderPath` parameter set in §31.
+
+**Where IOR and the screen extent live.** `MaterialPushConstants::
+metallicRoughness.w` (previously unused) carries IOR - the third time
+this session's lineage has repurposed an idle push-constant/UBO slot
+instead of growing a struct (`InstanceData.position.w` for §43's sort
+key, `MaterialPushConstants.albedo.a` for §43's opacity, now this).
+`SceneData.shadowParams.y`/`.z` (previously unused) carry
+`sceneColorTarget_`'s width/height in pixels each frame -
+`triangle_refractive.frag` divides `gl_FragCoord.xy` by this to recover
+its screen UV, since the fragment stage has no view/projection matrix of
+its own to derive it from otherwise.
+
+**The refraction offset is an approximation, not a reprojection.** With
+no view/projection matrix available in the fragment shader, the exact
+screen-space position of a refracted ray's endpoint can't be computed
+directly. Instead: build a local screen-tangent basis (`screenRight`/
+`screenUp`) from the straight-through view ray `-V`, then measure how far
+`refract(-V, N, 1.0/ior)` deviates from `-V` along that basis - bigger
+IOR means bigger deviation means a bigger visible bend, which is the
+qualitatively correct behavior, but the magnitude is a hand-tuned
+constant (`kRefractionStrength = 0.35`, not exposed as a slider) rather
+than a physically derived pixel offset. Same "small-angle approximation,
+good enough to look right, not exact" bar as §14's screen-space LOD math.
+
+**The barrier sequencing that makes the copy safe.** Two source-image
+subtleties, both handled explicitly: (1) `sceneColorTarget_`'s barrier
+before the copy uses `oldLayout = SHADER_READ_ONLY_OPTIMAL` (accurate,
+because the copy is gated on `sceneColorEverRendered()` - see next
+paragraph) and needs no transition back afterward, since the scene render
+pass's color attachment has `initialLayout = UNDEFINED`
+(`VulkanRenderPass::createOffscreenColor()`, unchanged) and therefore
+doesn't care what layout the copy left it in; (2) `sceneColorCopy_`'s
+pre-copy barrier uses `oldLayout = UNDEFINED` unconditionally (valid
+regardless of its *actual* prior layout, since `UNDEFINED` means "discard
+whatever's there" - simpler than tracking whether this is the first copy
+ever or the Nth).
+
+**Why `sceneColorEverRendered()` exists at all.** Right after
+`initCore()`/`resizeSceneTarget()`, `sceneColorTarget_` is a freshly
+created image that has never been rendered into - its real
+`VkImageLayout` is `UNDEFINED`, not the `SHADER_READ_ONLY_OPTIMAL` the
+pre-copy barrier assumes. Without this guard, the very next frame after
+a Viewport-panel resize while refraction is enabled would record a
+barrier claiming a layout the image isn't actually in - a validation
+error, not just a visual glitch. `FrameRenderer` sets this flag
+unconditionally right after the scene render pass ends every frame
+(regardless of whether refraction is on), and `resizeSceneTarget()`
+resets it to false - by the time a user could realistically toggle
+refraction on mid-session, the app has already rendered many frames, so
+in practice this only ever gates the one frame immediately following
+`initCore()`/a resize.
+
+**Verification.** Rebuilt clean (new shader compiled with no `glslc`
+errors), confirmed the default (`refractionEnabled_ = false`) case is
+unreachable-by-construction identical to pre-M1 behavior - the entire
+copy/barrier/pipeline-selection path is skipped outright. Manually
+enabled "Enable Refraction (glass/jelly)" in the "GPU Culling Stats"
+window and dragged the IOR slider: visible background distortion through
+the grid, IOR-proportional in magnitude, no validation-layer errors and
+no crash. Not screenshotted/reverted the way §43/§44's temporary
+overrides were - this toggle ships persistently (default off), so
+there's nothing to revert.
+
+**Explicitly out of scope, left for M2/M3 (docs/roadmap.md):** mixed
+opaque+transparent+refractive instances in the same scene (this is still
+one shared global toggle, same "whole grid together" scope §43 already
+established); the projectile's draw order relative to refractive grid
+instances (always drawn last, same known gap §43 left open); a
+real reprojected (not hand-tuned-constant) refraction offset; exposing
+`kRefractionStrength` as a slider.
+
 ---
 
 ## Bugs encountered (and what they taught)

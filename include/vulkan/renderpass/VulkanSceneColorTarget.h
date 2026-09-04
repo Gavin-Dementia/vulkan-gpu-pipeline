@@ -17,19 +17,27 @@ class VulkanSceneColorTarget
 public:
     static constexpr VkFormat FORMAT = VK_FORMAT_B8G8R8A8_SRGB;   // matches the swapchain's format
 
+    // Usage includes TRANSFER_SRC/TRANSFER_DST unconditionally (not just
+    // COLOR_ATTACHMENT|SAMPLED) so any instance of this class can serve as
+    // either side of a same-format image copy - see Phase 23 M1's
+    // sceneColorCopy_ (docs/roadmap.md), which vkCmdCopyImage's the prior
+    // frame's fully-composited sceneColorTarget_ into a second instance of
+    // this same class for refractive materials to sample.
     void create(VkPhysicalDevice physical, VkDevice device, uint32_t width, uint32_t height);
     void destroy(VkDevice device);
 
-    VkImage     image()  const { return image_; }
-    VkImageView view()   const { return view_; }
-    VkExtent2D  extent() const { return { width_, height_ }; }
+    VkImage     image()   const { return image_; }
+    VkImageView view()    const { return view_; }
+    VkExtent2D  extent()  const { return { width_, height_ }; }
+    VkSampler   sampler() const { return sampler_; }
 
 private:
-    VkImage        image_  = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
-    VkImageView    view_   = VK_NULL_HANDLE;
-    uint32_t       width_  = 0;
-    uint32_t       height_ = 0;
+    VkImage        image_   = VK_NULL_HANDLE;
+    VkDeviceMemory memory_  = VK_NULL_HANDLE;
+    VkImageView    view_    = VK_NULL_HANDLE;
+    VkSampler      sampler_ = VK_NULL_HANDLE;
+    uint32_t       width_   = 0;
+    uint32_t       height_  = 0;
 
     uint32_t findMemoryType(
         VkPhysicalDevice physical,

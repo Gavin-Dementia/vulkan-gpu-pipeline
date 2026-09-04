@@ -11,7 +11,13 @@ struct SceneData
     glm::vec4 lightColor;     // rgb = color, a = intensity
     glm::vec4 cameraPos;      // xyz = world-space camera position, w unused
     glm::mat4 lightViewProj;  // directional light's orthographic view-proj, for shadow sampling
-    glm::vec4 shadowParams;   // x = shadow bias, yzw unused - runtime-tunable via ImGui
+    glm::vec4 shadowParams;   // x = shadow bias, runtime-tunable via ImGui.
+                              // y/z = sceneColorTarget_'s width/height in
+                              // pixels (Phase 23 M1) - triangle_refractive.frag
+                              // divides gl_FragCoord.xy by this to get the
+                              // screen UV it samples sceneColorCopy_ at; w
+                              // unused. Same "reuse an idle vec4 slot"
+                              // pattern §43 used for InstanceData.position.w.
 };
 static_assert(sizeof(SceneData) == 128, "SceneData must be 128 bytes (4 x vec4 + mat4) to match std140 GLSL layout");
 
@@ -25,6 +31,8 @@ struct MaterialPushConstants
                                  // z = use texture maps (1.0) vs. flat
                                  // push-constant-only shading (0.0) - see
                                  // VulkanContext::texturesEnabled() / §44,
-                                 // w unused
+                                 // w = index of refraction (Phase 23 M1,
+                                 // triangle_refractive.frag only) - see
+                                 // VulkanContext::refractionIOR()
 };
 static_assert(sizeof(MaterialPushConstants) == 32, "MaterialPushConstants must be 32 bytes (2 x vec4)");
