@@ -74,6 +74,14 @@ set(SHADER_OUT_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/compiled)
 
 file(MAKE_DIRECTORY ${SHADER_OUT_DIR})
 
+# shaders/common/*.glsl are #include'd (GL_GOOGLE_include_directive, glslc's
+# native #include support), not compiled standalone - -I so relative include
+# paths like "common/pbr.glsl" resolve, and listed as an extra DEPENDS below
+# so editing a shared header rebuilds every shader that includes it, not
+# just the one that happened to change on disk.
+set(SHADER_COMMON_DIR ${CMAKE_SOURCE_DIR}/shaders)
+file(GLOB SHADER_COMMON_HEADERS ${CMAKE_SOURCE_DIR}/shaders/common/*.glsl)
+
 set(SPIRV_SHADERS)
 
 foreach(SHADER ${SHADER_SRC})
@@ -85,8 +93,9 @@ foreach(SHADER ${SHADER_SRC})
         OUTPUT ${SPIRV_OUTPUT}
         COMMAND ${GLSLC_EXECUTABLE}
         ${SHADER}
+        -I ${SHADER_COMMON_DIR}
         -o ${SPIRV_OUTPUT}
-        DEPENDS ${SHADER}
+        DEPENDS ${SHADER} ${SHADER_COMMON_HEADERS}
         COMMENT "Compiling shader: ${FILE_NAME}"
         VERBATIM
     )

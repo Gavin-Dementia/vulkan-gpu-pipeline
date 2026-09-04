@@ -372,7 +372,15 @@ void FrameRenderer::init(VulkanContext& ctx)
             // let a caller draw only part of the 3-LOD sequence, so the
             // projectile's draw can be interleaved at a specific point
             // instead of always after all 3 - see projInsertStep below.
-            auto drawGridBucket = [&](VulkanPipeline& pipe, bool bindRefractionSet,
+            //
+            // Whether to bind set 2 (refractionDescriptor_) is derived
+            // from `pipe` itself (pointer identity against
+            // refractivePipeline_) rather than taken as a caller-computed
+            // bool - refractivePipeline_ is the only layout with a 3rd set
+            // at all, so this can never disagree with which pipeline is
+            // actually bound the way a hand-computed flag could (see
+            // roadmap.md's "Refactor backlog", disputed item 4).
+            auto drawGridBucket = [&](VulkanPipeline& pipe,
                                        bool useSpecial, bool reverseOrder,
                                        const MaterialPushConstants& mat,
                                        int stepFrom = 0, int stepTo = 3)
@@ -397,7 +405,7 @@ void FrameRenderer::init(VulkanContext& ctx)
 
                 // Set 2 (Phase 23 M1) - the previous frame's captured scene
                 // color, only present in refractivePipeline_'s layout.
-                if (bindRefractionSet)
+                if (&pipe == &context->refractivePipeline())
                 {
                     VkDescriptorSet refractDs = context->refractionDescriptor().set();
                     vkCmdBindDescriptorSets(
@@ -537,34 +545,47 @@ void FrameRenderer::init(VulkanContext& ctx)
             }
 
             // Draws one bucket (normal or special), splicing the
-            // projectile's draw in at projInsertStep when transparency
-            // requires it (Phase 23 M3), otherwise drawing the whole
-            // bucket in one call with nonInterleavedReverseOrder. Shared
-            // by both call sites below - roadmap.md's "Refactor backlog"
-            // #2, closing the near-verbatim duplication between them.
-            // Safe to unify bindRefractionSet's expression across the
-            // interleaved/non-interleaved branches for a given bucket:
-            // projectileNeedsInterleave implies transparent, which implies
-            // !refraction (see `transparent`'s definition above), so
-            // whichever bindRefractionSet expression the caller passes
-            // evaluates the same way whether or not interleaving actually
-            // happens.
+            // projectile's draw in at projInsertStep when the bucket is
+            // alpha-blended (Phase 23 M3), otherwise drawing the whole
+            // bucket in one call. Shared by both call sites below -
+            // roadmap.md's "Refactor backlog" #2, closing the
+            // near-verbatim duplication between them.
+            //
+            // isTransparentBucket is deliberately *one* parameter serving
+            // two roles - "should this bucket draw back-to-front" and "is
+            // this the bucket the projectile is allowed to interleave
+            // into" - rather than two separately-passed values that would
+            // have to be kept in sync by every caller. Those two questions
+            // have the same answer for a principled reason (back-to-front
+            // order and projectile interleaving are both only meaningful
+            // for the alpha-blended bucket), so giving that shared answer
+            // one name here is more honest than two parameters that must
+            // never disagree. This replaces both a fix and a latent bug
+            // this same duplication caused: gating interleaving on the
+            // caller-independent projectileNeedsInterleave alone let
+            // *both* the normal-bucket and special-bucket calls interleave
+            // whenever mixed && transparent, double-drawing the projectile
+            // (the normal-bucket copy via the wrong pipeline - pipeline_
+            // bound, but drawProjectile() pushes against activePipeline's
+            // layout, a real pipeline-layout mismatch). ANDing in
+            // isTransparentBucket makes interleaving exclusive to whichever
+            // single bucket actually is transparent, and reusing it (not a
+            // literal `true`) for the interleaved branch's reverseOrder
+            // removes the last hardcoded-by-coincidence value too.
             auto drawBucketWithInterleavedProjectile = [&](
-                VulkanPipeline& pipe, bool bindRefractionSet,
-                bool useSpecial, bool nonInterleavedReverseOrder)
+                VulkanPipeline& pipe, bool useSpecial, bool isTransparentBucket)
             {
-                if (projectileNeedsInterleave)
+                if (projectileNeedsInterleave && isTransparentBucket)
                 {
-                    drawGridBucket(pipe, bindRefractionSet, useSpecial,
-                                   /*reverseOrder=*/true, gridMat, 0, projInsertStep);
+                    drawGridBucket(pipe, useSpecial, isTransparentBucket,
+                                   gridMat, 0, projInsertStep);
                     drawProjectile();
-                    drawGridBucket(pipe, bindRefractionSet, useSpecial,
-                                   /*reverseOrder=*/true, gridMat, projInsertStep, 3);
+                    drawGridBucket(pipe, useSpecial, isTransparentBucket,
+                                   gridMat, projInsertStep, 3);
                 }
                 else
                 {
-                    drawGridBucket(pipe, bindRefractionSet, useSpecial,
-                                   nonInterleavedReverseOrder, gridMat);
+                    drawGridBucket(pipe, useSpecial, isTransparentBucket, gridMat);
                 }
             };
 
@@ -574,8 +595,8 @@ void FrameRenderer::init(VulkanContext& ctx)
             // otherwise it's activePipeline covering the *whole* grid,
             // the same bucket the projectile interleaves into when needed.
             drawBucketWithInterleavedProjectile(
-                normalPipeline, /*bindRefractionSet=*/refraction && !mixed,
-                /*useSpecial=*/false, /*nonInterleavedReverseOrder=*/!mixed && transparent);
+                normalPipeline, /*useSpecial=*/false,
+                /*isTransparentBucket=*/!mixed && transparent);
 
             // Special bucket (Phase 23 M2) - every materialStride()'th
             // instance, drawn with whichever special pipeline
@@ -584,8 +605,8 @@ void FrameRenderer::init(VulkanContext& ctx)
             if (mixed)
             {
                 drawBucketWithInterleavedProjectile(
-                    activePipeline, /*bindRefractionSet=*/refraction,
-                    /*useSpecial=*/true, /*nonInterleavedReverseOrder=*/transparent);
+                    activePipeline, /*useSpecial=*/true,
+                    /*isTransparentBucket=*/transparent);
             }
 
             // Fallback position (pre-M3 behavior): drawn after everything

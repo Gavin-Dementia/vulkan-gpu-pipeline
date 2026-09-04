@@ -1122,16 +1122,21 @@ these. Ordered by how they were prioritized, not by size.
    by running the app afterward (no crash, resize/refraction/transparency
    all still behave correctly).
 2. **`GeometryPass`'s Phase 23 M3 projectile-interleave duplication —
-   Done.** The "draw partial bucket → `drawProjectile()` → draw remaining
-   partial bucket" sequence, previously repeated near-verbatim between
-   the normal-bucket and special-bucket branches, is now one
-   `drawBucketWithInterleavedProjectile(pipe, bindRefractionSet, useSpecial,
-   nonInterleavedReverseOrder)` lambda shared by both call sites. Verified
-   the `bindRefractionSet` expressions each branch used to pass
-   separately (`refraction` vs. `refraction && !mixed`) are provably
-   equivalent whenever interleaving actually happens (`projectileNeedsInterleave`
-   implies `transparent`, which implies `!refraction`), so unifying them
-   per bucket type changes nothing.
+   Done, then hardened further.** The "draw partial bucket →
+   `drawProjectile()` → draw remaining partial bucket" sequence,
+   previously repeated near-verbatim between the normal-bucket and
+   special-bucket branches, is one `drawBucketWithInterleavedProjectile`
+   lambda shared by both call sites. **A real regression was found and
+   fixed** in the first version of this dedup - see
+   `docs/TECHNICAL_NOTES.md`'s "Bugs encountered" table (the "Projectile
+   silently double-drawn" row) for the full story. The fix also folded in
+   two of the disputed items from the post-Phase-23 review: `drawGridBucket`
+   no longer takes a caller-computed `bindRefractionSet` bool (it derives
+   set-2 binding from `&pipe == &context->refractivePipeline()` directly),
+   and `drawBucketWithInterleavedProjectile`'s single `isTransparentBucket`
+   parameter now serves both as the interleave gate and the back-to-front
+   order value, replacing a hardcoded `true` that used to rely on an
+   unenforced invariant.
 3. **Screen-projection-scale formula duplicated — Done.** `sceneExtent.height /
    (2 * tan(FOV/2))`, previously hand-copied in both `GPUCullingPass` and
    `GeometryPass`, is now `screenProjectionScale(sceneHeightPx, fovYDegrees)`
@@ -1139,10 +1144,27 @@ these. Ordered by how they were prioritized, not by size.
    depending on `Camera.h`, keeping the header's dependency direction
    one-way). A pure function, not a cache, so this doesn't conflict with
    the codebase's "recompute every frame" discipline for this value.
+4. **`triangle.frag`/`triangle_refractive.frag`'s ~200-line duplication —
+   Done.** The shared BRDF/shadow/tangent-frame functions and descriptor
+   declarations now live in `shaders/common/pbr.glsl`, `#include`d by
+   both (`GL_GOOGLE_include_directive`, which `glslc` already supports
+   natively - `CMakeLists.txt`'s shader build step gained a `-I
+   <repo>/shaders` flag and lists every `shaders/common/*.glsl` as an
+   extra dependency, so editing the shared file rebuilds both). Each
+   `.frag`'s `main()` (plus, for the refractive variant, its own extra
+   set-2 sampler declaration) is now the only thing that actually differs
+   between them.
 
-All 3 items verified by rebuilding clean after each and running the app
+All 4 items verified by rebuilding clean after each and running the app
 (no crash; refraction/transparency/mixed-materials/resize all still
-behave correctly).
+behave correctly). Item 2's fix specifically needs re-verifying the
+Mixed Materials + Grid Alpha < 1 + active-projectile combination, since
+that's the exact case the bug affected and the one least likely to have
+been re-tested by chance.
+
+**Disputed item still pending:** `visibleInstanceBufferSpecial`/
+`indirectDrawBufferSpecial`'s always-on worst-case allocation - not yet
+decided whether to change; discussion ongoing.
 
 ---
 
