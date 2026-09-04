@@ -1101,9 +1101,48 @@ buffer), but it's no longer unconditionally drawn last. See
 
 ## Open / not yet started
 
-No open items currently tracked. The last one (LOD1/LOD2 had no real UV
-data, carried since Phase 8 milestone 2) closed in Phase 23 — see that
-phase's note above and Phase 23's own entry for the full history.
+No open feature/bug items currently tracked. The last one (LOD1/LOD2 had
+no real UV data, carried since Phase 8 milestone 2) closed in Phase 23 —
+see that phase's note above and Phase 23's own entry for the full
+history.
+
+### Refactor backlog
+
+Surfaced by a full-project review (code + docs) after Phase 23 shipped -
+readability/duplication cleanup, no behavior change intended by any of
+these. Ordered by how they were prioritized, not by size.
+
+1. **`FrameRenderer::drawFrame()` (`FrameRenderer.cpp`), ~440 lines —
+   Done.** Split into 6 private methods (`readbackFrameStats()`,
+   `recordComputePass()`, `recordShadowPass()`, `recordRefractionCopy()`,
+   `recordScenePass()`, `recordUIPass()`), done in 3 build-verified
+   batches; `drawFrame()` itself is now ~182 lines of pure ordering
+   (resize checks, fence/acquire, one call per pass, submit/present).
+   Pure extraction, no barrier/ordering/gating logic changed. Verified
+   by running the app afterward (no crash, resize/refraction/transparency
+   all still behave correctly).
+2. **`GeometryPass`'s Phase 23 M3 projectile-interleave duplication —
+   Done.** The "draw partial bucket → `drawProjectile()` → draw remaining
+   partial bucket" sequence, previously repeated near-verbatim between
+   the normal-bucket and special-bucket branches, is now one
+   `drawBucketWithInterleavedProjectile(pipe, bindRefractionSet, useSpecial,
+   nonInterleavedReverseOrder)` lambda shared by both call sites. Verified
+   the `bindRefractionSet` expressions each branch used to pass
+   separately (`refraction` vs. `refraction && !mixed`) are provably
+   equivalent whenever interleaving actually happens (`projectileNeedsInterleave`
+   implies `transparent`, which implies `!refraction`), so unifying them
+   per bucket type changes nothing.
+3. **Screen-projection-scale formula duplicated — Done.** `sceneExtent.height /
+   (2 * tan(FOV/2))`, previously hand-copied in both `GPUCullingPass` and
+   `GeometryPass`, is now `screenProjectionScale(sceneHeightPx, fovYDegrees)`
+   in `Frustum.h` (takes `fovYDegrees` as a parameter rather than
+   depending on `Camera.h`, keeping the header's dependency direction
+   one-way). A pure function, not a cache, so this doesn't conflict with
+   the codebase's "recompute every frame" discipline for this value.
+
+All 3 items verified by rebuilding clean after each and running the app
+(no crash; refraction/transparency/mixed-materials/resize all still
+behave correctly).
 
 ---
 

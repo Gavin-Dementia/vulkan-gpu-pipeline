@@ -59,4 +59,19 @@ struct FrustumPlanes
 static_assert(sizeof(FrustumPlanes) == 128,
     "FrustumPlanes must be 128 bytes (6 vec4 planes + cameraPos + lodParams) to match FrustumData's std140 GLSL layout");
 
+// Screen-space projection scale: pixels-per-world-unit at distance 1 from
+// the camera, along the vertical FOV - a bounding sphere of radius r at
+// distance d projects to roughly r*scale/d pixels (the same small-angle
+// approximation lodParams.z above documents). Takes fovYDegrees as a
+// parameter rather than depending on Camera.h directly, keeping this
+// header's dependencies one-directional. Shared by GPUCullingPass
+// (culling.comp's LOD test input) and GeometryPass's Phase 23 M3
+// projectile-insertion math (both in FrameRenderer.cpp) - previously
+// computed identically by hand in both places (roadmap.md's "Refactor
+// backlog" #3).
+inline float screenProjectionScale(float sceneHeightPx, float fovYDegrees)
+{
+    return sceneHeightPx / (2.0f * glm::tan(glm::radians(fovYDegrees) * 0.5f));
+}
+
 

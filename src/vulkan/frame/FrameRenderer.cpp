@@ -94,8 +94,8 @@ void FrameRenderer::init(VulkanContext& ctx)
             // *current* height (see docs/TECHNICAL_NOTES.md §36 - the
             // offscreen scene pass, not the swapchain, is what's actually
             // rasterized, and its resolution is no longer fixed).
-            float screenScale = static_cast<float>(sceneExtent.height)
-                / (2.0f * glm::tan(glm::radians(Camera::FOV_DEGREES) * 0.5f));
+            float screenScale = screenProjectionScale(
+                static_cast<float>(sceneExtent.height), Camera::FOV_DEGREES);
             frustum.lodParams = glm::vec4(
                 context->lod1ScreenSize(), context->lod2ScreenSize(), screenScale, 0.0f);
             context->frustumBuffer().upload(
@@ -526,8 +526,8 @@ void FrameRenderer::init(VulkanContext& ctx)
             if (projectileNeedsInterleave)
             {
                 float projDist = glm::distance(context->camera().position(), context->projectile().position());
-                float screenScale = static_cast<float>(sceneExtent.height)
-                    / (2.0f * glm::tan(glm::radians(Camera::FOV_DEGREES) * 0.5f));
+                float screenScale = screenProjectionScale(
+                    static_cast<float>(sceneExtent.height), Camera::FOV_DEGREES);
                 float radius = glm::max(context->boundingSphereRadius(), 0.0001f);
                 float distAtLod1Boundary = radius * screenScale / glm::max(context->lod1ScreenSize(), 0.0001f);
                 float distAtLod2Boundary = radius * screenScale / glm::max(context->lod2ScreenSize(), 0.0001f);
@@ -536,24 +536,46 @@ void FrameRenderer::init(VulkanContext& ctx)
                                 : (projDist >= distAtLod1Boundary) ? 1 : 2;
             }
 
+            // Draws one bucket (normal or special), splicing the
+            // projectile's draw in at projInsertStep when transparency
+            // requires it (Phase 23 M3), otherwise drawing the whole
+            // bucket in one call with nonInterleavedReverseOrder. Shared
+            // by both call sites below - roadmap.md's "Refactor backlog"
+            // #2, closing the near-verbatim duplication between them.
+            // Safe to unify bindRefractionSet's expression across the
+            // interleaved/non-interleaved branches for a given bucket:
+            // projectileNeedsInterleave implies transparent, which implies
+            // !refraction (see `transparent`'s definition above), so
+            // whichever bindRefractionSet expression the caller passes
+            // evaluates the same way whether or not interleaving actually
+            // happens.
+            auto drawBucketWithInterleavedProjectile = [&](
+                VulkanPipeline& pipe, bool bindRefractionSet,
+                bool useSpecial, bool nonInterleavedReverseOrder)
+            {
+                if (projectileNeedsInterleave)
+                {
+                    drawGridBucket(pipe, bindRefractionSet, useSpecial,
+                                   /*reverseOrder=*/true, gridMat, 0, projInsertStep);
+                    drawProjectile();
+                    drawGridBucket(pipe, bindRefractionSet, useSpecial,
+                                   /*reverseOrder=*/true, gridMat, projInsertStep, 3);
+                }
+                else
+                {
+                    drawGridBucket(pipe, bindRefractionSet, useSpecial,
+                                   nonInterleavedReverseOrder, gridMat);
+                }
+            };
+
             // Normal bucket - always drawn. In mixed mode this is the
             // always-opaque pipeline_ (forward LOD order, no sort/
             // interleave needed - depth test alone resolves occlusion);
             // otherwise it's activePipeline covering the *whole* grid,
             // the same bucket the projectile interleaves into when needed.
-            if (!mixed && projectileNeedsInterleave)
-            {
-                drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/false,
-                               /*reverseOrder=*/true, gridMat, 0, projInsertStep);
-                drawProjectile();
-                drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/false,
-                               /*reverseOrder=*/true, gridMat, projInsertStep, 3);
-            }
-            else
-            {
-                drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction && !mixed,
-                               /*useSpecial=*/false, /*reverseOrder=*/!mixed && transparent, gridMat);
-            }
+            drawBucketWithInterleavedProjectile(
+                normalPipeline, /*bindRefractionSet=*/refraction && !mixed,
+                /*useSpecial=*/false, /*nonInterleavedReverseOrder=*/!mixed && transparent);
 
             // Special bucket (Phase 23 M2) - every materialStride()'th
             // instance, drawn with whichever special pipeline
@@ -561,19 +583,9 @@ void FrameRenderer::init(VulkanContext& ctx)
             // outright when mixed materials are off.
             if (mixed)
             {
-                if (projectileNeedsInterleave)
-                {
-                    drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/true,
-                                   /*reverseOrder=*/true, gridMat, 0, projInsertStep);
-                    drawProjectile();
-                    drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/true,
-                                   /*reverseOrder=*/true, gridMat, projInsertStep, 3);
-                }
-                else
-                {
-                    drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction,
-                                   /*useSpecial=*/true, /*reverseOrder=*/transparent, gridMat);
-                }
+                drawBucketWithInterleavedProjectile(
+                    activePipeline, /*bindRefractionSet=*/refraction,
+                    /*useSpecial=*/true, /*nonInterleavedReverseOrder=*/transparent);
             }
 
             // Fallback position (pre-M3 behavior): drawn after everything
@@ -886,12 +898,311 @@ void FrameRenderer::init(VulkanContext& ctx)
     std::cout << "[FrameRenderer] initialized (FrameGraph Stage B)\n";
 }
 
+// Reads back this frame slot's *previous* use's results - safe without
+// any extra sync because drawFrame() calls this only after
+// vkWaitForFences() on frame.inFlightFence, which already guarantees the
+// GPU is done writing everything read here (LOD visible counts, cluster-
+// visibility flags, GPU timestamps).
+void FrameRenderer::readbackFrameStats(const FrameContext& frame)
+{
+    for (int i = 0; i < 3; i++)
+    {
+        context->setLastVisibleCount(i,
+            context->lod(i).indirectDrawBuffer.getVisibleCount(context->device().get())
+        );
+    }
+
+    // Hierarchical culling stats: same safe post-fence-wait readback as
+    // the LOD counts above.
+    {
+        std::array<uint32_t, VulkanContext::CLUSTER_COUNT> camFlags{};
+        std::array<uint32_t, VulkanContext::CLUSTER_COUNT> lightFlags{};
+        context->clusterVisibleCameraBuffer().download(
+            context->device().get(), camFlags.data(), sizeof(camFlags));
+        context->clusterVisibleLightBuffer().download(
+            context->device().get(), lightFlags.data(), sizeof(lightFlags));
+
+        uint32_t camCount = 0, lightCount = 0;
+        for (uint32_t f : camFlags)   camCount   += f;
+        for (uint32_t f : lightFlags) lightCount += f;
+
+        context->setLastClusterVisibleCounts(camCount, lightCount);
+    }
+
+    // GPU timing: same safe-readback reasoning as the LOD counts just
+    // above. Skipped until this slot has actually been written to once
+    // (frameCounter_ < frames.size() means this is one of the first
+    // MAX_FRAMES calls).
+    if (context->device().supportsTimestampQueries() && frameCounter_ >= frames.size())
+    {
+        uint64_t timestamps[4];
+        VkResult qr = vkGetQueryPoolResults(
+            context->device().get(), frame.queryPool, 0, 4,
+            sizeof(timestamps), timestamps, sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT
+        );
+
+        if (qr == VK_SUCCESS)
+        {
+            float toMs = context->device().timestampPeriodNs() / 1e6f;
+            VulkanContext::GpuTiming timing{};
+            timing.cullingMs  = (timestamps[1] - timestamps[0]) * toMs;
+            timing.shadowMs   = (timestamps[2] - timestamps[1]) * toMs;
+            timing.graphicsMs = (timestamps[3] - timestamps[2]) * toMs;
+            timing.totalMs    = (timestamps[3] - timestamps[0]) * toMs;
+            context->setGpuTiming(timing);
+        }
+    }
+}
+
+// ===== Compute: outside any render pass. Dispatches GPUCullingPass (the
+// FrameGraph pass covering coarse+fine culling, LOD fan-out, and the
+// transparency sort - see FrameGraph::executeCompute()) and the barrier
+// gating the graphics passes' vertex/indirect reads on it finishing.
+void FrameRenderer::recordComputePass(VkCommandBuffer cmd)
+{
+    graph->executeCompute(cmd);
+
+    // Barrier：insure compute COMPLETE visibility buffer
+    // then let graphics read
+    VkMemoryBarrier barrier{};
+    barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask =
+        VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+        VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr
+    );
+}
+
+// ===== Shadow: its own render pass, fixed-size shadow map target. Draws
+// the grid instances that survive the light-frustum test (see
+// ShadowPass in the FrameGraph setup), then a barrier ordering that
+// depth write before anything downstream samples it.
+void FrameRenderer::recordShadowPass(VkCommandBuffer cmd)
+{
+    auto& shadowMap = context->shadowMap();
+
+    VkClearValue shadowClear{};
+    shadowClear.depthStencil = { 1.0f, 0 };
+
+    VkRenderPassBeginInfo shadowRp{};
+    shadowRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    shadowRp.renderPass = context->shadowRenderPass().get();
+    shadowRp.framebuffer = context->shadowFramebuffer().get()[0];
+    shadowRp.renderArea.offset = {0, 0};
+    shadowRp.renderArea.extent = shadowMap.extent();
+    shadowRp.clearValueCount = 1;
+    shadowRp.pClearValues = &shadowClear;
+
+    vkCmdBeginRenderPass(cmd, &shadowRp, VK_SUBPASS_CONTENTS_INLINE);
+    graph->executeShadow(cmd);
+    vkCmdEndRenderPass(cmd);
+
+    // Barrier: the shadow pass's depth write must finish (and become
+    // visible) before the main render pass's fragment shader samples it
+    // (ImGui's debug preview this milestone; the geometry pass itself
+    // from Milestone 2 onward). The render pass's finalLayout already
+    // transitions the image to SHADER_READ_ONLY_OPTIMAL - this barrier
+    // only orders the memory access, it isn't a layout transition.
+    VkImageMemoryBarrier shadowBarrier{};
+    shadowBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    shadowBarrier.oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    shadowBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    shadowBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    shadowBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    shadowBarrier.image             = shadowMap.image();
+    shadowBarrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+    shadowBarrier.subresourceRange.baseMipLevel   = 0;
+    shadowBarrier.subresourceRange.levelCount     = 1;
+    shadowBarrier.subresourceRange.baseArrayLayer = 0;
+    shadowBarrier.subresourceRange.layerCount     = 1;
+    shadowBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    shadowBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &shadowBarrier
+    );
+}
+
+// ===== Phase 23 M1 (docs/roadmap.md): capture the *previous* frame's
+// fully-composited scene into sceneColorCopy_ before this frame clears
+// and redraws sceneColorTarget_ - the source refractive materials
+// sample this frame (see triangle_refractive.frag). Gated on
+// refractionEnabled() (skip the cost entirely when unused, same
+// pattern as the transparency sort dispatch) and
+// sceneColorEverRendered() (skip the one frame right after init/resize
+// where sceneColorTarget_'s actual layout doesn't match what this
+// barrier assumes - see that accessor's comment).
+void FrameRenderer::recordRefractionCopy(VkCommandBuffer cmd)
+{
+    if (!(context->refractionEnabled() && context->sceneColorEverRendered()))
+        return;
+
+    auto& srcTarget = context->sceneColorTarget();
+    auto& dstCopy   = context->sceneColorCopy();
+
+    std::array<VkImageMemoryBarrier, 2> preCopyBarriers{};
+    preCopyBarriers[0].sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    preCopyBarriers[0].oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    preCopyBarriers[0].newLayout         = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    preCopyBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    preCopyBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    preCopyBarriers[0].image             = srcTarget.image();
+    preCopyBarriers[0].subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    preCopyBarriers[0].srcAccessMask     = VK_ACCESS_SHADER_READ_BIT;
+    preCopyBarriers[0].dstAccessMask     = VK_ACCESS_TRANSFER_READ_BIT;
+
+    // oldLayout=UNDEFINED is always valid here (it means "discard
+    // whatever's there," not "must currently be UNDEFINED") - simpler
+    // than tracking dstCopy's true previous layout across frames,
+    // which alternates between never-used and this same barrier's own
+    // post-copy SHADER_READ_ONLY_OPTIMAL below.
+    preCopyBarriers[1].sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    preCopyBarriers[1].oldLayout         = VK_IMAGE_LAYOUT_UNDEFINED;
+    preCopyBarriers[1].newLayout         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    preCopyBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    preCopyBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    preCopyBarriers[1].image             = dstCopy.image();
+    preCopyBarriers[1].subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    preCopyBarriers[1].srcAccessMask     = 0;
+    preCopyBarriers[1].dstAccessMask     = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr,
+        static_cast<uint32_t>(preCopyBarriers.size()), preCopyBarriers.data()
+    );
+
+    VkImageCopy copyRegion{};
+    copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copyRegion.extent = { srcTarget.extent().width, srcTarget.extent().height, 1 };
+
+    vkCmdCopyImage(
+        cmd,
+        srcTarget.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        dstCopy.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &copyRegion
+    );
+
+    // Only dstCopy needs transitioning back - srcTarget's upcoming
+    // render pass has initialLayout=UNDEFINED (VulkanRenderPass::
+    // createOffscreenColor()), so it doesn't matter what layout the
+    // copy above left it in.
+    VkImageMemoryBarrier postCopyBarrier{};
+    postCopyBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    postCopyBarrier.oldLayout         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    postCopyBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    postCopyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    postCopyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    postCopyBarrier.image             = dstCopy.image();
+    postCopyBarrier.subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    postCopyBarrier.srcAccessMask     = VK_ACCESS_TRANSFER_WRITE_BIT;
+    postCopyBarrier.dstAccessMask     = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &postCopyBarrier
+    );
+}
+
+// ===== Graphics: offscreen scene pass, its own render pass/framebuffer
+// (sceneRenderPass_/sceneFramebuffer_), fixed resolution - sampled by
+// ImGui's "Viewport" window instead of being presented directly.
+void FrameRenderer::recordScenePass(VkCommandBuffer cmd)
+{
+    auto& sceneColorTarget = context->sceneColorTarget();
+
+    std::array<VkClearValue, 2> sceneClearValues{};
+    sceneClearValues[0].color        = { 0.1f, 0.2f, 0.7f, 1.0f };
+    sceneClearValues[1].depthStencil = { 1.0f, 0 };   // depth=1.0（最远），stencil=0
+
+    VkRenderPassBeginInfo sceneRp{};
+    sceneRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    sceneRp.renderPass = context->sceneRenderPass().get();
+    sceneRp.framebuffer = context->sceneFramebuffer().get()[0];
+    sceneRp.renderArea.offset = {0, 0};
+    sceneRp.renderArea.extent = sceneColorTarget.extent();
+    sceneRp.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
+    sceneRp.pClearValues    = sceneClearValues.data();
+
+    vkCmdBeginRenderPass(cmd, &sceneRp, VK_SUBPASS_CONTENTS_INLINE);
+    graph->executeGraphics(cmd);
+    vkCmdEndRenderPass(cmd);
+    // Unconditional (not gated on refractionEnabled()) - this just records
+    // that sceneColorTarget_ now holds a real rendered frame at its
+    // current size, which the *next* frame's recordRefractionCopy() needs
+    // to know regardless of whether refraction happens to be on this
+    // particular frame.
+    context->markSceneColorRendered();
+
+    // Barrier: the scene pass's color write must finish (and become
+    // visible) before ImGui's fragment shader samples it in the Viewport
+    // window below - same shape as the shadow barrier above, generalized
+    // to the color attachment instead of depth (see architecture.md).
+    VkImageMemoryBarrier sceneBarrier{};
+    sceneBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    sceneBarrier.oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneBarrier.image             = sceneColorTarget.image();
+    sceneBarrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    sceneBarrier.subresourceRange.baseMipLevel   = 0;
+    sceneBarrier.subresourceRange.levelCount     = 1;
+    sceneBarrier.subresourceRange.baseArrayLayer = 0;
+    sceneBarrier.subresourceRange.layerCount     = 1;
+    sceneBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    sceneBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &sceneBarrier
+    );
+}
+
+// ===== UI: swapchain's own render pass, ImGui only (PassStage::UI) =====
+void FrameRenderer::recordUIPass(VkCommandBuffer cmd, uint32_t imageIndex)
+{
+    auto& swapchain    = context->swapchain();
+    auto& renderPass   = context->renderPass();
+    auto& framebuffer  = context->framebuffer();
+
+    std::array<VkClearValue, 2> uiClearValues{};
+    uiClearValues[0].color        = { 0.06f, 0.06f, 0.07f, 1.0f };   // editor-style background behind docked windows
+    uiClearValues[1].depthStencil = { 1.0f, 0 };
+
+    VkRenderPassBeginInfo rp{};
+    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rp.renderPass = renderPass.get();
+    rp.framebuffer = framebuffer.get()[imageIndex];
+    rp.renderArea.offset = {0, 0};
+    rp.renderArea.extent = swapchain.getExtent();
+    rp.clearValueCount = static_cast<uint32_t>(uiClearValues.size());
+    rp.pClearValues    = uiClearValues.data();
+
+    vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+    graph->executeUI(cmd);
+    vkCmdEndRenderPass(cmd);
+}
+
 void FrameRenderer::drawFrame()
 {
     auto& device = context->device();
     auto& swapchain = context->swapchain();
-    auto& renderPass = context->renderPass();
-    auto& framebuffer = context->framebuffer();
 
     // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39):
     // checked before anything else this frame, same "apply at the very
@@ -940,58 +1251,8 @@ void FrameRenderer::drawFrame()
     FrameContext& frame = frames[currentFrame];
 
     vkWaitForFences(device.get(), 1, &frame.inFlightFence, VK_TRUE, UINT64_MAX);
-    
-    // insert into ImGuiPass
-    for (int i = 0; i < 3; i++)
-    {
-        context->setLastVisibleCount(i,
-            context->lod(i).indirectDrawBuffer.getVisibleCount(context->device().get())
-        );
-    }
 
-    // Hierarchical culling stats: same safe post-fence-wait readback as
-    // the LOD counts above - this frame slot's prior GPU work is
-    // guaranteed done by the fence wait already completed above.
-    {
-        std::array<uint32_t, VulkanContext::CLUSTER_COUNT> camFlags{};
-        std::array<uint32_t, VulkanContext::CLUSTER_COUNT> lightFlags{};
-        context->clusterVisibleCameraBuffer().download(
-            context->device().get(), camFlags.data(), sizeof(camFlags));
-        context->clusterVisibleLightBuffer().download(
-            context->device().get(), lightFlags.data(), sizeof(lightFlags));
-
-        uint32_t camCount = 0, lightCount = 0;
-        for (uint32_t f : camFlags)   camCount   += f;
-        for (uint32_t f : lightFlags) lightCount += f;
-
-        context->setLastClusterVisibleCounts(camCount, lightCount);
-    }
-
-    // GPU timing: this frame slot's fence wait above already guarantees
-    // its previous use finished, so its query pool results are ready -
-    // same safe-readback reasoning as the LOD counts just above. Skipped
-    // until this slot has actually been written to once (frameCounter_ <
-    // frames.size() means this is one of the first MAX_FRAMES calls).
-    if (context->device().supportsTimestampQueries() && frameCounter_ >= frames.size())
-    {
-        uint64_t timestamps[4];
-        VkResult qr = vkGetQueryPoolResults(
-            device.get(), frame.queryPool, 0, 4,
-            sizeof(timestamps), timestamps, sizeof(uint64_t),
-            VK_QUERY_RESULT_64_BIT
-        );
-
-        if (qr == VK_SUCCESS)
-        {
-            float toMs = context->device().timestampPeriodNs() / 1e6f;
-            VulkanContext::GpuTiming timing{};
-            timing.cullingMs  = (timestamps[1] - timestamps[0]) * toMs;
-            timing.shadowMs   = (timestamps[2] - timestamps[1]) * toMs;
-            timing.graphicsMs = (timestamps[3] - timestamps[2]) * toMs;
-            timing.totalMs    = (timestamps[3] - timestamps[0]) * toMs;
-            context->setGpuTiming(timing);
-        }
-    }
+    readbackFrameStats(frame);
 
     // Live-resized window/swapchain (see docs/TECHNICAL_NOTES.md §39):
     // frame.inFlightFence is deliberately NOT reset until after this
@@ -1049,231 +1310,27 @@ void FrameRenderer::drawFrame()
     }
 
     // ===== Compute：outside RenderPass =====
-    graph->executeCompute(frame.commandBuffer);
+    recordComputePass(frame.commandBuffer);
 
     if (timingEnabled)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queryPool, 1);
 
-    // Barrier：insure compute COMPLETE visibility buffer
-    // then let graphics read
-    VkMemoryBarrier barrier{};
-    barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = 
-        VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | 
-        VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-
-    vkCmdPipelineBarrier(
-        frame.commandBuffer,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-        0, 1, &barrier, 0, nullptr, 0, nullptr
-    );
-
     // ===== Shadow：its own render pass, fixed-size shadow map target =====
-    auto& shadowMap = context->shadowMap();
-
-    VkClearValue shadowClear{};
-    shadowClear.depthStencil = { 1.0f, 0 };
-
-    VkRenderPassBeginInfo shadowRp{};
-    shadowRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    shadowRp.renderPass = context->shadowRenderPass().get();
-    shadowRp.framebuffer = context->shadowFramebuffer().get()[0];
-    shadowRp.renderArea.offset = {0, 0};
-    shadowRp.renderArea.extent = shadowMap.extent();
-    shadowRp.clearValueCount = 1;
-    shadowRp.pClearValues = &shadowClear;
-
-    vkCmdBeginRenderPass(frame.commandBuffer, &shadowRp, VK_SUBPASS_CONTENTS_INLINE);
-    graph->executeShadow(frame.commandBuffer);
-    vkCmdEndRenderPass(frame.commandBuffer);
+    recordShadowPass(frame.commandBuffer);
 
     if (timingEnabled)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queryPool, 2);
 
-    // Barrier: the shadow pass's depth write must finish (and become
-    // visible) before the main render pass's fragment shader samples it
-    // (ImGui's debug preview this milestone; the geometry pass itself
-    // from Milestone 2 onward). The render pass's finalLayout already
-    // transitions the image to SHADER_READ_ONLY_OPTIMAL - this barrier
-    // only orders the memory access, it isn't a layout transition.
-    VkImageMemoryBarrier shadowBarrier{};
-    shadowBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    shadowBarrier.oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    shadowBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    shadowBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    shadowBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    shadowBarrier.image             = shadowMap.image();
-    shadowBarrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
-    shadowBarrier.subresourceRange.baseMipLevel   = 0;
-    shadowBarrier.subresourceRange.levelCount     = 1;
-    shadowBarrier.subresourceRange.baseArrayLayer = 0;
-    shadowBarrier.subresourceRange.layerCount     = 1;
-    shadowBarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    shadowBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    // ===== Phase 23 M1 (docs/roadmap.md): previous-frame scene capture
+    // for refractive materials - see recordRefractionCopy(), gated
+    // internally so this is a no-op unless refraction is actually on.
+    recordRefractionCopy(frame.commandBuffer);
 
-    vkCmdPipelineBarrier(
-        frame.commandBuffer,
-        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &shadowBarrier
-    );
-
-    // ===== Phase 23 M1 (docs/roadmap.md): capture the *previous* frame's
-    // fully-composited scene into sceneColorCopy_ before this frame clears
-    // and redraws sceneColorTarget_ - the source refractive materials
-    // sample this frame (see triangle_refractive.frag). Gated on
-    // refractionEnabled() (skip the cost entirely when unused, same
-    // pattern as the transparency sort dispatch) and
-    // sceneColorEverRendered() (skip the one frame right after init/resize
-    // where sceneColorTarget_'s actual layout doesn't match what this
-    // barrier assumes - see that accessor's comment).
-    if (context->refractionEnabled() && context->sceneColorEverRendered())
-    {
-        auto& srcTarget = context->sceneColorTarget();
-        auto& dstCopy   = context->sceneColorCopy();
-
-        std::array<VkImageMemoryBarrier, 2> preCopyBarriers{};
-        preCopyBarriers[0].sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        preCopyBarriers[0].oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        preCopyBarriers[0].newLayout         = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        preCopyBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preCopyBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preCopyBarriers[0].image             = srcTarget.image();
-        preCopyBarriers[0].subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        preCopyBarriers[0].srcAccessMask     = VK_ACCESS_SHADER_READ_BIT;
-        preCopyBarriers[0].dstAccessMask     = VK_ACCESS_TRANSFER_READ_BIT;
-
-        // oldLayout=UNDEFINED is always valid here (it means "discard
-        // whatever's there," not "must currently be UNDEFINED") - simpler
-        // than tracking dstCopy's true previous layout across frames,
-        // which alternates between never-used and this same barrier's own
-        // post-copy SHADER_READ_ONLY_OPTIMAL below.
-        preCopyBarriers[1].sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        preCopyBarriers[1].oldLayout         = VK_IMAGE_LAYOUT_UNDEFINED;
-        preCopyBarriers[1].newLayout         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        preCopyBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preCopyBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        preCopyBarriers[1].image             = dstCopy.image();
-        preCopyBarriers[1].subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        preCopyBarriers[1].srcAccessMask     = 0;
-        preCopyBarriers[1].dstAccessMask     = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-        vkCmdPipelineBarrier(
-            frame.commandBuffer,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, nullptr, 0, nullptr,
-            static_cast<uint32_t>(preCopyBarriers.size()), preCopyBarriers.data()
-        );
-
-        VkImageCopy copyRegion{};
-        copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        copyRegion.extent = { srcTarget.extent().width, srcTarget.extent().height, 1 };
-
-        vkCmdCopyImage(
-            frame.commandBuffer,
-            srcTarget.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            dstCopy.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &copyRegion
-        );
-
-        // Only dstCopy needs transitioning back - srcTarget's upcoming
-        // render pass has initialLayout=UNDEFINED (VulkanRenderPass::
-        // createOffscreenColor()), so it doesn't matter what layout the
-        // copy above left it in.
-        VkImageMemoryBarrier postCopyBarrier{};
-        postCopyBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        postCopyBarrier.oldLayout         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        postCopyBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        postCopyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        postCopyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        postCopyBarrier.image             = dstCopy.image();
-        postCopyBarrier.subresourceRange  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        postCopyBarrier.srcAccessMask     = VK_ACCESS_TRANSFER_WRITE_BIT;
-        postCopyBarrier.dstAccessMask     = VK_ACCESS_SHADER_READ_BIT;
-
-        vkCmdPipelineBarrier(
-            frame.commandBuffer,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &postCopyBarrier
-        );
-    }
-
-    // ===== Graphics: offscreen scene pass, its own render pass/framebuffer
-    // (sceneRenderPass_/sceneFramebuffer_), fixed resolution - sampled by
-    // ImGui's "Viewport" window below instead of being presented directly.
-    auto& sceneColorTarget = context->sceneColorTarget();
-
-    std::array<VkClearValue, 2> sceneClearValues{};
-    sceneClearValues[0].color        = { 0.1f, 0.2f, 0.7f, 1.0f };
-    sceneClearValues[1].depthStencil = { 1.0f, 0 };   // depth=1.0（最远），stencil=0
-
-    VkRenderPassBeginInfo sceneRp{};
-    sceneRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    sceneRp.renderPass = context->sceneRenderPass().get();
-    sceneRp.framebuffer = context->sceneFramebuffer().get()[0];
-    sceneRp.renderArea.offset = {0, 0};
-    sceneRp.renderArea.extent = sceneColorTarget.extent();
-    sceneRp.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
-    sceneRp.pClearValues    = sceneClearValues.data();
-
-    vkCmdBeginRenderPass(frame.commandBuffer, &sceneRp, VK_SUBPASS_CONTENTS_INLINE);
-    graph->executeGraphics(frame.commandBuffer);
-    vkCmdEndRenderPass(frame.commandBuffer);
-    // Unconditional (not gated on refractionEnabled()) - this just records
-    // that sceneColorTarget_ now holds a real rendered frame at its
-    // current size, which the *next* frame's refraction copy step above
-    // needs to know regardless of whether refraction happens to be on this
-    // particular frame.
-    context->markSceneColorRendered();
-
-    // Barrier: the scene pass's color write must finish (and become
-    // visible) before ImGui's fragment shader samples it in the Viewport
-    // window below - same shape as the shadow barrier above, generalized
-    // to the color attachment instead of depth (see architecture.md).
-    VkImageMemoryBarrier sceneBarrier{};
-    sceneBarrier.sType             = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    sceneBarrier.oldLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    sceneBarrier.newLayout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    sceneBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    sceneBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    sceneBarrier.image             = sceneColorTarget.image();
-    sceneBarrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-    sceneBarrier.subresourceRange.baseMipLevel   = 0;
-    sceneBarrier.subresourceRange.levelCount     = 1;
-    sceneBarrier.subresourceRange.baseArrayLayer = 0;
-    sceneBarrier.subresourceRange.layerCount     = 1;
-    sceneBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    sceneBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    vkCmdPipelineBarrier(
-        frame.commandBuffer,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &sceneBarrier
-    );
+    // ===== Graphics: offscreen scene pass =====
+    recordScenePass(frame.commandBuffer);
 
     // ===== UI: swapchain's own render pass, ImGui only (PassStage::UI) =====
-    std::array<VkClearValue, 2> uiClearValues{};
-    uiClearValues[0].color        = { 0.06f, 0.06f, 0.07f, 1.0f };   // editor-style background behind docked windows
-    uiClearValues[1].depthStencil = { 1.0f, 0 };
-
-    VkRenderPassBeginInfo rp{};
-    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = renderPass.get();
-    rp.framebuffer = framebuffer.get()[imageIndex];
-    rp.renderArea.offset = {0, 0};
-    rp.renderArea.extent = swapchain.getExtent();
-    rp.clearValueCount = static_cast<uint32_t>(uiClearValues.size());
-    rp.pClearValues    = uiClearValues.data();
-
-    vkCmdBeginRenderPass(frame.commandBuffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
-
-    graph->executeUI(frame.commandBuffer);
-
-    vkCmdEndRenderPass(frame.commandBuffer);
+    recordUIPass(frame.commandBuffer, imageIndex);
 
     if (timingEnabled)
         vkCmdWriteTimestamp(frame.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, frame.queryPool, 3);

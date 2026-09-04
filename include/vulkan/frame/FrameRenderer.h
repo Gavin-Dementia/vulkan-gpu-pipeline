@@ -69,5 +69,20 @@ private:
     // VulkanContext::resizeSwapchain() runs, and tells ImGui's Vulkan
     // backend about a changed image count.
     void recreateSwapchainResources();
+
+    // drawFrame() split (roadmap.md's "Refactor backlog" #1) - each
+    // record*() records exactly one render pass (or, for
+    // readbackFrameStats(), one CPU-side readback group) into the
+    // command buffer, in the same place and with the same behavior as
+    // when this was all inline in drawFrame(). Pure mechanical
+    // extraction, no logic change - drawFrame() itself still owns
+    // ordering, the GPU-timestamp writes between passes, and command
+    // buffer begin/end/submit/present.
+    void readbackFrameStats(const FrameContext& frame);
+    void recordComputePass(VkCommandBuffer cmd);
+    void recordShadowPass(VkCommandBuffer cmd);
+    void recordRefractionCopy(VkCommandBuffer cmd);
+    void recordScenePass(VkCommandBuffer cmd);
+    void recordUIPass(VkCommandBuffer cmd, uint32_t imageIndex);
 };
 
