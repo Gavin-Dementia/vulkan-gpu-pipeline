@@ -275,7 +275,10 @@ Milestone 2 — texture-based materials — implemented:
   UV-less meshes (matching UV-preserving decimations need a 3D tool this
   environment doesn't have) — they render exactly as before, not a
   regression, just not textured. **Still open** — see Phase 20's notes,
-  which searched for a fix and left this one alone. Also placeholder
+  which searched for a fix and left this one alone; **later closed —
+  Phase 23**, via Blender-decimated UV-mapped LOD1/LOD2 replacements
+  (`assets/suzanne_lod1_uv.obj`/`suzanne_lod2_uv.obj`, wired into
+  `VulkanContext::initSceneData()`). Also placeholder
   textures throughout (`assets/normal.png`, `metallic_roughness.png`,
   `ao.png` are small self-generated PNGs — flat normal, a
   metallic/roughness gradient, flat AO — not sourced/authored PBR photo
@@ -1098,24 +1101,9 @@ buffer), but it's no longer unconditionally drawn last. See
 
 ## Open / not yet started
 
-- **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
-  was swapped to a UV/normal-mapped mesh; the far LOD meshes sample a
-  constant `(0,0)` texel, same flat-tinted look as before this milestone.
-  Closing this needed a UV-preserving decimation of the base mesh (a 3D
-  tool this environment doesn't have — see `TECHNICAL_NOTES.md` §25).
-  **Update (2026-09-04):** UV-mapped replacements uploaded —
-  `assets/suzanne_lod1_uv.obj` (163v/215vt/289tri) and
-  `assets/suzanne_lod2_uv.obj` (47v/80vt/76tri), made externally in
-  Blender from `suzanne_pbr.obj`. Checked against `ObjLoader.cpp`
-  (tinyobj-based, auto-triangulates, ignores `.mtl` entirely since
-  materials come from the separate `Material` class): both files are
-  well-formed (complete `v/vt/vn` triplets, UVs in `[0,1]`) and load
-  cleanly. LOD2's triangle count (76) differs from the prior non-UV
-  LOD2 (47), which needs no code change since `lod2DetailRatio()`
-  already derives its default from the live post-load triangle count
-  rather than a hardcoded constant (Phase 18). Wiring is a two-line
-  swap in `VulkanContext.cpp` (~L763-764) — verified but not yet
-  applied.
+No open items currently tracked. The last one (LOD1/LOD2 had no real UV
+data, carried since Phase 8 milestone 2) closed in Phase 23 — see that
+phase's note above and Phase 23's own entry for the full history.
 
 ---
 

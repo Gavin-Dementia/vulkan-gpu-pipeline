@@ -119,7 +119,7 @@ before this split — see `TECHNICAL_NOTES.md` §11):
   and pipeline (`shadowRenderPass_`/`shadowFramebuffer_`/
   `shadowPipeline_`) — see "Shadow mapping" below
 - `initSceneData()` — OBJ mesh loading + deduplication for 3 LOD meshes
-  (`suzanne_pbr.obj`, `suzanne_lod1.obj`, `suzanne_lod2.obj`), vertex/index
+  (`suzanne_pbr.obj`, `suzanne_lod1_uv.obj`, `suzanne_lod2_uv.obj`), vertex/index
   buffer upload per LOD, 7×7×7 instance grid generation, plus a 1-entry
   `projectileInstanceBuffer_` (binding-1 translation for the projectile)
 - `initCullingResources()` — one shared object bounding-sphere buffer
@@ -691,8 +691,10 @@ keyed by position+normal+uv (Suzanne LOD0: 2904 → 590 unique vertices as
 of `suzanne_pbr.obj` - more than the original `suzanne.obj`'s 507, since
 real UV/normal seams split vertices a position-only mesh didn't need to;
 see `TECHNICAL_NOTES.md` §8 for that original count). Called once per
-LOD mesh (`suzanne_pbr.obj` / `suzanne_lod1.obj` /
-`suzanne_lod2.obj`), each returning its own `{ vertices, indices,
+LOD mesh (`suzanne_pbr.obj` / `suzanne_lod1_uv.obj` /
+`suzanne_lod2_uv.obj` — all 3 have real UV data as of Phase 23's roadmap
+"Open" note; the `_uv` suffix on LOD1/LOD2 is a naming holdover from when
+only LOD0 did), each returning its own `{ vertices, indices,
 boundingRadius }`. Also recenters the mesh to its own bounding-box
 center (raw OBJ coordinates aren't authored at local origin) and
 computes `boundingRadius` — the max vertex distance from that new
@@ -860,14 +862,16 @@ transposition (not bitonic).
 - `culling.comp` writes camera distance (already computed for the LOD
   test) into each compacted instance's `position.w` — previously an
   unused `1.0`, since `triangle.vert` only ever reads `.xyz`.
-- `sortInstances.comp` (new) — dispatched `(3,1,1)`, one workgroup per
-  LOD bucket (`gl_WorkGroupID.x` selects which). Loads the bucket into
-  shared memory, runs a parallel odd-even transposition sort descending
-  by that distance, writes it back in place. Shares
-  `computeDescriptor_`'s existing bindings 1-6 (`VisibleLODN`/
-  `IndirectLODN`) — no new buffers or descriptor changes.
-  `VulkanContext::sortPipeline_` shares `computePipelineCoarse_`'s
-  `shaderPath`-parameter pattern.
+- `sortInstances.comp` (new) — originally dispatched `(3,1,1)`, one
+  workgroup per LOD bucket (`gl_WorkGroupID.x` selects which); grew to
+  `(6,1,1)` in Phase 23 M2 once a second ("special") set of buckets
+  existed to sort too (see "Transparency shading model completion" below).
+  Loads a bucket into shared memory, runs a parallel odd-even
+  transposition sort descending by that distance, writes it back in
+  place. Originally shared `computeDescriptor_`'s existing bindings 1-6
+  (`VisibleLODN`/`IndirectLODN`) with no new buffers; M2 added bindings
+  14-19 for the special set. `VulkanContext::sortPipeline_` shares
+  `computePipelineCoarse_`'s `shaderPath`-parameter pattern.
 - `GPUCullingPass` (`FrameRenderer.cpp`) dispatches this after the fine
   culling pass, behind one more compute→compute `VkMemoryBarrier` (same
   shape as the coarse→fine one) — only when
@@ -889,10 +893,10 @@ transposition (not bitonic).
 - `gridAlpha()` (default `1.0`) selects which pipeline `GeometryPass`
   binds and feeds `MaterialPushConstants::albedo.a`, which
   `triangle.frag` now outputs directly instead of a hardcoded `1.0`.
-- Out of scope here: the actual jelly/glass/liquid shading model
-  (refraction, IOR, subsurface), mixed opaque+transparent instances in
-  one scene, and the projectile's blend order relative to the grid
-  (always drawn last, unsorted) — see roadmap.md's Phase 21 notes.
+- Out of scope in Phase 21 itself: the actual jelly/glass/liquid shading
+  model, mixed opaque+transparent instances, and the projectile's blend
+  order relative to the grid. **All three closed in Phase 23** — see
+  the "Transparency shading model completion" section immediately below.
 
 ### Master texture toggle (Phase 22)
 
@@ -908,6 +912,49 @@ flat, push-constant-only PBR shading (still real lighting/shadows/IBL);
 on is Phase 20's real brick material, unchanged. A new "Material"
 section in the "GPU Culling Stats" ImGui window exposes it as an
 "Enable Textures" checkbox.
+
+### Transparency shading model completion (Phase 23)
+
+Closes all three gaps Phase 21 explicitly left open. See
+`docs/TECHNICAL_NOTES.md` §45-§47 for the full designs; roadmap.md's
+Phase 23 entry has the milestone-by-milestone summary.
+
+- **M1 — Refraction/IOR (§45).** Global toggle
+  (`VulkanContext::refractionEnabled()`/`refractionIOR()`), takes
+  priority over `gridAlpha()` when both are set. Instead of splitting
+  `GeometryPass` into two render passes for a same-frame background
+  capture, a new `sceneColorCopy_` is `vkCmdCopyImage`'d from the
+  *previous* frame's fully-composited `sceneColorTarget_` once per frame
+  (before this frame's scene pass begins) - one frame of temporal lag,
+  no `FrameGraph` structural change. New `refractivePipeline_` (opaque
+  depth behavior, not `transparentPipeline_`'s - refraction composites
+  in-shader) with its own 3rd descriptor set (`refractionDescriptor_`,
+  reusing `CubeSamplerDescriptor`'s shape for a flat 2D sampler) and its
+  own fragment shader (`triangle_refractive.frag`, a deliberate fork of
+  `triangle.frag` - a shared shader would force the 3rd set onto
+  pipelines that never bind it). IOR reuses
+  `MaterialPushConstants.metallicRoughness.w`; `SceneData.shadowParams.y/z`
+  carry the scene target's pixel size for screen-UV recovery.
+- **M2 — Mixed opaque + special-material instances (§46).** Every
+  `materialStride()`'th grid instance (`mixedMaterialsEnabled()`, default
+  off) uses whichever material M1's toggles select, while the rest stay
+  on the always-opaque `pipeline_`. Real GPU-side bucketing (not a
+  `discard` shortcut - see §46 for why): `ObjectData` gained
+  `materialFlags.x`, `culling.comp` compacts each LOD tier into one of
+  *two* buffer pairs instead of one (`ComputeDescriptor` 14→20 bindings),
+  and `GeometryPass`'s per-bucket bind/push/draw sequence was factored
+  into a `drawGridBucket` lambda, called once (normal bucket) or twice
+  (normal + special) depending on the toggle.
+- **M3 — Projectile draw-order interleaving (§47).** Only engages when
+  `transparent && projectile.isActive()` - opaque/refractive occlusion is
+  depth-test-only and keeps the projectile's original "always last"
+  position. Reuses `culling.comp`'s own screen-size-to-distance formula
+  to convert the LOD1/LOD2 screen-size thresholds back into equivalent
+  camera distances, compares the projectile's actual distance against
+  those, and splices its draw (`drawProjectile`, extracted from the old
+  inline block) between two partial `drawGridBucket` calls
+  (`stepFrom`/`stepTo` parameters) at one of 3 coarse insertion points -
+  bucket-level placement, not an exact per-instance sort merge.
 
 ---
 
@@ -932,10 +979,18 @@ Application
     │     ImGui's "Viewport" window (see "Dockable viewport" module notes)
     ├── VulkanDescriptor (graphics, 7 bindings: UBO / albedo / SceneData /
     │     shadow map / normal / metallic-roughness / AO combined-image-samplers)
-    ├── ComputeDescriptor (compute, 14 bindings: object / 3×visible / 3×indirect /
+    ├── ComputeDescriptor (compute, 20 bindings: object / 3×visible / 3×indirect /
     │     camera frustum / shadow-visible / shadow-indirect / light frustum /
-    │     cluster bounds / cluster-visible-camera / cluster-visible-light)
-    ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer, IndirectDrawBuffer }
+    │     cluster bounds / cluster-visible-camera / cluster-visible-light /
+    │     3×visible-special / 3×indirect-special — the last 6, bindings
+    │     14-19, are Phase 23 M2's "special"-material sibling buckets)
+    ├── lods_[3] : LODMesh { VertexBuffer, IndexBuffer, VisibleInstanceBuffer,
+    │     IndirectDrawBuffer, VisibleInstanceBufferSpecial, IndirectDrawBufferSpecial }
+    │     (the last two, Phase 23 M2, are empty/unused unless mixedMaterialsEnabled())
+    ├── transparentPipeline_ / refractivePipeline_ (Phase 21/23 M1 - alpha-blend
+    │     and refractive siblings of pipeline_, see "Transparency" sections above)
+    ├── sceneColorCopy_ / refractionDescriptor_ (Phase 23 M1 - previous-frame
+    │     scene capture + its sampler descriptor, see §45)
     ├── ObjectBuffer (shared, 343 entries, re-uploaded every frame) / FrustumBuffer
     ├── shadowVisibleInstanceBuffer_ / shadowIndirectDrawBuffer_ / lightFrustumBuffer_
     │     (shadow pass's light-frustum-culled instance set, same shape as a
@@ -985,8 +1040,12 @@ Application
                 │   │                       first, depth test/write off) +
                 │   │                       per-draw push constant
                 │   │                       (MaterialPushConstants: albedo/metallic/roughness)
-                │   │                       + 3× vkCmdDrawIndexedIndirect
-                │   │                       + 1× vkCmdDrawIndexed (projectile, if active)
+                │   │                       + 3× vkCmdDrawIndexedIndirect (up to
+                │   │                       6× once Phase 23 M2's mixed-materials
+                │   │                       special bucket is active)
+                │   │                       + 1× vkCmdDrawIndexed (projectile, if
+                │   │                       active - possibly spliced mid-sequence
+                │   │                       rather than last, see Phase 23 M3/§47)
                 └── ImGuiPass (UI, reads GeometryPass, runs in the
                                               swapchain's own render pass) —
                                               dockable "Viewport" window

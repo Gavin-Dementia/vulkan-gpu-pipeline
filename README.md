@@ -7,17 +7,17 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 
 ## Demo
 
-### GPU LOD Switching
-
-![LOD Demo](docs/assets/lod_demo_01.gif)
-
 ### Texture PBR and GPU Timestamp Performance
 
-![Texture PBR Demo](docs/assets/tex_pbr_01.gif)
+![Texture PBR Demo](docs/assets/tex_pbr.gif)
 
 ### Image-Based Lighting
 
-![Image-Based Lighting Demo](docs/assets/IBL_01.gif)
+![Image-Based Lighting Demo](docs/assets/IBL.gif)
+
+### Mixed Opaque + Transparent Materials
+
+![Mixed Materials Demo](docs/assets/mixed_opaque.gif)
 
 ---
 
@@ -48,14 +48,20 @@ designed around a **FrameGraph DAG** for explicit pass dependency and execution 
 | Live-Resized Window / Swapchain | ✅ |
 | Texture-based PBR Materials (albedo/normal/metallic-roughness/AO) | ✅ LOD0 only, toggle default **off** — see below |
 | Image-Based Lighting (procedural-sky cubemap, diffuse irradiance, specular prefilter + BRDF LUT) | ✅ |
-| Alpha Blending + GPU-Sorted Transparency (odd-even transposition sort) | ✅ infrastructure only — see below |
+| Alpha Blending + GPU-Sorted Transparency (odd-even transposition sort) | ✅ |
+| Refraction / IOR Shading (glass, jelly — previous-frame scene capture) | ✅ off by default — see below |
+| Mixed Opaque + Special-Material Grid Instances (GPU-bucketed) | ✅ off by default — see below |
+| Projectile Transparent Draw-Order Interleaving | ✅ |
 
-*Transparency infrastructure only: `VulkanContext::gridAlpha()` and a "GPU
-Culling Stats" ImGui slider prove alpha blending + correct back-to-front
-sorting work, using the existing shared material at reduced opacity. The
-actual translucent shading model (jelly/glass/liquid — refraction, IOR,
-subsurface) this was built toward is planned future work, not yet
-implemented. See `docs/TECHNICAL_NOTES.md` §43.*
+*Transparency: `VulkanContext::gridAlpha()` selects alpha blending,
+`refractionEnabled()`/`refractionIOR()` select real screen-space
+refraction instead (sampling the previous frame's composited scene — see
+`docs/TECHNICAL_NOTES.md` §45), and `mixedMaterialsEnabled()` lets a
+configurable subset of the grid (every Nth instance) use whichever of
+those two is selected while the rest stays opaque brick (§46). All three
+plus correct back-to-front sorting and projectile draw-order (§47) are
+tunable live from the "GPU Culling Stats" ImGui window's Transparency
+section, default off/opaque so the out-of-the-box look is unchanged.*
 
 *Textures are off by default: an "Enable Textures" checkbox (also in "GPU
 Culling Stats") switches material texture sampling on, reproducing the
@@ -213,8 +219,12 @@ The Vulkan SDK must be installed on the system. All other dependencies are bundl
   primitive, sourced from
   [opengl-tutorials/ogl](https://github.com/opengl-tutorials/ogl/blob/master/tutorial17_rotations/suzanne.obj)
   (`tutorial17_rotations/suzanne.obj`) — used because this project's own
-  `suzanne.obj`/LOD1/LOD2 meshes have no UV data. See
-  `docs/TECHNICAL_NOTES.md` §25 for why.
+  original `suzanne.obj` mesh has no UV data. See `docs/TECHNICAL_NOTES.md`
+  §25 for why.
+- `assets/suzanne_lod1_uv.obj`/`suzanne_lod2_uv.obj` (Phase 23) are
+  Blender-decimated derivatives of `suzanne_pbr.obj` above, made to close
+  the same UV gap for LOD1/LOD2 — see `docs/roadmap.md`'s Phase 8/Phase 23
+  notes.
 - `assets/test_texture.png`/`normal.png`/`metallic_roughness.png`/`ao.png`
   (Phase 20) are derived from [ambientCG](https://ambientcg.com)'s
   [Bricks097](https://ambientcg.com/a/Bricks097) material (CC0 1.0
@@ -258,8 +268,8 @@ Image count: 3
 [Texture] loaded assets/ao.png (512x512)
 [VulkanContext] IBL: environment + diffuse irradiance + specular prefilter + BRDF LUT baked, skybox pipeline ready
 [ObjLoader] 590 unique vertices, 2904 indices (from assets/suzanne_pbr.obj), recentered by (...), bounding radius ...
-[ObjLoader] 165 unique vertices, 867 indices (from assets/suzanne_lod1.obj), recentered by (...), bounding radius ...
-[ObjLoader] 34 unique vertices, 141 indices (from assets/suzanne_lod2.obj), recentered by (...), bounding radius ...
+[ObjLoader] 215 unique vertices, 867 indices (from assets/suzanne_lod1_uv.obj), recentered by (...), bounding radius ...
+[ObjLoader] 80 unique vertices, 228 indices (from assets/suzanne_lod2_uv.obj), recentered by (...), bounding radius ...
 ...
 Vulkan Context initialized
 [FrameRenderer] initialized (FrameGraph Stage B)

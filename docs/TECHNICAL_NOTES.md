@@ -3550,14 +3550,15 @@ bucket, normal bucket unaffected).
   class, albedo/normal/metallic-roughness/AO all sampled in
   `triangle.frag`, using a real sourced CC0 material (ambientCG's
   `Bricks097`) as of §42, not the original self-generated placeholders.
-  Remaining gap: only LOD0 has real UV data (LOD1/LOD2 sample a constant
-  texel, same as before Phase 8 milestone 2) - closing this needs a
-  UV-preserving decimation this environment has no 3D tool for, and no
-  suitable pre-made low-poly UV-mapped Suzanne variant turned up during
-  §42's asset search either. Material params are still shared by all 343
-  grid instances (the projectile gets its own distinct push-constant
-  values, but still one flat set) — true per-instance material variation
-  is future work.
+  All 3 LODs have real UV data as of Phase 23 (`assets/suzanne_lod1_uv.obj`/
+  `suzanne_lod2_uv.obj`, Blender-decimated from `suzanne_pbr.obj` - closes
+  the gap that had needed a UV-preserving decimation tool this environment
+  didn't have; see roadmap.md's Phase 8/Phase 23 notes). Material params
+  are still shared by all 343 grid instances by default (the projectile
+  gets its own distinct push-constant values, and Phase 23 M2 lets a
+  configurable subset of the grid diverge too via `mixedMaterialsEnabled()`
+  - see §46) — fully independent per-instance material variation beyond
+  that is still future work.
 - **IBL is complete, all 3 milestones** (§33/§34/§35) — a procedurally
   baked environment cubemap, a live skybox, a diffuse irradiance cubemap,
   a specular-prefiltered mip-chain cubemap, and a BRDF integration LUT
@@ -3612,8 +3613,8 @@ bucket, normal bucket unaffected).
 - **Texture sampling is implemented and validated** (#13), and reunited
   with the primary demo mesh for LOD0 as of Phase 8 milestone 2 (§25) —
   `assets/suzanne_pbr.obj` has real `vt` data, unlike the original
-  `suzanne.obj`. Shares the LOD1/LOD2 UV gap the PBR materials item above
-  already covers.
+  `suzanne.obj`. LOD1/LOD2 followed as of Phase 23 - see the PBR materials
+  item above.
 - **Projectile collision is swept as of §41** — the grid-impact test
   sweeps `[previousPosition(), position()]` against every instance's
   collision sphere and finds the earliest hit along that segment, closing
@@ -3623,12 +3624,14 @@ bucket, normal bucket unaffected).
   by damped velocity impulses, not a single fast-moving projectile.
 - **Alpha blending + GPU-side transparency sort landed as of §43** —
   `transparentPipeline_`, `sortInstances.comp`, and `gridAlpha()` exist,
-  proven with the shared brick material at reduced alpha. The actual
-  jelly/glass/liquid shading model (refraction, IOR, subsurface) that
-  motivated this work is still future work — this section only built the
-  ordering/blending infrastructure it will need. Mixed opaque+transparent
-  scenes and the projectile's blend order relative to the grid are also
-  explicitly out of scope (§43).
+  proven with the shared brick material at reduced alpha. **All 3 gaps
+  this section originally left open are now closed, Phase 23:** the
+  actual jelly/glass/liquid shading model landed as global-toggle
+  refraction/IOR (§45); mixed opaque+transparent scenes landed as
+  GPU-bucketed per-instance material selection, off by default (§46);
+  and the projectile's blend order relative to the grid is now
+  interleaved at the correct coarse position instead of always drawn
+  last (§47).
 - **Material texture sampling is now a runtime toggle, default off, as
   of §44** — `texturesEnabled()` gates all 4 material texture samples in
   `triangle.frag`; off reproduces Phase 8 milestone 1's flat PBR look
