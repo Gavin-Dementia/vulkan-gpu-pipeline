@@ -752,16 +752,14 @@ void VulkanContext::initEnvironment()
 // =========================================================
 void VulkanContext::initSceneData()
 {
-    // LOD0 uses a UV/normal-mapped re-export of the same base mesh (Phase 8
-    // milestone 2, see docs/TECHNICAL_NOTES.md) so it can actually sample
-    // the new texture set; LOD1/LOD2 keep the original UV-less meshes -
-    // matching UV-preserving decimations would need a 3D tool this
-    // environment doesn't have, so they stay a known, flagged gap rather
-    // than blocking this milestone.
+    // All 3 LODs now use UV/normal-mapped meshes (Phase 8 milestone 2 gave
+    // LOD0 real UVs; LOD1/LOD2 followed later via Blender decimation of the
+    // same base mesh - see docs/roadmap.md's Phase 23 "Open" note) so every
+    // LOD can sample the real texture set instead of a constant (0,0) texel.
     const std::array<std::string, 3> lodPaths = {
         "assets/suzanne_pbr.obj",
-        "assets/suzanne_lod1.obj",
-        "assets/suzanne_lod2.obj"
+        "assets/suzanne_lod1_uv.obj",
+        "assets/suzanne_lod2_uv.obj"
     };
 
     for (int i = 0; i < 3; i++)

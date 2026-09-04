@@ -961,16 +961,103 @@ Adds a runtime on/off switch for material texture sampling, default
 
 ---
 
+## Phase 23 — Transparency Shading Model (Planned)
+
+**Status: Planned — design only, no implementation yet**
+
+Direct follow-up to Phase 21, which built the alpha-blend/GPU-sort
+infrastructure but explicitly scoped out the real transparent shading
+model, mixed-material scenes, and projectile sort ordering. Three
+milestones, M1 designed in detail below; M2/M3 sketched at plan level
+and to be refined once M1's pipeline-split lands.
+
+**Milestone 1 — Refraction/IOR shading (glass/jelly/liquid)**
+
+Real screen-space refraction, replacing pure alpha blending for
+materials that need it. Key constraint found while planning: `GeometryPass`
+is currently a single render pass instance (skybox + grid + projectile
+all drawn together, opaque-vs-transparent chosen once per frame via
+`gridAlpha()`), and Vulkan can't sample and write the same attachment in
+one pass — so refraction needs a real pass-structure change, not just a
+new shader.
+
+Planned design:
+- New `sceneColorCopy_` target (same format/extent as `sceneColorTarget_`);
+  `sceneColorTarget_` gains `TRANSFER_SRC_BIT`, the copy gets
+  `TRANSFER_DST_BIT | SAMPLED_BIT`.
+- `GeometryPass` splits into two render pass instances sharing the same
+  attachments: Pass A (skybox + opaque draws, `LOAD_OP_CLEAR` as today) →
+  barrier + `vkCmdCopyImage` into `sceneColorCopy_` → Pass B (refractive/
+  transparent draws, `LOAD_OP_LOAD`, samples the copy). This is the
+  single largest structural piece — everything else below follows
+  established patterns.
+- New `refractivePipeline_` (blend off — refraction composites in-shader
+  rather than double-applying translucency via blend — depth-test on,
+  depth-write off, matching `transparentPipeline_` otherwise).
+- Shader: `refract(viewDir, normal, 1.0/IOR)`, screen-space UV offset via
+  a `(1 - NdotV)`-scaled approximation (same small-angle-approximation
+  spirit as §14's screen-size LOD math, not an exact re-projection),
+  samples `sceneColorCopy_`, tints by albedo, adds the existing
+  Cook-Torrance specular/Fresnel term on top. Optional wrap-lighting
+  approximation for a jelly-style fake subsurface term, explicitly not
+  real SSS.
+- IOR stored in `MaterialPushConstants.metallicRoughness.w` (currently
+  unused) — same "reuse an idle struct slot" trick §43 used for
+  `position.w`, zero struct growth.
+- ImGui: "IOR" + "Refraction Strength" sliders alongside the existing
+  Transparency section, plus a fallback toggle to Phase 21's plain alpha
+  blend for direct before/after comparison.
+
+Open question to resolve before implementation: global toggle (mirrors
+`gridAlpha()`'s whole-grid scope, ships independently of M2) vs.
+per-instance from the start. Leaning global-first, since M2 will need
+per-instance material bucketing anyway and shouldn't be a prerequisite
+for M1 landing.
+
+**Milestone 2 — Mixed opaque + transparent instances**
+
+`gridAlpha()` is currently one shared toggle for the whole grid — no
+per-instance material variation. Planned approach: add a per-instance
+material-type flag to `ObjectBuffer`, extend the compute culling pass to
+bucket visible instances by that flag (same bucketing pattern Phase 6's
+LOD buckets and Phase 21's sort buckets already established), and bind
+`pipeline_`/`transparentPipeline_`/`refractivePipeline_` per bucket
+instead of once for the whole grid. ImGui: a simple "% transparent" or
+"every Nth instance" control to demonstrate mixed rendering, not
+per-instance picking.
+
+**Milestone 3 — Projectile transparent sort/ordering**
+
+The projectile always draws last regardless of blend correctness.
+Planned approach: keep the projectile's separate UBO/descriptor
+(deliberate since Phase 7 — not folding it into the grid's instance
+buffer), but have the CPU compare its per-frame camera distance against
+the LOD buckets' known distance ranges to decide which of the reversed
+`2,1,0` bucket-draw slots it should be inserted into, rather than always
+drawing after all three.
+
+---
+
 ## Open / not yet started
 
 - **LOD1/LOD2 have no real UV data** (Phase 8, milestone 2) — only LOD0
   was swapped to a UV/normal-mapped mesh; the far LOD meshes sample a
   constant `(0,0)` texel, same flat-tinted look as before this milestone.
-  Closing this needs a UV-preserving decimation of the base mesh (a 3D
-  tool this environment doesn't have — see `TECHNICAL_NOTES.md` §25);
-  no suitable pre-made low-poly UV-mapped Suzanne variant was found
-  during Phase 20's asset search either, so this stays open rather than
-  forcing a mismatched substitute.
+  Closing this needed a UV-preserving decimation of the base mesh (a 3D
+  tool this environment doesn't have — see `TECHNICAL_NOTES.md` §25).
+  **Update (2026-09-04):** UV-mapped replacements uploaded —
+  `assets/suzanne_lod1_uv.obj` (163v/215vt/289tri) and
+  `assets/suzanne_lod2_uv.obj` (47v/80vt/76tri), made externally in
+  Blender from `suzanne_pbr.obj`. Checked against `ObjLoader.cpp`
+  (tinyobj-based, auto-triangulates, ignores `.mtl` entirely since
+  materials come from the separate `Material` class): both files are
+  well-formed (complete `v/vt/vn` triplets, UVs in `[0,1]`) and load
+  cleanly. LOD2's triangle count (76) differs from the prior non-UV
+  LOD2 (47), which needs no code change since `lod2DetailRatio()`
+  already derives its default from the live post-load triangle count
+  rather than a hardcoded constant (Phase 18). Wiring is a two-line
+  swap in `VulkanContext.cpp` (~L763-764) — verified but not yet
+  applied.
 
 ---
 
