@@ -50,7 +50,20 @@ MeshData ObjLoader::load(const std::string& path)
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
 
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str()))
+    // tinyobj's mtl_basedir defaults to "" (not derived from path) when
+    // omitted - without it, an OBJ with an mtllib directive (suzanne_lod1_uv.obj/
+    // suzanne_lod2_uv.obj) has tinyobj look for the .mtl next to the
+    // process's cwd (build/bin/) instead of next to the OBJ itself
+    // (build/bin/assets/), so it never finds it - a harmless but noisy
+    // "material file not found" warning, since materials here are never
+    // read back (this codebase's actual materials come from the separate
+    // Material class - see docs/TECHNICAL_NOTES.md §46/§25).
+    std::string baseDir;
+    size_t slashPos = path.find_last_of("/\\");
+    if (slashPos != std::string::npos)
+        baseDir = path.substr(0, slashPos + 1);
+
+    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str(), baseDir.c_str()))
         throw std::runtime_error("Failed to load OBJ: " + path + "\n" + err);
 
     if (!warn.empty())
