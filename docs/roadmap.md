@@ -963,7 +963,7 @@ Adds a runtime on/off switch for material texture sampling, default
 
 ## Phase 23 — Transparency Shading Model
 
-**Status: Milestones 1-2 complete; M3 planned, not yet implemented**
+**Status: Complete (all 3 milestones)**
 
 Direct follow-up to Phase 21, which built the alpha-blend/GPU-sort
 infrastructure but explicitly scoped out the real transparent shading
@@ -1064,15 +1064,35 @@ rest of the grid stays on the always-opaque `pipeline_` regardless.
   the rest stay opaque brick; toggled off, indistinguishable from pre-M2
   behavior.
 
-**Milestone 3 — Projectile transparent sort/ordering**
+**Milestone 3 — Projectile transparent sort/ordering — Complete**
 
-The projectile always draws last regardless of blend correctness.
-Planned approach: keep the projectile's separate UBO/descriptor
-(deliberate since Phase 7 — not folding it into the grid's instance
-buffer), but have the CPU compare its per-frame camera distance against
-the LOD buckets' known distance ranges to decide which of the reversed
-`2,1,0` bucket-draw slots it should be inserted into, rather than always
-drawing after all three.
+Implemented as planned: the projectile's separate UBO/descriptor stayed
+untouched (deliberate since Phase 7 — not folded into the grid's instance
+buffer), but it's no longer unconditionally drawn last. See
+`docs/TECHNICAL_NOTES.md` §47 for the full design.
+
+- Only engages when something is actually alpha-blended (`transparent`)
+  and the projectile is active — opaque/refractive draws resolve
+  occlusion via the depth test regardless of order, so the projectile
+  keeps its pre-M3 "always last" position there, unchanged.
+- Reuses `culling.comp`'s own screen-size-to-distance relationship
+  (`radius * screenScale / threshold`) to convert the LOD1/LOD2
+  screen-size thresholds back into equivalent camera distances, then
+  compares the projectile's actual distance against those — coarse,
+  bucket-level placement (one of 3 insertion points relative to the
+  reversed `2,1,0` LOD steps), not an exact per-instance sort merge.
+  `VulkanContext::boundingSphereRadius()` (new public accessor) supplies
+  the radius side of that formula.
+- `drawGridBucket` (Phase 23 M2's helper) gained `stepFrom`/`stepTo`
+  parameters so it can draw a partial LOD range; the projectile's draw
+  itself was extracted into a `drawProjectile` lambda so it can be
+  spliced between two partial calls to whichever bucket
+  (normal-when-not-mixed, or special-when-mixed) is the alpha-blended one.
+- Verified interactively: with Grid Alpha < 1, a projectile flown behind
+  transparent grid instances is now correctly occluded/blended by them
+  instead of always rendering on top; combined with Mixed Materials, the
+  same holds against the special bucket. With Refraction (or default
+  opaque), projectile behavior is unchanged from pre-M3.
 
 ---
 

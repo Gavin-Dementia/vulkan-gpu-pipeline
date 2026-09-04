@@ -401,6 +401,13 @@ public:
     void updateInstanceSimulation(float deltaTime);
     void resetInstanceFormation();
 
+    // The render/culling bounding sphere radius itself - the same value
+    // culling.comp's LOD screen-size test uses (via the object buffer),
+    // exposed so the CPU can reproduce that same screen-size-to-distance
+    // relationship elsewhere (Phase 23 M3, docs/roadmap.md - see
+    // GeometryPass's projectile-insertion-point math in FrameRenderer.cpp).
+    float boundingSphereRadius() const { return boundingSphereRadius_; }
+
     // Collision volume, independent of the render/culling bounding
     // sphere (boundingSphereRadius_) - starts equal to it (a sensible,
     // mesh-derived default) but can diverge, e.g. a more forgiving hit

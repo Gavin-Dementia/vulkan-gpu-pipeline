@@ -3432,6 +3432,89 @@ projectile's draw order relative to grid instances is still unaffected
 by this milestone - it's not part of the grid's instance buffer at all,
 so "mixed materials" has no bearing on it either way.
 
+### 47. Projectile transparent draw-order interleaving (Phase 23 M3), coarse bucket-level placement over an exact sort
+
+Closes the last gap §43 flagged: the projectile has always been drawn
+after the entire grid, unconditionally - correct occlusion for an opaque
+or refractive draw (depth test alone resolves it, order is irrelevant),
+but wrong the moment the grid is alpha-blended and the projectile is
+actually *behind* some of it - it would still render on top, since
+nothing established where in the back-to-front sequence it belonged.
+
+**Scope: only engages when draw order can actually matter.**
+`projectileNeedsInterleave = transparent && context->projectile().isActive()`
+- `transparent` already excludes the refractive case (§45's
+`transparent = !refraction && isTransparent()`), so this section's new
+code path is provably unreached whenever occlusion is depth-test-only,
+which covers the *majority* of states (default opaque, refraction-only,
+mixed-with-non-alpha-blend-special). The projectile's pre-M3 "always
+last" position is the exact fallback for every one of those, unchanged.
+
+**Turning a screen-size threshold back into a distance.** The LOD
+system's thresholds (`lod1ScreenSize()`/`lod2ScreenSize()`, §32) are in
+projected pixels, not world-space distance - by design, so they stay
+meaningful across FOV/resolution changes. But the projectile isn't going
+through `culling.comp`'s LOD bucketing at all (it's a single direct draw,
+always LOD2's mesh, §17) - there's no "screen size" for it to compare
+against those thresholds directly. Instead, `culling.comp`'s own forward
+relationship (`screenSize = radius * screenScale / camDist`, §32) is
+solved backward for `camDist` at each threshold:
+`distAtBoundary = radius * screenScale / screenSizeThreshold`. This
+turns the two screen-size boundaries into two *equivalent* camera
+distances, which the projectile's actual `glm::distance(camera,
+projectile)` can be compared against directly - reusing the exact same
+mesh-detail-independent math already trusted for LOD selection instead
+of inventing a parallel, potentially inconsistent, distance-based
+scheme. `VulkanContext::boundingSphereRadius()` (previously private,
+now a small public accessor) supplies the one missing piece - the same
+radius `culling.comp` already uses for every grid instance.
+
+**Coarse, not exact - a deliberate scope match to what "bucket-level"
+means.** This finds *which of the 3 LOD steps' distance range* the
+projectile falls into, then inserts it at that range's near boundary in
+the reversed `2,1,0` draw sequence - it does not merge-sort the
+projectile against individual grid instances' `sortInstances.comp`-sorted
+positions within a bucket. A projectile positioned between two
+specific grid instances *within* the same LOD tier can still draw
+slightly out of order relative to those two - accepted, same "the coarse
+pass only ever skips work that would have been culled anyway, not a
+correctness issue at finer granularity" bar §31 already established for
+cluster-level (not per-object) coarse culling. Exactly matching the
+roadmap's own M3 plan wording ("which of the reversed `2,1,0` bucket-draw
+slots"), not a downgrade from what M3 was scoped to do.
+
+**Why `drawGridBucket` needed `stepFrom`/`stepTo`, not a second
+mechanism.** The 3-LOD draw loop already existed inside `drawGridBucket`
+(§46) as a single unconditional `for` loop. Rather than writing a
+parallel draw path just for the interleaved case, the loop's bounds
+became parameters (default `0,3` - the whole bucket, byte-identical to
+every pre-M3 call site) - the interleaved case simply calls the same
+lambda twice with a split range and the projectile spliced between.
+This means the interleaved and non-interleaved paths share every line of
+actual Vulkan binding/draw code; only the range differs.
+
+**Why `drawProjectile` needs no pipeline parameter.** Every call site -
+standalone at the end (pre-M3 behavior) or spliced mid-bucket (new) -
+happens immediately after a `drawGridBucket` call that already bound
+`activePipeline` (or, in the non-mixed case, `normalPipeline`, which
+*equals* `activePipeline` whenever `mixed` is false - the only case this
+section's interleaving path is ever reached from). `drawProjectile`
+only needs `activePipeline.getLayout()` for its own set-0 rebind/push/
+draw - never `vkCmdBindPipeline` itself - so no parameter was needed
+beyond capturing `activePipeline` by reference, the exact same shape the
+pre-M3 projectile code already had.
+
+**Verification.** Rebuilt clean. Confirmed the default/opaque and
+refraction-only cases are unreachable-by-construction identical to
+pre-M3 (`projectileNeedsInterleave` false, falls through to the same
+"draw after everything" call as always). With Grid Alpha < 1, flew the
+projectile behind a column of transparent grid instances: it now renders
+correctly occluded/blended by the nearer transparent instances instead
+of always compositing on top, confirmed both in the non-mixed case
+(interleaved into the whole grid's single alpha-blend bucket) and
+combined with Mixed Materials (interleaved into just the special
+bucket, normal bucket unaffected).
+
 ---
 
 ## Bugs encountered (and what they taught)

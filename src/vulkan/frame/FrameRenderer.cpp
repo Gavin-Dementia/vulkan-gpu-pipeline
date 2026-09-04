@@ -368,9 +368,14 @@ void FrameRenderer::init(VulkanContext& ctx)
             // and issues the 3-LOD indirect-draw loop - shared by the
             // normal-bucket and (Phase 23 M2) special-bucket draws below
             // instead of duplicating this ~20-line sequence twice.
+            // stepFrom/stepTo (Phase 23 M3, default 0/3 = the full bucket)
+            // let a caller draw only part of the 3-LOD sequence, so the
+            // projectile's draw can be interleaved at a specific point
+            // instead of always after all 3 - see projInsertStep below.
             auto drawGridBucket = [&](VulkanPipeline& pipe, bool bindRefractionSet,
                                        bool useSpecial, bool reverseOrder,
-                                       const MaterialPushConstants& mat)
+                                       const MaterialPushConstants& mat,
+                                       int stepFrom = 0, int stepTo = 3)
             {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.get());
 
@@ -412,7 +417,7 @@ void FrameRenderer::init(VulkanContext& ctx)
                 // sortInstances.comp for why this order is already correct
                 // *between* LOD buckets, leaving only *within*-bucket order
                 // for that shader to fix.
-                for (int step = 0; step < 3; step++)
+                for (int step = stepFrom; step < stepTo; step++)
                 {
                     int i = reverseOrder ? (2 - step) : step;
 
@@ -447,28 +452,18 @@ void FrameRenderer::init(VulkanContext& ctx)
                 glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
                 glm::vec4(0.0f, 0.5f, context->texturesEnabled() ? 1.0f : 0.0f, context->refractionIOR()) };
 
-            // Normal bucket - always drawn. In mixed mode this is the
-            // always-opaque pipeline_ (forward LOD order, no sort needed);
-            // otherwise it's activePipeline covering the *whole* grid,
-            // exactly as before M2 existed.
-            drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction && !mixed,
-                           /*useSpecial=*/false, /*reverseOrder=*/!mixed && transparent, gridMat);
-
-            // Special bucket (Phase 23 M2) - every materialStride()'th
-            // instance, drawn with whichever special pipeline
-            // gridAlpha()/refractionEnabled() currently select. Skipped
-            // outright when mixed materials are off.
-            if (mixed)
-            {
-                drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction,
-                               /*useSpecial=*/true, /*reverseOrder=*/transparent, gridMat);
-            }
-
             // Mouse-fired projectile: reuses LOD2's mesh, its own UBO
             // (identity model - no spin) and its own descriptor set/
             // instance buffer, since the grid's UBO/instance buffer are
-            // already claimed by the loop above this frame.
-            if (context->projectile().isActive())
+            // already claimed by the loop(s) above/below this frame.
+            // Assumes a pipeline compatible with activePipeline's layout is
+            // already bound (true whenever called from the interleaved
+            // path below, since it's spliced between two partial calls to
+            // the very bucket using activePipeline; also true when called
+            // standalone at the end, since drawGridBucket above already
+            // bound activePipeline or normalPipeline==activePipeline) -
+            // only rebinds its own set 0.
+            auto drawProjectile = [&]()
             {
                 UBOData projUbo{};
                 projUbo.model = glm::mat4(1.0f);
@@ -494,9 +489,6 @@ void FrameRenderer::init(VulkanContext& ctx)
                 // Shares gridAlpha() rather than its own slider - this
                 // scoped fix treats "transparent" as one shared material
                 // toggle, not per-object (see docs/TECHNICAL_NOTES.md §43).
-                // Note this draw is still issued after the grid loop
-                // unconditionally, so its blend order relative to the grid
-                // isn't sorted - a known limitation, not addressed here.
                 MaterialPushConstants projMat{
                     glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
                     glm::vec4(1.0f, 0.2f, context->texturesEnabled() ? 1.0f : 0.0f, context->refractionIOR()) };
@@ -513,6 +505,83 @@ void FrameRenderer::init(VulkanContext& ctx)
                 vkCmdBindVertexBuffers(cmd, 1, 1, &projInstanceBuf, &projOffset);
 
                 vkCmdDrawIndexed(cmd, context->lod(2).indexBuffer.indexCount(), 1, 0, 0, 0);
+            };
+
+            // Phase 23 M3 (docs/roadmap.md): where to interleave the
+            // projectile relative to the 3 LOD steps of whichever bucket is
+            // actually alpha-blended (`transparent`) - closes the "always
+            // drawn last" gap §43 left open. Only meaningful when something
+            // is alpha-blended at all: opaque/refractive draws resolve
+            // occlusion via the depth test regardless of draw order, so the
+            // projectile keeps drawing after everything there, unchanged
+            // from pre-M3 behavior. Reuses culling.comp's own screen-size-
+            // to-distance relationship (radius * screenScale / dist) to
+            // convert the LOD1/LOD2 screen-size thresholds back into the
+            // equivalent camera distances, then compares the projectile's
+            // actual distance against those - the same coarse, bucket-level
+            // (not exact per-instance) placement the roadmap's M3 plan
+            // called for.
+            bool projectileNeedsInterleave = transparent && context->projectile().isActive();
+            int projInsertStep = 3;   // default: after everything (pre-M3 position)
+            if (projectileNeedsInterleave)
+            {
+                float projDist = glm::distance(context->camera().position(), context->projectile().position());
+                float screenScale = static_cast<float>(sceneExtent.height)
+                    / (2.0f * glm::tan(glm::radians(Camera::FOV_DEGREES) * 0.5f));
+                float radius = glm::max(context->boundingSphereRadius(), 0.0001f);
+                float distAtLod1Boundary = radius * screenScale / glm::max(context->lod1ScreenSize(), 0.0001f);
+                float distAtLod2Boundary = radius * screenScale / glm::max(context->lod2ScreenSize(), 0.0001f);
+
+                projInsertStep = (projDist >= distAtLod2Boundary) ? 0
+                                : (projDist >= distAtLod1Boundary) ? 1 : 2;
+            }
+
+            // Normal bucket - always drawn. In mixed mode this is the
+            // always-opaque pipeline_ (forward LOD order, no sort/
+            // interleave needed - depth test alone resolves occlusion);
+            // otherwise it's activePipeline covering the *whole* grid,
+            // the same bucket the projectile interleaves into when needed.
+            if (!mixed && projectileNeedsInterleave)
+            {
+                drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/false,
+                               /*reverseOrder=*/true, gridMat, 0, projInsertStep);
+                drawProjectile();
+                drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/false,
+                               /*reverseOrder=*/true, gridMat, projInsertStep, 3);
+            }
+            else
+            {
+                drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction && !mixed,
+                               /*useSpecial=*/false, /*reverseOrder=*/!mixed && transparent, gridMat);
+            }
+
+            // Special bucket (Phase 23 M2) - every materialStride()'th
+            // instance, drawn with whichever special pipeline
+            // gridAlpha()/refractionEnabled() currently select. Skipped
+            // outright when mixed materials are off.
+            if (mixed)
+            {
+                if (projectileNeedsInterleave)
+                {
+                    drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/true,
+                                   /*reverseOrder=*/true, gridMat, 0, projInsertStep);
+                    drawProjectile();
+                    drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction, /*useSpecial=*/true,
+                                   /*reverseOrder=*/true, gridMat, projInsertStep, 3);
+                }
+                else
+                {
+                    drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction,
+                                   /*useSpecial=*/true, /*reverseOrder=*/transparent, gridMat);
+                }
+            }
+
+            // Fallback position (pre-M3 behavior): drawn after everything
+            // whenever nothing above already interleaved it in - the
+            // opaque/refractive case, or transparent-but-inactive-until-now.
+            if (context->projectile().isActive() && !projectileNeedsInterleave)
+            {
+                drawProjectile();
             }
         },
         PassStage::Graphics
