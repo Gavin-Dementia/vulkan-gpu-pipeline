@@ -10,6 +10,10 @@ public:
         VkBuffer objectBuffer,
         std::array<VkBuffer, 3> visibleInstanceBuffers,
         std::array<VkBuffer, 3> indirectDrawBuffers,
+        // Phase 23 M2 (docs/roadmap.md) - "special"-material sibling
+        // buffer pairs, same shapes/sizes as the two arrays above.
+        std::array<VkBuffer, 3> visibleInstanceBuffersSpecial,
+        std::array<VkBuffer, 3> indirectDrawBuffersSpecial,
         VkBuffer frustumBuffer,
         // Shadow pass's light-frustum-culled instance set - see
         // architecture.md's "Shadow mapping" module notes.

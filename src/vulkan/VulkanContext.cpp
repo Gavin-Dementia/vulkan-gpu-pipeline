@@ -901,7 +901,12 @@ void VulkanContext::initSceneData()
 // =========================================================
 void VulkanContext::initCullingResources()
 {
-    struct ComputeObjectData { glm::vec4 boundingSphere; };  // xyz=center, w=radius
+    // materialFlags.x (Phase 23 M2, docs/roadmap.md) - grown from a bare
+    // vec4 so the compute-side flag driving mixed opaque/special-material
+    // instances can live somewhere; must match culling.comp's ObjectData
+    // exactly (no shared C++/GLSL header in this codebase, same manual-
+    // sync discipline as GRID_SIZE/CLUSTER_DIM elsewhere).
+    struct ComputeObjectData { glm::vec4 boundingSphere; glm::vec4 materialFlags; };
 
     std::vector<ComputeObjectData> objects(OBJECT_COUNT);
 
@@ -910,6 +915,10 @@ void VulkanContext::initCullingResources()
         objects[i].boundingSphere = glm::vec4(
             glm::vec3(cachedInstances_[i].position),
             boundingSphereRadius_
+        );
+        objects[i].materialFlags = glm::vec4(
+            (mixedMaterialsEnabled_ && (i % materialStride_ == 0)) ? 1.0f : 0.0f,
+            0.0f, 0.0f, 0.0f
         );
     }
 
@@ -942,6 +951,17 @@ void VulkanContext::initCullingResources()
         // 每个LOD的indexCount不同
         uint32_t lodIndexCount = lods_[i].indexBuffer.indexCount();
         lods_[i].indirectDrawBuffer.create(
+            device_.getPhysical(), device_.get(), lodIndexCount
+        );
+
+        // Phase 23 M2 - "special"-material sibling, same size/index count
+        // as the normal pair above (worst case: every instance is special).
+        lods_[i].visibleInstanceBufferSpecial.create(
+            device_.getPhysical(), device_.get(), visibleInstanceSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
+        lods_[i].indirectDrawBufferSpecial.create(
             device_.getPhysical(), device_.get(), lodIndexCount
         );
     }
@@ -1015,10 +1035,23 @@ void VulkanContext::initCullingResources()
         lods_[2].indirectDrawBuffer.get()
     };
 
+    // Phase 23 M2 - "special"-material sibling buffer handles.
+    std::array<VkBuffer, 3> visibleBufsSpecial = {
+        lods_[0].visibleInstanceBufferSpecial.get(),
+        lods_[1].visibleInstanceBufferSpecial.get(),
+        lods_[2].visibleInstanceBufferSpecial.get()
+    };
+    std::array<VkBuffer, 3> indirectBufsSpecial = {
+        lods_[0].indirectDrawBufferSpecial.get(),
+        lods_[1].indirectDrawBufferSpecial.get(),
+        lods_[2].indirectDrawBufferSpecial.get()
+    };
+
     computeDescriptor_.create(
         device_.get(),
         objectBuffer_.get(),
         visibleBufs, indirectBufs,
+        visibleBufsSpecial, indirectBufsSpecial,
         frustumBuffer_.get(),
         shadowVisibleInstanceBuffer_.get(),
         shadowIndirectDrawBuffer_.get(),
@@ -1192,13 +1225,22 @@ void VulkanContext::updateInstanceSimulation(float deltaTime)
 
     // Re-upload the (possibly changed) positions - cheap, persistently
     // mapped memcpy (see the VulkanBuffer persistent-mapping commit).
-    // A bare glm::vec4 is byte-identical to the local ComputeObjectData
-    // struct above (single member, no padding), safe to upload directly.
-    std::vector<glm::vec4> objects(OBJECT_COUNT);
+    // Must match initCullingResources()'s ComputeObjectData exactly
+    // (boundingSphere + materialFlags, Phase 23 M2) - the struct grew from
+    // a bare vec4 once mixed materials needed somewhere to carry the
+    // per-instance special-material flag.
+    struct ComputeObjectData { glm::vec4 boundingSphere; glm::vec4 materialFlags; };
+    std::vector<ComputeObjectData> objects(OBJECT_COUNT);
     for (uint32_t i = 0; i < OBJECT_COUNT; i++)
-        objects[i] = glm::vec4(instanceCurrentPositions_[i], boundingSphereRadius_);
+    {
+        objects[i].boundingSphere = glm::vec4(instanceCurrentPositions_[i], boundingSphereRadius_);
+        objects[i].materialFlags = glm::vec4(
+            (mixedMaterialsEnabled_ && (i % materialStride_ == 0)) ? 1.0f : 0.0f,
+            0.0f, 0.0f, 0.0f
+        );
+    }
 
-    objectBuffer_.upload(device_.get(), objects.data(), sizeof(glm::vec4) * OBJECT_COUNT);
+    objectBuffer_.upload(device_.get(), objects.data(), sizeof(ComputeObjectData) * OBJECT_COUNT);
 
     // Hierarchical culling (coarse pass): recompute each cluster's
     // enclosing bounding sphere from the live positions above, same
@@ -1347,6 +1389,8 @@ void VulkanContext::cleanup()
 
     for (int i = 0; i < 3; i++)
     {
+        lods_[i].indirectDrawBufferSpecial.destroy(device_.get());
+        lods_[i].visibleInstanceBufferSpecial.destroy(device_.get());
         lods_[i].indirectDrawBuffer.destroy(device_.get());
         lods_[i].visibleInstanceBuffer.destroy(device_.get());
         lods_[i].indexBuffer.destroy(device_.get());

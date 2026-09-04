@@ -59,6 +59,14 @@ public:
         IndexBuffer    indexBuffer;
         VulkanBuffer   visibleInstanceBuffer;
         IndirectDrawBuffer indirectDrawBuffer;
+        // Phase 23 M2 (docs/roadmap.md) - "special"-material sibling of
+        // the pair above, same mesh (vertexBuffer/indexBuffer are shared,
+        // not duplicated), separate compacted instance list. Populated by
+        // culling.comp whenever mixedMaterialsEnabled() is on; empty
+        // (instanceCount 0) otherwise, so drawing it is a no-op by
+        // construction when the feature is unused.
+        VulkanBuffer   visibleInstanceBufferSpecial;
+        IndirectDrawBuffer indirectDrawBufferSpecial;
     };
 
     std::array<uint32_t, 3> lastVisibleCount_ = {0, 0, 0};
@@ -236,6 +244,22 @@ public:
     // refractionEnabled_ itself.
     bool  sceneColorEverRendered() const { return sceneColorEverRendered_; }
     void  markSceneColorRendered()       { sceneColorEverRendered_ = true; }
+
+    // Phase 23 M2 (docs/roadmap.md) - mixed opaque + special-material
+    // instances in the same grid. Default off, so the whole grid stays
+    // one shared material (pipeline_ vs. transparentPipeline_ vs.
+    // refractivePipeline_ picked by gridAlpha()/refractionEnabled(), same
+    // as before M2) until explicitly turned on. When on, every
+    // materialStride()'th instance (index 0, N, 2N, ...) uses whichever
+    // special pipeline gridAlpha()/refractionEnabled() currently select,
+    // and every other instance stays on the always-opaque pipeline_
+    // regardless of those toggles - see GeometryPass in FrameRenderer.cpp.
+    bool  mixedMaterialsEnabled() const { return mixedMaterialsEnabled_; }
+    void  setMixedMaterialsEnabled(bool e) { mixedMaterialsEnabled_ = e; }
+    // Clamped to >= 1 - a stride of 0 would make every instance special
+    // via i % 0, undefined behavior in the CPU-side flag computation.
+    uint32_t materialStride() const { return materialStride_; }
+    void     setMaterialStride(uint32_t n) { materialStride_ = glm::max(n, 1u); }
 
     // Recreates sceneColorTarget_/sceneColorDepth_/sceneFramebuffer_ and
     // the two pipelines whose VkViewport/scissor is baked in at creation
@@ -544,6 +568,10 @@ private:
     bool                    refractionEnabled_       = false;
     float                   refractionIOR_           = 1.5f;
     bool                    sceneColorEverRendered_  = false;
+
+    // Phase 23 M2 - see accessor comments above.
+    bool                    mixedMaterialsEnabled_   = false;
+    uint32_t                materialStride_          = 3;
 
     glm::vec3             lightDirection_ = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f));
     glm::vec3             lightColor_     = glm::vec3(1.0f, 1.0f, 1.0f);

@@ -963,7 +963,7 @@ Adds a runtime on/off switch for material texture sampling, default
 
 ## Phase 23 — Transparency Shading Model
 
-**Status: Milestone 1 complete; M2/M3 planned, not yet implemented**
+**Status: Milestones 1-2 complete; M3 planned, not yet implemented**
 
 Direct follow-up to Phase 21, which built the alpha-blend/GPU-sort
 infrastructure but explicitly scoped out the real transparent shading
@@ -1028,17 +1028,41 @@ original plan had flagged as the single biggest-risk piece.
 reprojected (not hand-tuned) refraction offset; a "Refraction Strength"
 slider; wrap-lighting fake-subsurface approximation for jelly.
 
-**Milestone 2 — Mixed opaque + transparent instances**
+**Milestone 2 — Mixed opaque + transparent instances — Complete**
 
-`gridAlpha()` is currently one shared toggle for the whole grid — no
-per-instance material variation. Planned approach: add a per-instance
-material-type flag to `ObjectBuffer`, extend the compute culling pass to
-bucket visible instances by that flag (same bucketing pattern Phase 6's
-LOD buckets and Phase 21's sort buckets already established), and bind
-`pipeline_`/`transparentPipeline_`/`refractivePipeline_` per bucket
-instead of once for the whole grid. ImGui: a simple "% transparent" or
-"every Nth instance" control to demonstrate mixed rendering, not
-per-instance picking.
+Real GPU-side bucketing, implemented as originally planned (not a
+per-fragment `discard` shortcut - see `docs/TECHNICAL_NOTES.md` §46 for
+why that alternative was rejected). `gridAlpha()`/`refractionEnabled()`
+used to be one shared toggle for the whole grid; now every
+`materialStride()`'th instance (default every 3rd, ImGui-tunable) can use
+whichever special material those toggles currently select, while the
+rest of the grid stays on the always-opaque `pipeline_` regardless.
+
+- `ObjectData` (both `culling.comp` and its C++ mirror) gained
+  `materialFlags.x` - CPU-computed every frame from
+  `mixedMaterialsEnabled()`/`materialStride()`, same "recompute, don't
+  cache" discipline `boundingSphere` already used.
+- `culling.comp` compacts each LOD tier into one of *two* buffer pairs
+  (normal vs. special) depending on that flag, instead of always one -
+  same atomic-compaction bucketing pattern Phase 6's LOD tiers and Phase
+  21's sort buckets already established. `ComputeDescriptor` grew
+  14→20 bindings; `sortInstances.comp` grew from 3 workgroups to 6
+  (dispatched unconditionally - sorting an empty/opaque bucket is a fast
+  near-no-op, cheaper than a second conditional dispatch).
+- `GeometryPass` factored its bind/push/draw sequence into a
+  `drawGridBucket` helper (shared by both buckets instead of duplicated),
+  called once for the normal bucket and, only when mixed materials are
+  on, a second time for the special bucket with whichever pipeline
+  `gridAlpha()`/`refractionEnabled()` select.
+- Default off - the special buffers are guaranteed empty by construction
+  whenever `mixedMaterialsEnabled()` is false, so the feature is a true
+  no-op until explicitly turned on.
+- ImGui: "Enable Mixed Materials" checkbox + "Special Material Every N"
+  slider (1-20) in the existing Transparency section.
+- Verified interactively: combined with both Grid Alpha < 1 and
+  Refraction, every Nth instance visibly takes the special material while
+  the rest stay opaque brick; toggled off, indistinguishable from pre-M2
+  behavior.
 
 **Milestone 3 — Projectile transparent sort/ordering**
 

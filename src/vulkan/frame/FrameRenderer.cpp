@@ -54,6 +54,14 @@ void FrameRenderer::init(VulkanContext& ctx)
                     context->device().get(),
                     context->lod(i).indexBuffer.indexCount()
                 );
+                // Phase 23 M2 - "special"-material sibling, reset every
+                // frame regardless of mixedMaterialsEnabled() (cheap CPU
+                // write, and culling.comp simply never writes into it when
+                // the feature is off, so it just stays at 0).
+                context->lod(i).indirectDrawBufferSpecial.resetInstanceCount(
+                    context->device().get(),
+                    context->lod(i).indexBuffer.indexCount()
+                );
             }
             // Shadow pass's light-frustum-culled instance set - always
             // LOD0's index count, since the shadow pass only ever draws
@@ -173,11 +181,16 @@ void FrameRenderer::init(VulkanContext& ctx)
                     0, 1, &fineBarrier, 0, nullptr, 0, nullptr
                 );
 
-                // One workgroup per LOD bucket (gl_WorkGroupID.x selects
-                // which) - see sortInstances.comp.
+                // One workgroup per bucket (gl_WorkGroupID.x selects which:
+                // 0-2 = normal LOD0-2, 3-5 = special LOD0-2, Phase 23 M2) -
+                // see sortInstances.comp. Always dispatched over all 6 even
+                // when mixed materials are off (the special buckets are
+                // just empty then, a fast near-no-op) - simpler than a
+                // second conditional dispatch for a case that costs
+                // microseconds either way.
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->sortPipeline().get());
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, context->sortPipeline().layout(), 0, 1, &ds, 0, nullptr);
-                vkCmdDispatch(cmd, 3, 1, 1);
+                vkCmdDispatch(cmd, 6, 1, 1);
             }
         },
         PassStage::Compute
@@ -341,87 +354,114 @@ void FrameRenderer::init(VulkanContext& ctx)
             VulkanPipeline& activePipeline = refraction ? context->refractivePipeline()
                 : transparent ? context->transparentPipeline() : context->pipeline();
 
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline.get());
+            // Phase 23 M2 (docs/roadmap.md): mixed opaque + special-material
+            // grid instances. Off by default - normalPipeline == activePipeline
+            // and the "special" bucket below is skipped entirely, so this is
+            // byte-identical to pre-M2 behavior (the special buffers are also
+            // guaranteed empty by culling.comp whenever mixedMaterialsEnabled()
+            // is false, so even drawing them unconditionally would be a no-op -
+            // skipping the draw call outright is just cheaper).
+            bool mixed = context->mixedMaterialsEnabled();
+            VulkanPipeline& normalPipeline = mixed ? context->pipeline() : activePipeline;
 
-            // IBL Milestones 2-3 (see docs/TECHNICAL_NOTES.md §34/§35):
-            // set 1, ambient-lighting data (diffuse irradiance + specular
-            // prefilter + BRDF LUT) shared by every material - bound once
-            // per frame here, stays bound across the grid's and
-            // projectile's later set-0-only rebinds below (Vulkan's
-            // descriptor-set binding-persistence rule).
-            VkDescriptorSet iblDs = context->iblDescriptor().set();
-            vkCmdBindDescriptorSets(
-                cmd,
-                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                activePipeline.getLayout(),
-                1, 1, &iblDs,
-                0, nullptr
-            );
-
-            // bind DescriptorSet（notify where GPU uniform buffer is）
-            VkDescriptorSet ds = context->descriptor().set();
-            vkCmdBindDescriptorSets(
-                cmd,
-                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                activePipeline.getLayout(),
-                0, 1, &ds,
-                0, nullptr
-            );
-
-            // Set 2 (Phase 23 M1) - the previous frame's captured scene
-            // color, only meaningful (and only present in
-            // refractivePipeline_'s layout) when refraction is active.
-            if (refraction)
+            // Binds a pipeline + its descriptor sets, pushes one material,
+            // and issues the 3-LOD indirect-draw loop - shared by the
+            // normal-bucket and (Phase 23 M2) special-bucket draws below
+            // instead of duplicating this ~20-line sequence twice.
+            auto drawGridBucket = [&](VulkanPipeline& pipe, bool bindRefractionSet,
+                                       bool useSpecial, bool reverseOrder,
+                                       const MaterialPushConstants& mat)
             {
-                VkDescriptorSet refractDs = context->refractionDescriptor().set();
-                vkCmdBindDescriptorSets(
-                    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline.getLayout(),
-                    2, 1, &refractDs, 0, nullptr
-                );
-            }
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.get());
 
-            // Grid material - rough dielectric. Pushed before the loop since
-            // the grid and projectile share this pipeline's push-constant
-            // range in the same command buffer and must each set it fresh.
-            // Alpha (w) is gridAlpha() - 1.0 (opaque) by default, so this
-            // is byte-identical to the pre-§43 behavior unless transparency
-            // is actually in use. metallicRoughness.z is the master texture
-            // toggle (§44); .w is IOR (Phase 23 M1, refractivePipeline_
-            // only - triangle.frag never reads it).
+                // IBL (see docs/TECHNICAL_NOTES.md §34/§35): set 1, shared
+                // by every material - rebound per bucket since mixed mode
+                // can switch pipelines (and therefore layouts) between
+                // buckets, unlike the single-pipeline case pre-M2.
+                VkDescriptorSet iblDs = context->iblDescriptor().set();
+                vkCmdBindDescriptorSets(
+                    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.getLayout(),
+                    1, 1, &iblDs, 0, nullptr
+                );
+
+                VkDescriptorSet matDs = context->descriptor().set();
+                vkCmdBindDescriptorSets(
+                    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.getLayout(),
+                    0, 1, &matDs, 0, nullptr
+                );
+
+                // Set 2 (Phase 23 M1) - the previous frame's captured scene
+                // color, only present in refractivePipeline_'s layout.
+                if (bindRefractionSet)
+                {
+                    VkDescriptorSet refractDs = context->refractionDescriptor().set();
+                    vkCmdBindDescriptorSets(
+                        cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.getLayout(),
+                        2, 1, &refractDs, 0, nullptr
+                    );
+                }
+
+                vkCmdPushConstants(
+                    cmd, pipe.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
+                    0, sizeof(MaterialPushConstants), &mat
+                );
+
+                // Bucket draw order: nearest-first (0,1,2) is better for
+                // opaque early-z rejection; back-to-front (2,1,0) is
+                // required for correct alpha blending - see
+                // sortInstances.comp for why this order is already correct
+                // *between* LOD buckets, leaving only *within*-bucket order
+                // for that shader to fix.
+                for (int step = 0; step < 3; step++)
+                {
+                    int i = reverseOrder ? (2 - step) : step;
+
+                    context->lod(i).vertexBuffer.bind(cmd);
+                    context->lod(i).indexBuffer.bind(cmd);
+
+                    VkBuffer instanceBuf = useSpecial
+                        ? context->lod(i).visibleInstanceBufferSpecial.get()
+                        : context->lod(i).visibleInstanceBuffer.get();
+                    VkDeviceSize offset = 0;
+                    vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &offset);
+
+                    VkBuffer indirectBuf = useSpecial
+                        ? context->lod(i).indirectDrawBufferSpecial.get()
+                        : context->lod(i).indirectDrawBuffer.get();
+                    vkCmdDrawIndexedIndirect(
+                        cmd, indirectBuf,
+                        0,    // offset
+                        1,    // drawCount(ONLY ONE draw command)
+                        sizeof(DrawIndirectCommand)
+                    );
+                }
+            };
+
+            // Grid material - rough dielectric. Alpha (w) is gridAlpha() -
+            // 1.0 (opaque) by default, so this is byte-identical to the
+            // pre-§43 behavior unless transparency is actually in use.
+            // metallicRoughness.z is the master texture toggle (§44); .w is
+            // IOR (Phase 23 M1, refractivePipeline_ only). Same push values
+            // for both buckets below - only the bound pipeline differs.
             MaterialPushConstants gridMat{
                 glm::vec4(1.0f, 1.0f, 1.0f, context->gridAlpha()),
                 glm::vec4(0.0f, 0.5f, context->texturesEnabled() ? 1.0f : 0.0f, context->refractionIOR()) };
-            vkCmdPushConstants(
-                cmd, activePipeline.getLayout(), VK_SHADER_STAGE_FRAGMENT_BIT,
-                0, sizeof(MaterialPushConstants), &gridMat
-            );
 
-            // Bucket draw order: nearest-first (0,1,2) is better for
-            // opaque early-z rejection; back-to-front (2,1,0) is required
-            // for correct alpha blending once transparent - see
-            // sortInstances.comp for why this order is already correct
-            // *between* buckets (LOD0's camera-distance range is strictly
-            // less than LOD1's, which is strictly less than LOD2's, by
-            // the lod1ScreenSize_ >= lod2ScreenSize_ invariant), leaving
-            // only *within*-bucket order for that shader to fix.
-            for (int step = 0; step < 3; step++)
+            // Normal bucket - always drawn. In mixed mode this is the
+            // always-opaque pipeline_ (forward LOD order, no sort needed);
+            // otherwise it's activePipeline covering the *whole* grid,
+            // exactly as before M2 existed.
+            drawGridBucket(normalPipeline, /*bindRefractionSet=*/refraction && !mixed,
+                           /*useSpecial=*/false, /*reverseOrder=*/!mixed && transparent, gridMat);
+
+            // Special bucket (Phase 23 M2) - every materialStride()'th
+            // instance, drawn with whichever special pipeline
+            // gridAlpha()/refractionEnabled() currently select. Skipped
+            // outright when mixed materials are off.
+            if (mixed)
             {
-                int i = transparent ? (2 - step) : step;
-
-                context->lod(i).vertexBuffer.bind(cmd);
-                context->lod(i).indexBuffer.bind(cmd);
-
-                VkBuffer instanceBuf = context->lod(i).visibleInstanceBuffer.get();
-                VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &offset);
-
-                vkCmdDrawIndexedIndirect(
-                    cmd,
-                    context->lod(i).indirectDrawBuffer.get(),
-                    0,    // offset
-                    1,    // drawCount(ONLY ONE draw command)
-                    sizeof(DrawIndirectCommand)
-                );
+                drawGridBucket(activePipeline, /*bindRefractionSet=*/refraction,
+                               /*useSpecial=*/true, /*reverseOrder=*/transparent, gridMat);
             }
 
             // Mouse-fired projectile: reuses LOD2's mesh, its own UBO
@@ -695,6 +735,17 @@ void FrameRenderer::init(VulkanContext& ctx)
             float ior = context->refractionIOR();
             if (ImGui::SliderFloat("IOR", &ior, 1.0f, 2.5f, "%.2f"))
                 context->setRefractionIOR(ior);
+
+            // Phase 23 M2 (docs/roadmap.md) - mixed opaque + special-
+            // material grid. "Special" is whichever material the controls
+            // above currently select (alpha-blend or refractive) - this
+            // just decides how many instances get it, not what it is.
+            bool mixedMaterials = context->mixedMaterialsEnabled();
+            if (ImGui::Checkbox("Enable Mixed Materials", &mixedMaterials))
+                context->setMixedMaterialsEnabled(mixedMaterials);
+            int materialStride = static_cast<int>(context->materialStride());
+            if (ImGui::SliderInt("Special Material Every N", &materialStride, 1, 20))
+                context->setMaterialStride(static_cast<uint32_t>(materialStride));
 
             ImGui::Separator();
             ImGui::Text("GPU Timing (ms)");

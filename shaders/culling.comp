@@ -5,6 +5,15 @@ layout(local_size_x = 64) in;
 struct ObjectData
 {
     vec4 boundingSphere;  // xyz=center, w=radius
+    // Phase 23 M2 (docs/roadmap.md) - x = 1.0 if this instance should use
+    // the "special" material (whichever of transparentPipeline_/
+    // refractivePipeline_ is globally selected, same as before M2 - see
+    // GeometryPass in FrameRenderer.cpp) instead of the always-opaque
+    // pipeline_; 0.0 for the majority "normal" instances. y/z/w unused.
+    // Set CPU-side from VulkanContext::mixedMaterialsEnabled()/
+    // materialStride() every frame, same "recompute, don't cache"
+    // discipline as boundingSphere above.
+    vec4 materialFlags;
 };
 
 struct InstanceData
@@ -89,6 +98,27 @@ layout(std430, binding = 13) readonly buffer ClusterVisibleLight
     uint clusterVisibleLight[];
 };
 
+// Phase 23 M2 - "special"-material sibling of the 3 buffer pairs above,
+// same shapes, selected instead of the normal set whenever
+// objects[idx].materialFlags.x says this instance is special. See
+// GeometryPass in FrameRenderer.cpp for how the two sets get drawn with
+// different pipelines.
+layout(std430, binding = 14) writeonly buffer VisibleLOD0Special
+{
+    InstanceData visibleLOD0Special[];
+};
+layout(std430, binding = 15) writeonly buffer VisibleLOD1Special
+{
+    InstanceData visibleLOD1Special[];
+};
+layout(std430, binding = 16) writeonly buffer VisibleLOD2Special
+{
+    InstanceData visibleLOD2Special[];
+};
+layout(std430, binding = 17) buffer IndirectLOD0Special { DrawCommand cmd0Special; };
+layout(std430, binding = 18) buffer IndirectLOD1Special { DrawCommand cmd1Special; };
+layout(std430, binding = 19) buffer IndirectLOD2Special { DrawCommand cmd2Special; };
+
 bool sphereInsideFrustum(vec3 center, float radius, vec4 planes[6])
 {
     for (int i = 0; i < 6; i++)
@@ -164,20 +194,51 @@ void main()
     // transparency ordering (see docs/TECHNICAL_NOTES.md §43); an opaque
     // draw ignores it entirely, so this has zero effect until that pass
     // is enabled.
+    //
+    // Phase 23 M2: each LOD tier compacts into one of two buffer pairs
+    // (normal vs. special) depending on this instance's material flag,
+    // instead of always the one pair - same atomic-compaction mechanism,
+    // just gated on a second condition alongside the LOD tier.
+    bool isSpecial = objects[idx].materialFlags.x > 0.5;
+
     if (screenSize > frustum.lodParams.x)
     {
-        uint slot = atomicAdd(cmd0.instanceCount, 1u);
-        visibleLOD0[slot].position = vec4(center, camDist);
+        if (isSpecial)
+        {
+            uint slot = atomicAdd(cmd0Special.instanceCount, 1u);
+            visibleLOD0Special[slot].position = vec4(center, camDist);
+        }
+        else
+        {
+            uint slot = atomicAdd(cmd0.instanceCount, 1u);
+            visibleLOD0[slot].position = vec4(center, camDist);
+        }
     }
     else if (screenSize > frustum.lodParams.y)
     {
-        uint slot = atomicAdd(cmd1.instanceCount, 1u);
-        visibleLOD1[slot].position = vec4(center, camDist);
+        if (isSpecial)
+        {
+            uint slot = atomicAdd(cmd1Special.instanceCount, 1u);
+            visibleLOD1Special[slot].position = vec4(center, camDist);
+        }
+        else
+        {
+            uint slot = atomicAdd(cmd1.instanceCount, 1u);
+            visibleLOD1[slot].position = vec4(center, camDist);
+        }
     }
     else
     {
-        uint slot = atomicAdd(cmd2.instanceCount, 1u);
-        visibleLOD2[slot].position = vec4(center, camDist);
+        if (isSpecial)
+        {
+            uint slot = atomicAdd(cmd2Special.instanceCount, 1u);
+            visibleLOD2Special[slot].position = vec4(center, camDist);
+        }
+        else
+        {
+            uint slot = atomicAdd(cmd2.instanceCount, 1u);
+            visibleLOD2[slot].position = vec4(center, camDist);
+        }
     }
 }
 

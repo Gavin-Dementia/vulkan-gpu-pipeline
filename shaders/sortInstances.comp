@@ -4,10 +4,11 @@
 // by camera distance, so an alpha-blended draw of that bucket composites
 // correctly instead of in whatever order culling.comp's atomicAdd
 // compaction happened to produce (see docs/TECHNICAL_NOTES.md §43).
-// Dispatched (3,1,1) - one workgroup per LOD bucket, selected by
-// gl_WorkGroupID.x. No effect on opaque rendering (draw order doesn't
-// matter when depth test alone resolves occlusion) - only meaningful
-// once VulkanContext::gridAlpha() < 1.0 selects the transparent pipeline.
+// Dispatched (6,1,1) - one workgroup per bucket, selected by
+// gl_WorkGroupID.x: 0-2 = normal LOD0-2, 3-5 = special LOD0-2 (Phase 23
+// M2). No effect on opaque rendering (draw order doesn't matter when
+// depth test alone resolves occlusion) - only meaningful for whichever
+// bucket set is currently bound to the alpha-blend pipeline.
 //
 // 512 must stay >= VulkanContext::OBJECT_COUNT (343) - the same manual
 // C++/GLSL sync discipline culling.comp's GRID_SIZE/CLUSTER_DIM already
@@ -42,18 +43,35 @@ layout(std430, binding = 4) readonly buffer IndirectLOD0 { DrawCommand cmd0; };
 layout(std430, binding = 5) readonly buffer IndirectLOD1 { DrawCommand cmd1; };
 layout(std430, binding = 6) readonly buffer IndirectLOD2 { DrawCommand cmd2; };
 
+// Phase 23 M2 (docs/roadmap.md) - "special"-material sibling buckets,
+// same shapes as above. Dispatched unconditionally alongside buckets 0-2
+// whenever any sorting happens at all (FrameRenderer.cpp) rather than
+// gated on mixed materials specifically - sorting an empty or opaque
+// bucket is a harmless near-no-op (tid < count is false for every thread
+// when count is 0), cheaper to always include than to plumb a second
+// conditional dispatch.
+layout(std430, binding = 14) buffer VisibleLOD0Special { InstanceData visibleLOD0Special[]; };
+layout(std430, binding = 15) buffer VisibleLOD1Special { InstanceData visibleLOD1Special[]; };
+layout(std430, binding = 16) buffer VisibleLOD2Special { InstanceData visibleLOD2Special[]; };
+layout(std430, binding = 17) readonly buffer IndirectLOD0Special { DrawCommand cmd0Special; };
+layout(std430, binding = 18) readonly buffer IndirectLOD1Special { DrawCommand cmd1Special; };
+layout(std430, binding = 19) readonly buffer IndirectLOD2Special { DrawCommand cmd2Special; };
+
 const uint N = 512u;
 shared InstanceData sharedData[N];
 
 void main()
 {
     uint tid    = gl_LocalInvocationID.x;
-    uint bucket = gl_WorkGroupID.x;   // 0 = LOD0, 1 = LOD1, 2 = LOD2
+    uint bucket = gl_WorkGroupID.x;   // 0-2 = normal LOD0-2, 3-5 = special LOD0-2
 
     uint count;
     if (bucket == 0u)      count = cmd0.instanceCount;
     else if (bucket == 1u) count = cmd1.instanceCount;
-    else                   count = cmd2.instanceCount;
+    else if (bucket == 2u) count = cmd2.instanceCount;
+    else if (bucket == 3u) count = cmd0Special.instanceCount;
+    else if (bucket == 4u) count = cmd1Special.instanceCount;
+    else                   count = cmd2Special.instanceCount;
 
     // Load into shared memory. Padding slots (tid >= count) get a
     // distance of -1.0 - camera distance is never negative, so these
@@ -64,7 +82,10 @@ void main()
     {
         if (bucket == 0u)      entry = visibleLOD0[tid];
         else if (bucket == 1u) entry = visibleLOD1[tid];
-        else                   entry = visibleLOD2[tid];
+        else if (bucket == 2u) entry = visibleLOD2[tid];
+        else if (bucket == 3u) entry = visibleLOD0Special[tid];
+        else if (bucket == 4u) entry = visibleLOD1Special[tid];
+        else                   entry = visibleLOD2Special[tid];
     }
     else
     {
@@ -110,6 +131,9 @@ void main()
     {
         if (bucket == 0u)      visibleLOD0[tid] = sharedData[tid];
         else if (bucket == 1u) visibleLOD1[tid] = sharedData[tid];
-        else                   visibleLOD2[tid] = sharedData[tid];
+        else if (bucket == 2u) visibleLOD2[tid] = sharedData[tid];
+        else if (bucket == 3u) visibleLOD0Special[tid] = sharedData[tid];
+        else if (bucket == 4u) visibleLOD1Special[tid] = sharedData[tid];
+        else                   visibleLOD2Special[tid] = sharedData[tid];
     }
 }

@@ -3321,6 +3321,117 @@ instances (always drawn last, same known gap §43 left open); a
 real reprojected (not hand-tuned-constant) refraction offset; exposing
 `kRefractionStrength` as a slider.
 
+### 46. Mixed opaque + special-material instances (Phase 23 M2), real GPU bucketing over a `discard` shortcut
+
+Closes the M2 gap §45 left open: `gridAlpha()`/`refractionEnabled()` were
+each one shared toggle for the *whole* grid - no way to have some
+instances stay opaque brick while others are glass/translucent in the
+same frame. Every `materialStride()`'th instance (default every 3rd,
+ImGui-tunable 1-20) now uses whichever special material those existing
+toggles select; the rest stay on `pipeline_` regardless.
+
+**The rejected alternative, and why.** A `discard`-based approach was
+considered first and is genuinely simpler: encode the per-instance flag
+in the sign of `InstanceData.position.w` (already carrying camera
+distance, §43), have `triangle.vert` pass an "isSpecial" flag through,
+and `discard` in the fragment shader whichever half doesn't match the
+currently-bound pipeline - two full draws of the *same* compacted bucket
+per LOD, no new buffers, no `ComputeDescriptor` changes at all. Rejected
+because it cuts directly against this project's stated identity (see
+roadmap's "Long-term goals": "GPU-driven rendering research direction") -
+the entire point of atomic-compaction culling since Phase 5 has been that
+the GPU determines the *exact* visible/relevant set and does no wasted
+work past that; a `discard`-based split would silently reintroduce
+wasted rasterization/shading (~half of every fragment in each of the two
+passes) purely to sidestep doing real compaction. At 343 instances the
+performance cost either way is unmeasurable, but the *architectural*
+statement differs - real bucketing was implemented instead, matching
+what the roadmap's M2 plan actually called for ("same bucketing pattern
+Phase 6's LOD buckets... already established").
+
+**Where the flag lives, and why `ObjectData` grew instead of reusing a
+slot.** Unlike §43's `position.w` and §44/§45's `metallicRoughness.z/w`
+- both cases where an existing vec4 had a genuinely idle component -
+`ObjectData` (`boundingSphere`, xyz=center/w=radius) has no spare
+component; every one of its 4 floats is already load-bearing. Grew it to
+a second `vec4 materialFlags` (only `.x` used, `.y/.z/.w` reserved)
+rather than packing a bit into an existing float, keeping the "one clear
+field per concern" readability this codebase's structs otherwise have.
+`objectBuffer_`'s per-instance stride doubled (16→32 bytes) as a direct
+consequence - both upload sites (`initSceneData()`'s startup population
+and `updateInstanceSimulation()`'s per-frame reupload) needed the local
+mirror struct updated identically, the same manual-sync burden every
+C++/GLSL struct pair in this codebase already carries (no shared header
+exists).
+
+**Bucket doubling, not tripling.** `culling.comp` now writes each LOD
+tier into one of *two* buffer pairs (normal/special) based on
+`materialFlags.x`, not three (opaque/alpha-blend/refractive as separate
+buckets) - "special" is deliberately whatever the *existing* M1 toggles
+already select globally, reusing that selection logic entirely rather
+than adding a third axis of choice. This kept `ComputeDescriptor`'s
+growth to 14→20 bindings instead of needing yet more, and meant
+`GeometryPass`'s pipeline-selection code (`activePipeline`, unchanged
+from §45) could be reused as-is for the special bucket - M2 only needed
+to decide *how many* instances get it, not invent a new way to decide
+*which* material it is.
+
+**Why `sortInstances.comp` dispatches all 6 buckets unconditionally.**
+The natural design would gate the special buckets' sort behind "mixed
+materials on AND the special material is alpha-blend," mirroring the
+existing `transparencySortEnabled() && isTransparent()` gate precisely.
+Skipped that extra conditional: sorting an empty bucket (mixed off) or
+an opaque one (special material is refractive or plain opaque) is a fast
+near-no-op - every thread's `tid < count` check is false, the shared-
+memory sort still runs its N phases but touches nothing meaningful. Same
+"microseconds regardless at this scale" reasoning §43's own header
+comment already used to justify the O(n²) sort algorithm choice in the
+first place - a second conditional dispatch would have added real code
+complexity to avoid a cost that isn't measurable.
+
+**Why `drawGridBucket` exists.** `GeometryPass`'s per-bucket sequence
+(bind pipeline, bind set 0/1/(2), push the material, loop 3 LOD draws)
+is identical in shape whether it's drawing the normal or special bucket
+- only the pipeline, whether set 2 gets bound, which buffer pair to read,
+and the LOD draw order differ, all of which are ordinary parameters. A
+local lambda capturing `cmd`/`context` avoided duplicating that ~20-line
+sequence a second time with only cosmetic differences - this codebase's
+existing preference for reuse over near-duplicate blocks (see the
+`drawIndexedIndirect` pattern shared across all 3 LOD iterations already
+before M2).
+
+**Why the normal bucket's pipeline changes based on `mixed`, not just
+the special bucket's.** Before M2, `activePipeline` covered the *whole*
+grid - the normal bucket in non-mixed mode has to keep doing that
+(`normalPipeline = activePipeline`) for exact backward compatibility,
+since the special buffer is guaranteed empty and never drawn. Once mixed
+mode is on, the normal bucket's *meaning* changes to "everything that
+isn't special," which by this milestone's design is always opaque
+(`normalPipeline = pipeline_`) regardless of what `gridAlpha()`/
+`refractionEnabled()` currently say - those toggles now only describe the
+special subset. Missing this distinction would have meant either the
+"normal" majority incorrectly inheriting transparency/refraction it
+shouldn't have, or `gridAlpha() < 1.0` silently doing nothing once mixed
+mode was toggled on.
+
+**Verification.** Rebuilt clean (both changed shaders compiled with no
+`glslc` errors). Confirmed default (`mixedMaterialsEnabled_ = false`) is
+unreachable-by-construction identical to pre-M2 behavior - the special
+bucket's compaction always writes zero instances (culling.comp's
+`isSpecial` branch is never taken when every `materialFlags.x` is 0.0),
+so `drawGridBucket`'s special-bucket call is skipped outright by the
+`if (mixed)` guard, never even issuing a draw call with an empty buffer.
+Enabled mixed materials together with both Grid Alpha < 1 and
+Refraction: every `materialStride()`'th instance visibly took the
+selected special material while the remainder stayed opaque brick, no
+validation errors, no crash, no missing/flickering instances (which
+would have been the expected symptom of a bucketing index-math bug).
+
+**Explicitly out of scope, left for M3 (docs/roadmap.md):** the
+projectile's draw order relative to grid instances is still unaffected
+by this milestone - it's not part of the grid's instance buffer at all,
+so "mixed materials" has no bearing on it either way.
+
 ---
 
 ## Bugs encountered (and what they taught)

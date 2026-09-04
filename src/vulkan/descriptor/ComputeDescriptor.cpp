@@ -7,6 +7,8 @@ void ComputeDescriptor::create(
     VkBuffer objectBuffer,
     std::array<VkBuffer, 3> visibleInstanceBuffers,
     std::array<VkBuffer, 3> indirectDrawBuffers,
+    std::array<VkBuffer, 3> visibleInstanceBuffersSpecial,
+    std::array<VkBuffer, 3> indirectDrawBuffersSpecial,
     VkBuffer frustumBuffer,
     VkBuffer shadowVisibleInstanceBuffer,
     VkBuffer shadowIndirectDrawBuffer,
@@ -36,7 +38,9 @@ void ComputeDescriptor::create(
     // binding 11: clusterBuffer       (STORAGE, read)  - coarse pass input, 64 cluster bounding spheres
     // binding 12: clusterVisibleCamera(STORAGE, r/w)   - coarse writes, fine reads
     // binding 13: clusterVisibleLight (STORAGE, r/w)   - coarse writes, fine reads
-    std::array<VkDescriptorSetLayoutBinding, 14> bindings{};
+    // binding 14-16: visibleLOD0/1/2Special (STORAGE, write) - Phase 23 M2
+    // binding 17-19: indirectLOD0/1/2Special (STORAGE, r/w)  - Phase 23 M2
+    std::array<VkDescriptorSetLayoutBinding, 20> bindings{};
     for(int i= 0; i < 7; i++)
     {
         bindings[i].binding         = i;
@@ -71,6 +75,14 @@ void ComputeDescriptor::create(
         bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
     }
 
+    for (int i = 14; i <= 19; i++)
+    {
+        bindings[i].binding         = i;
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -83,7 +95,7 @@ void ComputeDescriptor::create(
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
 
     poolSizes[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = 12;
+    poolSizes[0].descriptorCount = 18;
 
     poolSizes[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = 2;
@@ -129,6 +141,23 @@ void ComputeDescriptor::create(
         indInfos[i].range  = indirectDrawSize;
     }
 
+    // Phase 23 M2 - "special"-material sibling buffer infos, same shapes.
+    std::array<VkDescriptorBufferInfo, 3> visInfosSpecial{};
+    for (int i = 0; i < 3; i++)
+    {
+        visInfosSpecial[i].buffer = visibleInstanceBuffersSpecial[i];
+        visInfosSpecial[i].offset = 0;
+        visInfosSpecial[i].range  = visibleInstanceSize;
+    }
+
+    std::array<VkDescriptorBufferInfo, 3> indInfosSpecial{};
+    for (int i = 0; i < 3; i++)
+    {
+        indInfosSpecial[i].buffer = indirectDrawBuffersSpecial[i];
+        indInfosSpecial[i].offset = 0;
+        indInfosSpecial[i].range  = indirectDrawSize;
+    }
+
     VkDescriptorBufferInfo frustInfo{};
     frustInfo.buffer = frustumBuffer;
     frustInfo.offset = 0;
@@ -165,7 +194,7 @@ void ComputeDescriptor::create(
     clusterVisLightInfo.range  = clusterVisibleSize;
 
     // ---- Writes ----
-    std::array<VkWriteDescriptorSet, 14> writes{};
+    std::array<VkWriteDescriptorSet, 20> writes{};
 
     // binding 0: objectBuffer
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -252,6 +281,28 @@ void ComputeDescriptor::create(
     writes[13].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[13].descriptorCount = 1;
     writes[13].pBufferInfo     = &clusterVisLightInfo;
+
+    // binding 14-16: visibleLOD0/1/2Special (Phase 23 M2)
+    for (int i = 0; i < 3; i++)
+    {
+        writes[14 + i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[14 + i].dstSet          = set_;
+        writes[14 + i].dstBinding      = 14 + i;
+        writes[14 + i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[14 + i].descriptorCount = 1;
+        writes[14 + i].pBufferInfo     = &visInfosSpecial[i];
+    }
+
+    // binding 17-19: indirectLOD0/1/2Special (Phase 23 M2)
+    for (int i = 0; i < 3; i++)
+    {
+        writes[17 + i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[17 + i].dstSet          = set_;
+        writes[17 + i].dstBinding      = 17 + i;
+        writes[17 + i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[17 + i].descriptorCount = 1;
+        writes[17 + i].pBufferInfo     = &indInfosSpecial[i];
+    }
 
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
