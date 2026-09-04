@@ -106,7 +106,8 @@ vulkan-gpu-pipeline/
 ├── shaders/                   GLSL source (triangle.vert/frag, culling.comp,
 │                              cullingCoarse.comp, shadow.vert, fullscreenTriangle.vert,
 │                              envCapture.frag, skybox.frag, irradianceConvolve.frag,
-│                              prefilterEnv.frag, brdfLUT.frag)
+│                              prefilterEnv.frag, brdfLUT.frag, sortInstances.comp, 
+│                              triangle_refractive.frag)
 ├── src/                       Implementation (.cpp), mirrors include/
 └── third_party/               GLFW, GLM, ImGui, stb, tinyobjloader
 ```

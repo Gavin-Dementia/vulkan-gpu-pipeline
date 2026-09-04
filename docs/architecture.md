@@ -1103,12 +1103,17 @@ timestamp queries — see TECHNICAL_NOTES §23)
 Acquire Swapchain Image (VK_ERROR_OUT_OF_DATE_KHR → recreate + return
                           without submitting, retried next drawFrame() call)
         │
-Reset IndirectLOD0/1/2.instanceCount = 0   (3× CPU write)
-Reset ShadowIndirect.instanceCount = 0     (CPU write, indexed by LOD0)
+Reset IndirectLOD0/1/2.instanceCount = 0            (3× CPU write)
+Reset IndirectLOD0/1/2Special.instanceCount = 0     (3× CPU write, Phase 23 M2 -
+   always reset regardless of mixedMaterialsEnabled(), stays at 0 if unused)
+Reset ShadowIndirect.instanceCount = 0              (CPU write, indexed by LOD0)
+   [FrameRenderer::readbackFrameStats() runs just before this, reading back
+   the *previous* use of this frame slot's LOD/cluster/GPU-timing stats -
+   see "FrameRenderer::drawFrame() split" below]
         │
 Reset this frame's VkQueryPool → write timestamp 0 (TOP_OF_PIPE)
         │
-Compute: GPUCullingPass (see TECHNICAL_NOTES §31)
+Compute: GPUCullingPass (see TECHNICAL_NOTES §31) — FrameRenderer::recordComputePass()
    (upload camera frustum + light frustum (zeroToOne=true, see
     TECHNICAL_NOTES §28) →
     [3a] Coarse dispatch (1,1,1), 64 threads = 64 clusters: sphere test
@@ -1121,7 +1126,15 @@ Compute: GPUCullingPass (see TECHNICAL_NOTES §31)
     test entirely if that cluster was coarse-rejected, otherwise same as
     before - light-frustum survivors compact into ShadowVisible/
     ShadowIndirect unconditionally; camera-frustum survivors additionally
-    get distance-based LOD bucketing, atomic compaction per bucket)
+    get distance-based LOD bucketing, atomic-compacted into the normal or
+    special buffer pair per LOD depending on materialFlags.x (Phase 23 M2,
+    §46) →
+    [3c] if transparencySortEnabled() && isTransparent(): compute→compute
+    VkMemoryBarrier, then sortInstances.comp dispatch (6,1,1) - one
+    workgroup per bucket (3 normal + 3 special, Phase 23 M2), odd-even
+    transposition sort descending by camera distance for correct
+    back-to-front alpha-blend order; skipped entirely otherwise, a
+    zero-cost no-op)
         │
 Write timestamp 1 (BOTTOM_OF_PIPE) — closes the Culling interval
         │
@@ -1129,7 +1142,7 @@ Memory Barrier (SHADER_WRITE → VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ)
         │
 Begin Shadow Render Pass (own framebuffer, fixed 2048×2048 resolution)
         │
-Shadow: ShadowPass
+Shadow: ShadowPass — FrameRenderer::recordShadowPass()
    push {lightViewProj, spin rotation} → bind LOD0 vertex/index buffers +
    shadowVisibleInstanceBuffer_ → vkCmdDrawIndexedIndirect against
    shadowIndirectDrawBuffer_ (GPU-supplied instance count) → if
@@ -1142,25 +1155,45 @@ Write timestamp 2 (BOTTOM_OF_PIPE) — closes the Shadow interval
         │
 Image Memory Barrier (LATE_FRAGMENT_TESTS write → FRAGMENT_SHADER read)
         │
+if refractionEnabled() && sceneColorEverRendered(): recordRefractionCopy()
+   (Phase 23 M1, §45) — barrier sceneColorTarget_ to TRANSFER_SRC_OPTIMAL +
+   sceneColorCopy_ to TRANSFER_DST_OPTIMAL → vkCmdCopyImage (previous
+   frame's fully-composited scene → sceneColorCopy_) → barrier
+   sceneColorCopy_ to SHADER_READ_ONLY_OPTIMAL. Skipped outright when
+   refraction is off, or on the one frame right after init/resize.
+        │
 Begin Offscreen Scene Render Pass (sceneRenderPass_/sceneFramebuffer_,
    live-resized to the docked Viewport panel's size - see "Live-resized
    viewport target" module notes)
         │
-Graphics: GeometryPass
-   upload SceneData (light + camera + lightViewProj + shadow bias) →
+Graphics: GeometryPass — FrameRenderer::recordScenePass()
+   upload SceneData (light + camera + lightViewProj + shadow bias +
+   sceneColorTarget_'s pixel size, Phase 23 M1) →
    draw skybox (fullscreen triangle, samples environmentCubemap_, depth
    test/write off - drawn first so the grid naturally overdraws it,
    see "Image-Based Lighting" module notes) →
-   bind pipeline_ → bind set 1 (iblDescriptor_: irradiance/prefiltered/
-   BRDF LUT, once - stays bound for the rest of the pass) → push grid
-   material constants → for each LOD: bind set 0 (descriptor_), bind
-   vertex/index/visible-instance buffers, vkCmdDrawIndexedIndirect
-   (GPU-supplied instance count, fragment shader samples the shadow map
-   for occlusion and irradianceMap/prefilteredMap/brdfLUT for full
-   split-sum ambient) →
-   if projectile active: bind set 0 (projectileDescriptor_), push its own
-   material constants, bind LOD2 mesh + its instance buffer,
-   vkCmdDrawIndexed
+   pick activePipeline (refractivePipeline_ if refractionEnabled(), else
+   transparentPipeline_ if isTransparent(), else pipeline_) and
+   normalPipeline (pipeline_ if mixedMaterialsEnabled(), else
+   activePipeline) →
+   draw the *normal* bucket via drawGridBucket (bind normalPipeline, set 1
+   iblDescriptor_, set 0 descriptor_, set 2 refractionDescriptor_ if
+   applicable, push grid material constants, then one
+   vkCmdDrawIndexedIndirect per LOD against the normal VisibleLODN/
+   IndirectLODN pair) →
+   if mixedMaterialsEnabled() (Phase 23 M2, §46): draw the *special*
+   bucket the same way via drawGridBucket, but against the
+   VisibleLODNSpecial/IndirectLODNSpecial pair and activePipeline →
+   if the projectile is active and something is alpha-blended
+   (transparent, Phase 23 M3, §47): drawBucketWithInterleavedProjectile
+   splits whichever bucket is alpha-blended into two partial
+   drawGridBucket calls (LOD steps [0,k) and [k,3)) around the
+   projectile's own draw, k chosen by comparing the projectile's camera
+   distance against the LOD1/LOD2 screen-size thresholds converted back
+   to equivalent distances (Frustum.h's screenProjectionScale()) -
+   otherwise the projectile draws once, after everything, unchanged from
+   pre-M3 (bind set 0 projectileDescriptor_, push its own material
+   constants, bind LOD2 mesh + its instance buffer, vkCmdDrawIndexed)
         │
 End Offscreen Scene Render Pass
         │
@@ -1169,10 +1202,12 @@ Image Memory Barrier (COLOR_ATTACHMENT_OUTPUT write → FRAGMENT_SHADER read)
 Begin Swapchain Render Pass (renderPass_/framebuffer_ - UI only, no 3D
    geometry draws here anymore)
         │
-UI: ImGuiPass — DockSpaceOverViewport + dockable "Viewport" window
-   (ImGui::Image samples sceneColorTarget_) + stats overlay + live
-   lighting/shadow sliders + shadow map debug preview, all docked beside
-   the Viewport instead of overlapping it
+UI: ImGuiPass — FrameRenderer::recordUIPass() — DockSpaceOverViewport +
+   dockable "Viewport" window (ImGui::Image samples sceneColorTarget_) +
+   stats overlay + live lighting/shadow sliders + shadow map debug
+   preview + Transparency section (Grid Alpha / Refraction+IOR / Mixed
+   Materials sliders, Phase 23), all docked beside the Viewport instead
+   of overlapping it
         │
 End Swapchain Render Pass
         │
@@ -1180,4 +1215,14 @@ Write timestamp 3 (BOTTOM_OF_PIPE) — closes the Graphics interval
         │
 Queue Submit → Present
 ```
+
+**`FrameRenderer::drawFrame()` split** (roadmap.md's "Refactor backlog"
+#1, done): the walkthrough above spans 6 private methods now
+(`readbackFrameStats()`, `recordComputePass()`, `recordShadowPass()`,
+`recordRefractionCopy()`, `recordScenePass()`, `recordUIPass()`) instead
+of one ~440-line function - `drawFrame()` itself is ~182 lines of pure
+per-frame ordering (resize checks, fence/acquire, one call per pass
+above, submit/present). Pure extraction, no behavior change - every
+barrier, timestamp write, and gating condition above is exactly where it
+was before the split, just inside a named method instead of inline.
 

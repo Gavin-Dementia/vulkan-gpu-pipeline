@@ -25,7 +25,7 @@ public:
 
     glm::vec3 position() const { return position_; }
 
-    // True while Ctrl is held (cursor visible, mouse-look suspended) -
+    // True while Shift is held (cursor visible, mouse-look suspended) -
     // exposed so Application::mainLoop() can keep ImGui's own mouse
     // capture in sync with it (see the ImGuiConfigFlags_NoMouse toggle
     // there and TECHNICAL_NOTES.md for why that's needed).
@@ -61,7 +61,7 @@ private:
     float lastMouseY_ = 0.0f;
     bool  firstMouseSample_ = true;   // suppress the first frame's jump
 
-    // Holding Ctrl reveals the cursor (GLFW_CURSOR_NORMAL) so the ImGui
+    // Holding Shift reveals the cursor (GLFW_CURSOR_NORMAL) so the ImGui
     // debug windows can actually be clicked/dragged - GLFW's unbounded
     // virtual position in DISABLED mode doesn't correspond to real screen
     // coordinates, so ImGui can't hit-test against it. Mouse-look is
